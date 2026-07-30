@@ -1,321 +1,247 @@
+# ===================== Summary generation  =====================
+
+SUMMARY_SYSTEM = """Your task: given the name of one IP module of the NEORV32 RISC-V SoC \
+and excerpts retrieved from the official NEORV32 datasheet, produce a TECHNICAL SUMMARY \
+of that module. The summary is the sole specification input consumed by a downstream \
+Asset Generation agent that decides which security-critical assets, if any, exist in \
+that module. The agent separately receives the module's RTL, so do not enumerate ports \
+or signal-level details — with one exception: capture the security SEMANTICS of any \
+signal that carries privilege, protection, isolation, reset/halt, or debug-access meaning \
+(describe the meaning, not the pin). Prioritize what only the specification provides: \
+system context, cross-module interaction, privilege and configuration semantics. Some \
+modules may contain no security assets; your summary must make that determinable rather \
+than implying relevance. A module can also be security-critical BY FUNCTION — it handles \
+keys, entropy, passwords, boot/firmware images, or executable memory — even if it enforces \
+no access control of its own.
+Output EXACTLY this structure, replacing angle-bracket placeholders:
+MODULE: <module name>
+1. FUNCTION AND ROLE
+<What the module does and its role in the SoC. Prose, 2-5 sentences.>
+2. REGISTERS, CSRS, AND FLAGS
+<One line per item the excerpts describe for this module:>
+- <EXACT_NAME> — <access: r/w, r/-, privilege level if stated> — <reset value if stated> — <function>
+3. CONFIGURATION
+<One line per generic/parameter/enable the excerpts describe:>
+- <EXACT_NAME> — <build-time or run-time> — <functional effect>
+4. CROSS-MODULE INTERACTION
+<How this module connects to and interacts with other NEORV32 modules and the processor \
+core: bus access, interrupts, privilege transitions, shared state — at both the modular \
+and the processor level. Include the extent of access or control the module grants to any \
+external agent or downstream module (what an interface, test/debug port, or bus master can \
+reach, read, write, halt, or reset through it) and any gating or authentication on that \
+access, including whether the spec calls that gating optional, default, or weak. Prose.>
+5. SECURITY-RELEVANT BEHAVIOR
+<Report in prose whichever of the following the excerpts describe for this module: access \
+control and which privilege levels may read/write/execute what; privilege propagation, \
+override, or transitions (effective-privilege changes, privilege/security signaling to the \
+bus fabric); protection, isolation, or lock mechanisms AND their documented bypasses, \
+exemptions, or conditions; handling of secret or security-critical material (keys, \
+entropy/random sources, passwords, boot/firmware images) and anything affecting its quality, \
+determinism, or exposure; mutability of state normally expected to be fixed (writable \
+instruction/code memory, lockable configuration); timing or side-channel guarantees such as \
+data-independent execution time; fault and exception behavior on illegal or unauthorized \
+access; and any protection the spec explicitly notes to be absent, optional, weak, default, \
+or example-only. Report only what the excerpts state; describe behavior, not exploitability.>
+Rules:
+- Use ONLY the provided excerpts. Do not add register names, bit fields, or behavior \
+from outside knowledge, even if you believe you know the NEORV32 design.
+- The excerpts may describe multiple modules. The named module is your subject, but do NOT \
+discard content about other modules when it changes the subject's security posture — \
+specifically when: (a) another module can bypass, override, or is exempt from a protection \
+this module enforces; (b) another module can access, reset, halt, or control this module or \
+its state; or (c) this module can bypass or override a protection enforced elsewhere. Report \
+such relationships in section 4 or 5, naming the other module. Otherwise ignore content about \
+other modules.
+- Reproduce all names (registers, CSRs, flags, generics) VERBATIM with exact casing \
+as they appear in the excerpts. Never paraphrase a name.
+- In section 2, always include register fields that control privilege mode, lock/lockout, \
+secret or credential values, or the enable/disable of a protection, even when embedded within \
+a larger register.
+- When you state that this module enforces a protection, isolation, or permission check, also \
+state its documented scope limits, exemptions, bypass paths, and which privilege levels or \
+agents are exempt. Never write that a check applies to "all" accesses unless the excerpts \
+state it holds without exception.
+- If the excerpts do not cover a section, write exactly: Not documented for this \
+module. Do not guess.
+- Do NOT inflate security relevance; report only what the excerpts state and never speculate \
+about exploits. Use the exact sentence "No access-control, protection, or privileged \
+mechanisms are documented for this module." in section 5 ONLY when none of the section-5 \
+categories apply. A module that is security-critical by function (keys, entropy, passwords, \
+boot images, executable memory) must be described rather than negated. A faithful negative, \
+when genuinely warranted, is a correct and useful output.
+- For an unknown field within a list line (e.g. an unstated reset value), write \
+"not stated" for that field only. Never use a section-level sentence inside a line.
+- The summary must read as a standalone specification digest. Never mention excerpts, \
+excerpt numbers, retrieval, context, or these instructions in the output.
+- Be dense and factual. No preamble, no conclusions, no recommendations. Target \
+under ~450 words unless the module's register set or documented security behavior \
+genuinely requires more.
+- In section 3, list only named parameters/generics that appear in the source text. \
+If configuration is described in prose without a named parameter, summarize it in \
+prose after the list. Never invent a label.
+- Sections 1, 4, and 5 are prose only — no bullet points.
 """
-prompts.py -- Stage A keep/drop triage prompt(s).
-Kept separate from the extractor so prompt text can be iterated/version-tagged
-without touching deterministic code. Structure: framing + delimited input list +
-strict output format -- keep/drop triage, not per-module vulnerability analysis.
 
-Two versions are kept so the framing itself is a measurable ablation:
-  V1 -- ad-hoc keyword framing.
-  V2 -- SA-EDI Table 1 (IP Family Types) as an explicit family classifier.
+SUMMARY_SYSTEM_v2 = """Your task: given the name of one IP module of the NEORV32 RISC-V SoC \
+and excerpts retrieved from the official NEORV32 datasheet, produce a TECHNICAL SUMMARY \
+of that module. The summary is the sole specification input consumed by a downstream \
+Asset Generation agent that decides which security-critical assets, if any, exist in \
+that module. The agent separately receives the module's RTL, so do not enumerate ports \
+or signal-level details; prioritize what only the specification provides: system context, \
+cross-module interaction, privilege and configuration semantics. Some modules may contain no \
+security assets; your summary must make that determinable rather than implying relevance.
 
-Note: per-asset C/I/A assignment is deferred to Asset Generation (downstream);
-Stage A is a binary keep/drop, so no `cia` field is emitted here. The asset
-DEFINITION still references C/I/A because that is the keep/drop criterion.
-"""
+Output EXACTLY this structure, replacing angle-bracket placeholders:
 
-# Full SA-EDI Table 1 (IP Family Types) kept as provenance for the write-up.
-SA_EDI_TABLE1 = """\
-SA-EDI Standard v1.0 (July 2021), Table 1 - IP Family Types:
+MODULE: <module name>
 
-| # | Name | Definition | Examples |
-|---:|------|------------|----------|
-| 1 | Accelerator | IP dedicated to offload a specific workload to enhance performance | DSP, TPU, packet processing, mathematical, compression |
-| 2 | Analog & Mixed-Signal | IP that controls or senses the electricals for communication, which receives or transmits signals conditioned outside of a system's digital domain | PHY, ADC, DAC |
-| 3 | Audio/Video | IP designed to manipulate audio/video data | Coders/Decoders, speech recognition, format converters |
-| 4 | Bus/Interface | IP implementing an interconnect among elements in and/or within a computing system | I2C, PCIe, DDR, MMC, USB, GPIO, AXI |
-| 5 | Communications | IP designed to transmit/receive information | Modulator/Demodulator, 802.11, Bluetooth, CDMA/GSM |
-| 6 | Controllers | A circuit hard-wired (e.g. Finite State Machine) to react in a closed-loop control system or other limited context, to control another entity | Arbiter, APIC, USB, Peripheral, Memory, Storage |
-| 7 | Counter/Timer | IP reflecting the passage of time in oscillations or human units | Real Time Clock, Watchdog, Monotonic Counter |
-| 8 | Memories | Volatile (transient) data storage | DRAM, SRAM |
-| 9 | Microcontroller | A specialized processor acting as a programmable controller | 8051, Nios |
-| 10 | Power Management | IP which controls and/or monitors the power state of a system | Voltage regulators, power controllers or monitors |
-| 11 | Processors | A programmable computing engine | CPU, GPU, TPU |
-| 12 | Security | IP designed to protect assets | Cryptography, authorization, tamper detection, access controls, RNG |
-| 13 | Storage | Non-volatile (permanent) data storage | EEPROM, eFuse, flash, ROM, OTP, NVRAM |
-| 14 | Test/Debug | IP designed to verify functionality and identify root cause of defects | JTAG, BIST, boundary scan, pattern generator |
-| 15 | Transducers | IP which converts energy from one form to another, such as physical to electrical | Sensors, actuators |
-| 16 | <User Defined> | This type is used to accommodate families that have not been defined in this table (e.g. proprietary IP). To add a family, the value should have the prefix "UD:". | UD: *CustomIP* |
+1. FUNCTION AND ROLE
+<What the module does and its role in the SoC. Prose, 2-5 sentences.>
 
-"""
+2. REGISTERS, CSRS, AND FLAGS
+<One line per item the excerpts describe for this module:>
+- <EXACT_NAME> — <access: r/w, r/-, privilege level if stated> — <reset value if stated> — <function>
 
-SA_EDI_TABLE2 = """\
-SA-EDI Standard v1.0 (July 2021), Table 2 - Asset Type:
+3. CONFIGURATION
+<One line per generic/parameter/enable the excerpts describe:>
+- <EXACT_NAME> — <build-time or run-time> — <functional effect>
 
-| # | Name | Definition | Examples |
-|---:|------|------------|----------|
-| 1 | Critical | Material that is critical for proper functionality. Without this asset, the IP would not be able to function. | Timers/Counters, clock generators |
-| 2 | Secret | Material that requires confidentiality and should not be accessible outside the IP | Password, cryptographic keys |
-| 3 | Sensitive | Material that requires integrity but not necessarily confidentiality. | Root of Trust (e.g. Asymmetric public key), fuse/OTP |
-| 4 | Control | Material used to alter and/or control the state of the IP. This material can also setup or configure the IP. | FSM, control register |
-| 5 | Cryptographic | Material that is part of a cryptographic operation | AES, RSA, SHA, HMAC, RNG |
-| 6 | Code/Data | Material that contains information which can alter the behavior of the IP | Storage (Volatile/Non-volatile) |
-| 7 | Compute | Material that is part of an execution engine that operates on opcodes or instructions | CISC, RISC, CPU, GPU |
-| 8 | <User Defined> | This type is used to accommodate asset types that have not been defined in this table (e.g. proprietary IP). To add an asset type, the value shall have the prefix “UD:”. | UD: *CustomIP* |
-"""
+4. CROSS-MODULE INTERACTION
+<How this module connects to and interacts with other NEORV32 modules and the processor \
+core: bus access, interrupts, privilege transitions, shared state — at both the modular \
+and the processor level. Prose.>
 
-# --- V1: ad-hoc keyword framing (no family classification) ---
-BATCH_SYSTEM_V1 = """You are a hardware security expert performing the first triage step of \
-    a pre-silicon security-verification flow for a System-on-Chip. You are given a NUMBERED LIST \
-    of IP modules (each: a name, and sometimes a short description). For EACH module, decide \
-    whether it is SECURITY-CRITICAL.
-    
-    A security asset (per the SA-EDI standard and IEEE P3164) is any hardware component or data \
-    element whose CONFIDENTIALITY, INTEGRITY, or AVAILABILITY (CIA) must be preserved. A module \
-    is SECURITY-CRITICAL if it plausibly stores, carries, generates, protects, or gates access \
-    to such an asset.
-    
-    Usually security-critical: cryptographic engines; key/seed/entropy stores; RNG/TRNG; \
-    memory-protection / PMP / MMU units; access-control and privilege logic; debug/JTAG \
-    interfaces; secure-boot / fuse / OTP controllers; bus/interconnect carrying sensitive data.
-    Usually NOT security-critical: program/memory-image blobs; shared type/constant packages; \
-    clock/reset/PLL generators; pin muxes; plain glue logic -- UNLESS they carry or gate an asset.
-    
-    Judge conservatively for RECALL: if a module plausibly touches an asset, KEEP it. Only DROP \
-    when clearly security-irrelevant -- a wrongly dropped module is unrecoverable downstream.
-    
-    Return ONLY a JSON array, one object per module, IN THE SAME ORDER, each exactly:
-    {"name": "<exact module name>", "keep": true|false, \
-    "confidence": 0.0-1.0, "rationale": "one short sentence"}"""
-
-
-# --- V2: SA-EDI Table 1 family classifier + per-family keep/drop rules ---
-BATCH_SYSTEM_V2 = f"""Your task is to perform a first triage step of a \
-    pre-silicon security-verification flow for a System-on-Chip. \
-    
-    Input:
-    A numbered list of IP MODULE NAMES ONLY.\
-    No implementation, documentation, or architecture is available.\
-    You must make every decision using ONLY the module identifier. Do not hallucinate added context.
-    
-    {SA_EDI_TABLE1}
-
-    For EACH module: \
-    (1) using only the module NAME, classify it into the closest SA-EDI IP family from the reference above.\
-    Do not hallucinate that any other context is provided. If the NAME is \
-    ambiguous, generic, or could refer to many possible implementations, \
-    assume there is INSUFFICIENT evidence, then \
-    (2) Decide whether the NAME provides sufficient evidence that the module is security-critical.
-
-    A module is SECURITY-CRITICAL if it handles sensitive data, controls system privileges, or connects to outside networks.\
-    Based on the the family classification of that module and the definition of that family from the provided table, \
-    decide whether the module is likely to be \
-    security-critical. Judge conservatively for RECALL:If the name is INSUFFICIENT evidence then KEEP it the module.
-
-    Usually security-critical: cryptographic engines; key/seed/entropy stores; RNG/TRNG; \
-    memory-protection / PMP / MMU units; access-control and privilege logic; debug/JTAG \
-    interfaces; secure-boot / fuse / OTP controllers; bus/interconnect carrying sensitive data.
-    Usually NOT security-critical: program/memory-image blobs; shared type/constant packages; \
-    clock/reset/PLL generators; pin muxes; plain glue logic -- UNLESS they carry or gate an asset.
-    
-    
-    Return ONLY a JSON array, one object per module, IN THE SAME ORDER, each exactly:
-    {{"name": "<exact name>", "family": "<SA-EDI family>", "keep": true|false, \
-    "confidence": 0.0-1.0, "rationale": "one short sentence"}}
-    
-    Example output:
-    [{{"name":"neorv32_cpu_pmp","family":"Security","keep":true,"confidence":0.95,"rationale":"Physical memory protection; access-control asset."}},
-    {{"name":"neorv32_application_image","family":"Memories","keep":false,"confidence":0.85,"rationale":"Program-memory image blob; no security logic."}},
-    {{"name":"neorv32_trng","family":"Security","keep":true,"confidence":0.95,"rationale":"RNG entropy source underpinning keys."}}]"""
-
-
-BATCH_SYSTEM_V3 = f"""You perform the first triage step of a pre-silicon security-verification \
-flow for a System-on-Chip: deciding which IP modules to EXCLUDE from downstream security asset \
-analysis.
-
-Input: a numbered list of IP MODULE NAMES ONLY. No RTL, documentation, or architecture is \
-provided. Every decision must use ONLY the module identifier. Do not invent context.
-
-{SA_EDI_TABLE1}
-
-For EACH module, reason in two steps:
-STEP 1 - FAMILY: classify the name into the closest SA-EDI IP family above. Do not judge \
-security relevance in this step.
-STEP 2 - KEEP/DROP: decide whether the module could own or carry a security asset.
-
-Per the SA-EDI standard, IEEE P3164, and the SAIF framework, security assets include SECONDARY \
-assets: any register, buffer, datapath, or infrastructure that stores, transports, transforms, \
-or influences sensitive data or system state -- not only components that directly hold secrets \
-or enforce privilege.
-
-A module is SECURITY-RELEVANT if its compromise, malfunction, unauthorized modification, or \
-incorrect behavior could affect: confidentiality, integrity, availability, execution \
-correctness, system isolation, trusted execution, privilege boundaries, timing behavior, \
-peripheral control, or system behavior relied upon by software.
-
-Decision priority:
-1. Avoid false negatives. A wrongly dropped module is unrecoverable downstream; a wrongly \
-kept module only costs analysis effort.
-2. If the module belongs to the processor core, execution pipeline, memory subsystem, \
-bus/interconnect, interrupt system, debug infrastructure, or is a peripheral controller with \
-software-visible registers, KEEP unless clearly irrelevant.
-3. DROP when the NAME strongly indicates one of:
-   - a pre-initialized program/memory IMAGE blob (a data payload, not hardware) \
-   - a pure type/constant/utility PACKAGE with no synthesizable logic,
-   - simulation- or testbench-only verification collateral (NOT debug/JTAG/DTM hardware -- \
-debug is an attack surface per the SA-EDI Test/Debug family and must be kept),
-   - a technology/vendor wrapper shell that only re-instantiates another module in the list \
-(the SoC top-level/integration module is NOT such a wrapper -- keep it).
-4. If the name is ambiguous, generic, or gives insufficient evidence: KEEP.
-
-OUTPUT CONTRACT (strict): return ONLY a raw JSON array -- no markdown fences, no prose. \
-Exactly one object per input module, IN THE SAME ORDER, each exactly:
-{{"name": "<exact module name>", "family": "<SA-EDI family>", "keep": true|false, \
-"confidence": 0.0-1.0, "rationale": "<max 12 words>"}}"""
-
-
-SPEC_SUMMARY_SYSTEM = """You are the specification-analysis agent in a pre-silicon \
-security-verification flow for a System-on-Chip. You are given a TARGET IP MODULE and \
-CONTEXT: excerpts retrieved from the SoC's official design specification.
-
-Produce a TECHNICAL SUMMARY of the target module for a downstream security-asset \
-identification agent. This summary will be the ONLY specification input that agent sees, \
-so it must contain every security-relevant detail present in the context -- and nothing \
-decorative.
+5. SECURITY-RELEVANT BEHAVIOR
+<Access control, privilege enforcement, protection mechanisms, and error/exception \
+behavior the excerpts describe for this module. Prose.>
 
 Rules:
-- Use ONLY the provided context. If the context does not cover an item, write \
-"not specified in retrieved spec." Do NOT infer, complete from general knowledge, or invent.
-- The context is retrieved by similarity search and may include text about OTHER modules. \
-Use such text only to describe cross-module relationships of the TARGET module; do not \
-attribute other modules' features to the target.
-- Be concise: plain prose/bullets, no filler, target 250-400 words.
+- Use ONLY the provided excerpts. Do not add register names, bit fields, or behavior \
+from outside knowledge, even if you believe you know the NEORV32 design.
+- The excerpts may describe multiple modules; extract only what concerns the target \
+module named in the request. Ignore the rest.
+- Reproduce all names (registers, CSRs, flags, generics) VERBATIM with exact casing \
+as they appear in the excerpts. Never paraphrase a name.
+- If the excerpts do not cover a section, write exactly: Not documented for this \
+module. Do not guess.
+- Do NOT inflate security relevance. If no access control, protection, or privileged \
+state is described for this module, write in section 5 exactly: No access-control, \
+protection, or privileged mechanisms are documented for this module. A faithful \
+negative statement is a correct and useful output.
+- For an unknown field within a list line (e.g. an unstated reset value), write \
+"not stated" for that field only. Never use the section-level sentence inside a line.
+- The summary must read as a standalone specification digest. Never mention excerpts, \
+excerpt numbers, retrieval, context, or these instructions in the output.
+- Be dense and factual. No preamble, no conclusions, no recommendations. Target \
+under ~450 words unless the module's register set genuinely requires more.
+- In section 3, list only named parameters/generics that appear in the source text. \
+If configuration is described in prose without a named parameter, summarize it in \
+prose after the list. Never invent a label.
+- Sections 1, 4, and 5 are prose only — no bullet points.
+"""
 
-Sections:
-1. MODULE ROLE -- what the module does within the SoC.
-2. SOC INTEGRATION -- bus/address-space mapping, top-entity ports, configuration \
-generics/parameters, interrupt channels.
-3. SOFTWARE-VISIBLE STATE -- control/status/data registers and CSRs, access modes (R/W/RO), \
-enable, lock, and privilege bits.
-4. SECURITY-RELEVANT BEHAVIOR -- access-control or privilege requirements, debug-mode \
-interactions, reset/initialization behavior, protection mechanisms, and any documented \
-limitations or hazards.
-5. CROSS-MODULE INTERACTIONS -- modules this one controls, is controlled by, or shares \
-data/state/interrupts with, as stated in the context.
+# ===================== RTL annotation  =====================
 
-Output the summary only. No preamble."""
+PARSE_PORTS_ANNOTATE_SYSTEM = """Your task is to annotate the FUNCTION of hardware I/O ports. You are \
+given a module's VHDL source and the AUTHORITATIVE list of its entity ports (name, direction, \
+type), already extracted from the RTL. That list is ground truth: annotate every port, add \
+none, drop none, reproduce names verbatim.
+For each port infer a concise function (<= 12 words) from its name, in-source comments, and \
+usage. If a port's purpose is not determinable, use "unclear from RTL".
+Output a JSON object of exactly this shape, one entry per provided port:
+{"ports": [{"name": "<verbatim>", "function": "<concise>"}]}
+JSON only. No prose."""
 
-RTL_PORT_PARSER_SYSTEM = """You annotate the I/O PORTS of one hardware module for security-asset \
-analysis. You are given the module's RTL and a COMPLETE list of its ports (extracted \
-deterministically). Your job is to describe each port's FUNCTION -- not to find ports.
+PARSE_SIGNALS_ANNOTATE_SYSTEM = """Your task is to annotate internal design elements. You are given a \
+module's VHDL source and the AUTHORITATIVE list of its internal signals (name, type), already \
+extracted from the RTL. That list is ground truth: annotate every element, add none, drop \
+none, reproduce names verbatim.
+For each element infer, from the source: kind ("register" if it holds state across clock \
+edges / is assigned in a clocked process, otherwise "signal") and a concise function \
+(<= 12 words). If not determinable, use kind "signal" and function "unclear from RTL".
+Output a JSON object of exactly this shape, one entry per provided element:
+{"signals": [{"name": "<verbatim>", "kind": "register|signal", "function": "<concise>"}]}
+JSON only. No prose."""
 
-Rules:
-- Return EXACTLY one entry per port in the given list, same names, same order. Never add, \
-remove, rename, or merge ports.
-- For each: state its role from the RTL (what it carries/controls), and whether it plausibly \
-carries or gates sensitive data, privilege, or control state. If the RTL doesn't say, write \
-"function unclear from RTL". Do not invent.
-Return ONLY a JSON array: {"name","dir","type","function"} -- no prose, no fences."""
 
-RTL_SIGNAL_PARSER_SYSTEM = """You annotate the INTERNAL SIGNALS/REGISTERS of one hardware module \
-for security-asset analysis. You are given the module's RTL and a COMPLETE list of its internal \
-signals (extracted deterministically). Your job is to describe each signal's FUNCTION -- not to \
-find signals.
+# ===================== Asset generation  =====================
 
-Rules:
-- Return EXACTLY one entry per signal in the given list, same names, same order. Never add, \
-remove, rename, or merge signals.
-- For each: is it combinational or registered state; what does it hold; does it plausibly store \
-or transport sensitive data, keys/entropy, control/config, or privilege/mode state. If unclear \
-from RTL, write "function unclear from RTL". Do not invent.
-Return ONLY a JSON array: {"name","kind","function"} where "kind" is exactly one of
-"registered" or "combinational". Do NOT emit "type" -- it is supplied separately and must
-not be modified."""
+ASSET_PRIMARY_CORE = """Your task: identify the PRIMARY SECURITY ASSETS in ONE hardware IP \
+module for pre-silicon security verification, following the IEEE P3164 Conceptual-and-Structural \
+Analysis (CSA).
 
-BATCH_SYSTEM = BATCH_SYSTEM_V3     # current default
-
-# --- Asset Generation: primary assets (CSA conceptual -> structural) ---
-# Plain string, single braces (no f-string: avoids the V2 brace/interp bug class).
-# Compose ICL at runtime by CONCATENATION in the notebook:
-#   ASSET_PRIMARY_SYSTEM = _ASSET_PRIMARY_CORE + "\n\n" + ICL_ASSET_EXAMPLES
-
-_ASSET_PRIMARY_CORE = """You are the asset-generation agent in a pre-silicon \
-security-verification flow. You identify the SECURITY ASSETS of ONE hardware IP module, \
-following the IEEE P3164 Conceptual-and-Structural Analysis (CSA) method.
-
-Inputs:
-(1) TECHNICAL SUMMARY -- SoC-context spec summary of the module (may state \
-"not specified in retrieved spec"; do not fill such gaps from general knowledge).
-(2) PARSED I/O PORTS and (3) PARSED INTERNAL SIGNALS -- together these form the CLOSED SET \
-of design elements. Every asset you emit MUST bind to exactly one element from this set. \
-Never invent, rename, or merge names.
+INPUTS (in the user message):
+(1) TECHNICAL SUMMARY -- SoC-context spec summary (may say "not specified in retrieved spec"; \
+never fill such gaps from general knowledge).
+(2) PARSED I/O PORTS and (3) PARSED INTERNAL SIGNALS -- each is a JSON object with fields \
+including entity, name, direction(dir), type, function (signals also have kind). TOGETHER they are the CLOSED \
+SET of design elements. Every asset MUST bind to exactly one element from this set by its exact \
+"name". Ports AND internal signals/registers are equally eligible. Never invent, rename, split, \
+or merge a name; copy record-field names verbatim including the dot (e.g. "ctrl.buf_req", \
+"host_req_i.stb").
 (4) RTL -- ground truth for what each element does.
 
-A security asset is any hardware component or data element whose protection is essential \
-to preserve confidentiality, integrity, or availability (CIA).
+DEFINITIONS:
+- A security asset is a design element (or the data it holds/derives) whose Confidentiality, \
+Integrity, or Availability (CIA) must be protected because its compromise weakens the security \
+of the module or the wider SoC.
+- Conceptual asset: high-level data or system state tied to a use-case flow that carries a CIA \
+objective.
+- PRIMARY (structural) asset: a concrete closed-set element that STORES, CARRIES, GENERATES, or \
+GATES a conceptual asset. (Secondary/influencing signals are produced by a later stage -- do NOT \
+emit them here.)
 
-STEP 1 -- CONCEPTUAL ASSETS (reason internally; do not output this step). A conceptual \
-asset is high-level data or system state tied to a use-case flow that carries a CIA \
-objective. Apply the rubric to the module:
- (C) Is there information -- input or internally generated -- that an integrator may deem \
-secret, or that could leak/expose confidential material?
- (I) Is there state or configuration that must stay immutable during certain \
-operations/modes, whose modification would harm the integrator?
- (A) Is there any element that, if made unavailable, would prohibit correct operation of \
-the IP or IC (denial of service at integration)?
- (U) Are there privileged modes, overrides, bypass, or injection paths that could make the \
-IP produce incorrect output under normal-looking operation?
-An element answering "No" to all four is NOT an asset.
+METHOD:
+STEP 1 -- CONCEPTUAL ASSETS (reason internally; do NOT output this step). Apply the rubric to \
+the module's use cases:
+ (C) Confidentiality: is there information -- input or internally generated -- an integrator may \
+deem secret, or that could leak/expose confidential material? Genuine secrets are keys, seeds, \
+entropy/random state, or private plaintext. A plain data/address/control bus with no secret is \
+NOT confidential -- evaluate it under (I)/(A) instead.
+ (I) Integrity: are there state or configuration settings that must stay immutable during \
+certain operations/modes, whose modification would harm the integrator?
+ (A) Availability: is there any element that, if made unavailable or manipulated, would prohibit \
+correct operation of the IP or IC (denial of service at integration)?
+ (U) Undermine: are there privileged modes, overrides, bypass, or injection paths that could \
+make the IP produce incorrect output under normal-looking operation?
+An element is an asset iff at least one of C/I/A/U is "yes" with a reason grounded in the summary \
+or RTL. An element answering "no" to all four is NOT an asset; make such non-asset decisions \
+explicitly (internally).
 
-STEP 2 -- STRUCTURAL (PRIMARY) ASSETS. Map each conceptual asset to the concrete design \
-element(s) that store, carry, generate, or gate it -- chosen ONLY from the closed set \
-(ports AND internal signals/registers are both eligible). A conceptual asset may map to \
-SEVERAL elements; emit one object per element. If no element in the closed set supports a \
-conceptual asset, omit it -- never fabricate.
+STEP 2 -- STRUCTURAL (PRIMARY) ASSETS. Map each conceptual asset to the concrete closed-set \
+element(s) that store, carry, generate, or gate it. A conceptual asset may fan out to SEVERAL \
+elements -- emit one object per element. If NO closed-set element supports a conceptual asset, \
+OMIT it -- never fabricate an element.
 
-Constraints:
-- "Entity" is the VHDL entity that declares the element (a file may contain several \
-entities; use the correct one, not the file name).
-- Global clock/reset and pure boilerplate are NOT assets unless clock/reset control is the \
-module's function.
-- "Security Objective" is MANDATORY: exactly one of "Confidentiality", "Integrity", \
-"Availability" -- the dominant objective. Fold (U) findings into Integrity or \
-Availability. Mention non-dominant objectives inside Justification if relevant.
-- "Functionality" states what the element does/carries (from RTL and summary). \
-"Justification" states why its compromise violates the objective -- every asset must \
-carry explicit reasoning.
-- Bias toward COVERAGE: a downstream refinement stage removes false positives, but a \
-missed asset here is unrecoverable. When a plausible CIA case exists, include it.
-- An asset may be a SUB-ELEMENT of a closed-set element: a field of a record \
-signal/port, or a bit-range/index of an array. When distinct conceptual assets live \
-inside one parsed element (e.g. separate fields of a VHDL record, or different regions \
-of an array), emit ONE object PER sub-element and name each by its path: \
-"<element>.<field>" for a record field, "<element>(<range>)" for an array range. \
-The base "<element>" before the dot/paren MUST be a name from the closed set. \
-Never emit two objects with the same "Asset RTL"; if two conceptual assets would \
-collapse to the same name, you have under-specified one of them -- qualify it to its \
-field or range instead.
+RULES:
+- "Asset RTL" MUST be the exact "name" of one element from the provided ports/signals. If an \
+idea cannot bind to a real element, drop it.
+- "Entity" MUST be copied verbatim from that element's "entity" field.
+- "Security Objective" is MANDATORY: exactly ONE of "Confidentiality", "Integrity", \
+"Availability" -- the dominant objective. Fold (U) findings into Integrity or Availability. Note \
+any non-dominant objective inside the Justification.
+- Global clock/reset ports (e.g. clk_i, rstn_i) and pure boilerplate are NOT assets unless \
+clock/reset control is the module's actual function.
+- Ground "Functionality" (what the element does/carries) and "Justification" (why its compromise \
+violates the chosen objective) in the summary or RTL only; do not add outside knowledge or \
+assess exploitability. Every asset carries explicit reasoning.
 
-OUTPUT CONTRACT (strict): return ONLY a raw JSON array -- no markdown fences, no prose. \
-One object per primary asset, each with EXACTLY these keys:
-{"Asset Name": "<short descriptive title>", "Asset RTL": "<element name from closed set>", \
-"Entity": "<declaring entity>", "Functionality": "<what it does>", \
-"Security Objective": "Confidentiality"|"Integrity"|"Availability", \
-"Justification": "<why it is an asset>"}"""
+OUTPUT CONTRACT (strict): return ONE JSON object and nothing else -- no markdown, no code fences, \
+no prose:
+{"IP": "<module name>",
+ "Assets": [
+   {"Asset Name": "<short descriptive title>",
+    "Asset RTL": "<element name from the closed set>",
+    "Entity": "<the element's entity, verbatim>",
+    "Functionality": "<what it does/carries>",
+    "Security Objective": "Confidentiality" | "Integrity" | "Availability",
+    "Justification": "<why its compromise violates the objective>"}
+ ]}
+If the module has no assets, return {"IP": "<module name>", "Assets": []}."""
 
+# ICL splice (LAsset Alg.1 line 5: LLMASSET(..., ICLASSET)). Concatenation only --
+# the case studies are full of literal JSON braces, so never route them through
+# an f-string. verify_icl.py machine-checks the examples against this contract.
+from icl_asset_examples import ICL_ASSET_EXAMPLES
 
-# --- Asset Generation: secondary assets (SAIF dependency expansion) ---
-ASSET_SECONDARY_SYSTEM = """You identify SECONDARY security assets for ONE hardware IP \
-module, given its already-identified PRIMARY assets. Per the SAIF definition, a secondary \
-asset is a design element that interacts with or facilitates the exposure of a primary \
-asset: it stores, transports, derives, gates, or influences the primary, so its compromise \
-can violate the primary's security objective even though it is not the direct target.
-
-Inputs: the PRIMARY asset list (Asset RTL, Entity, Security Objective, Functionality); the \
-module's PARSED I/O PORTS and PARSED INTERNAL SIGNALS -- together the CLOSED SET you may \
-select from; and the RTL.
-
-For EACH primary asset, select every element with a genuine security relationship to it, \
-in BOTH directions:
-- fan-out CARRIERS: elements that copy, buffer, derive from, or transport the primary's \
-data (full or partial);
-- fan-in INFLUENCERS: elements that write, enable, select, gate, or otherwise control the \
-primary or its security objective.
-Rules: select ONLY from the closed set; ports and internal signals are both eligible; an \
-element may be secondary to multiple primaries; another primary asset may itself appear as \
-a secondary; never list a primary as its own secondary; exclude elements with no security \
-relationship (an empty list is valid). Use the RTL as ground truth for the connectivity -- \
-do not assert relationships the RTL does not show.
-
-OUTPUT CONTRACT (strict): return ONLY a raw JSON array -- no markdown fences, no prose. \
-Exactly one object per input primary asset, IN THE SAME ORDER, each with EXACTLY these keys:
-{"Asset RTL": "<primary's Asset RTL, verbatim>", "Secondary Assets": ["<name>", ...]}"""
+ASSET_PRIMARY_SYSTEM = ASSET_PRIMARY_CORE + "\n\n" + ICL_ASSET_EXAMPLES
