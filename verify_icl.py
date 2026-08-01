@@ -27,22 +27,31 @@ SIGNAL_KEYS = {"entity", "name", "type", "kind", "function"}
 ASSET_KEYS  = {"Asset Name", "Asset RTL", "Entity", "Functionality",
                "Security Objective", "Justification"}
 OBJECTIVES  = {"Confidentiality", "Integrity", "Availability"}
-DIRS        = {"in", "out", "inout", "buffer"}
+# VHDL-derived examples say in/out; Verilog-derived ones say input/output.
+DIRS        = {"in", "out", "inout", "buffer", "input", "output"}
 KINDS       = {"register", "signal"}
+# Examples differ in how they head the ports block; accept either spelling.
+PORT_MARKERS = ("PARSED PORTS:", "PARSED I/O PORTS:")
 
 
 def _block(text, marker):
-    """Parse the JSON value ('[' or '{') that starts right after `marker`."""
-    i = text.index(marker) + len(marker)
-    starts = [x for x in (text.find("[", i), text.find("{", i)) if x != -1]
-    val, _ = json.JSONDecoder().raw_decode(text[min(starts):])
-    return val
+    """Parse the JSON value ('[' or '{') that starts right after `marker`.
+
+    `marker` may be a tuple of acceptable spellings; the first one present wins.
+    """
+    for m in ((marker,) if isinstance(marker, str) else marker):
+        if m in text:
+            i = text.index(m) + len(m)
+            starts = [x for x in (text.find("[", i), text.find("{", i)) if x != -1]
+            val, _ = json.JSONDecoder().raw_decode(text[min(starts):])
+            return val
+    raise ValueError(f"none of {marker} found")
 
 
 def check(name, text, errs):
     e = lambda msg: errs.append(f"[{name}] {msg}")
     try:
-        ports   = _block(text, "PARSED PORTS:")
+        ports   = _block(text, PORT_MARKERS)
         signals = _block(text, "PARSED INTERNAL SIGNALS:")
         out     = _block(text, "EMITTED OUTPUT:")
     except (ValueError, json.JSONDecodeError) as ex:
@@ -60,12 +69,17 @@ def check(name, text, errs):
         elif s["kind"] not in KINDS:
             e(f"signal {s['name']}: bad kind '{s['kind']}'")
 
-    closed = {}                                   # name -> declaring entity
+    # Keyed by (entity, name), matching validate_primary() in the notebook. A bare-name
+    # map would collapse legitimate duplicates: a multi-entity file reuses names across
+    # its entities (tiny_aes has clk/key/state_in/state_out in several, neorv32_trng has
+    # clk_i in all three), and keying on the name alone reports false ambiguity and false
+    # Entity mismatches.
+    closed = {}                                   # (entity, name) -> True
+    names = {}                                    # name -> {entities}
     for el in ports + signals:
-        nm = el.get("name")
-        if nm in closed and closed[nm] != el.get("entity"):
-            e(f"name '{nm}' appears under two entities -- ambiguous binding")
-        closed[nm] = el.get("entity")
+        nm, ent = el.get("name"), el.get("entity")
+        closed[(ent, nm)] = True
+        names.setdefault(nm, set()).add(ent)
 
     if not (isinstance(out, dict) and set(out) == {"IP", "Assets"}):
         e("EMITTED OUTPUT is not one object with exactly the keys IP+Assets")
@@ -80,11 +94,11 @@ def check(name, text, errs):
         if set(a) != ASSET_KEYS:
             e(f"asset '{a.get('Asset Name')}': keys {sorted(a)} != {sorted(ASSET_KEYS)}")
             continue
-        r = a["Asset RTL"]
-        if r not in closed:
+        r, ent = a["Asset RTL"], a["Entity"]
+        if r not in names:
             e(f"ungrounded Asset RTL '{r}' (not in closed set)")
-        elif a["Entity"] != closed[r]:
-            e(f"Entity mismatch for '{r}': '{a['Entity']}' != '{closed[r]}'")
+        elif (ent, r) not in closed:
+            e(f"Entity mismatch for '{r}': '{ent}' not in {sorted(names[r])}")
         if a["Security Objective"] not in OBJECTIVES:
             e(f"bad Security Objective for '{r}': '{a['Security Objective']}'")
         for k in ASSET_KEYS:

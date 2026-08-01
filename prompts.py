@@ -166,7 +166,7 @@ JSON only. No prose."""
 
 # ===================== Asset generation  =====================
 
-ASSET_PRIMARY_CORE = """Your task: identify the PRIMARY SECURITY ASSETS in ONE hardware IP \
+V0 = """Your task: identify the PRIMARY SECURITY ASSETS in ONE hardware IP \
 module for pre-silicon security verification, following the IEEE P3164 Conceptual-and-Structural \
 Analysis (CSA).
 
@@ -239,9 +239,17 @@ no prose:
  ]}
 If the module has no assets, return {"IP": "<module name>", "Assets": []}."""
 
-# ICL splice (LAsset Alg.1 line 5: LLMASSET(..., ICLASSET)). Concatenation only --
-# the case studies are full of literal JSON braces, so never route them through
-# an f-string. verify_icl.py machine-checks the examples against this contract.
-from icl_asset_examples import ICL_ASSET_EXAMPLES
+ASSET_PRIMARY_CORE = V0
 
-ASSET_PRIMARY_SYSTEM = ASSET_PRIMARY_CORE + "\n\n" + ICL_ASSET_EXAMPLES
+# The ICL splice (LAsset Alg.1 line 5: LLMASSET(..., ICLASSET)) is deliberately NOT done
+# here. It belongs to the version registry in the notebook's Stage B cell, which picks the
+# (core, examples) pair from VERSION:
+#     ASSET_PRIMARY_SYSTEM = ASSET_PRIMARY_CORE + "\n\n" + <the ICL block VERSION selects>
+#
+# A module-level ASSET_PRIMARY_SYSTEM used to live here, pinned to icl_asset_examples (=v1).
+# Nothing imported it, but anything that did would have silently received v1 regardless of
+# VERSION -- in an ablation that is a result-invalidating trap, not an inconvenience. Its
+# removal also lets prompts.py be imported without icl_asset_examples.py present.
+#
+# Splice by CONCATENATION, never an f-string: the case studies are full of literal JSON
+# braces. verify_icl.py machine-checks the examples against the output contract above.

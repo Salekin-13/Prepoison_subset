@@ -20,6 +20,53 @@ _UNIT_START = re.compile(r"\b(?:architecture\s+\w+\s+of\s+\w+\s+is|entity\s+\w+\
 _RECORD    = re.compile(r"\btype\s+(\w+)\s+is\s+record\b(.*?)\bend\s+record\b", re.IGNORECASE | re.DOTALL)
 _FIELD     = re.compile(r"([\w\s,]+?)\s*:\s*([^;]+?)\s*;", re.IGNORECASE)
 
+def strip_comments(text, vhdl=True):
+    """Remove comments and blank lines from RTL destined for an LLM prompt.
+
+    Distinct from stage_a._mask_comments(), which BLANKS comments to spaces so that
+    regex offsets stay valid for parsing. This one actually deletes them and closes
+    up the blank lines, for the text handed to the asset-generation stage.
+
+    Do NOT use this on the input to the port/signal ANNOTATION stage:
+    PARSE_PORTS_ANNOTATE_SYSTEM asks the model to infer each port's function "from its
+    name, in-source comments, and usage", so stripping there would remove a signal it
+    is told to rely on. The asset stage has no such dependency -- it takes semantics
+    from the technical summary and from the parsed elements' `function` fields.
+
+    String-literal aware: a `--` or `//` inside a double-quoted literal is kept.
+    """
+    out = []
+    in_block = False
+    for line in text.splitlines():
+        res, i, n, quote = [], 0, len(line), False
+        while i < n:
+            c = line[i]
+            nxt = line[i + 1] if i + 1 < n else ""
+            if in_block:
+                if c == "*" and nxt == "/":
+                    in_block = False; i += 2
+                    continue
+                i += 1
+                continue
+            if c == '"':
+                quote = not quote
+                res.append(c); i += 1
+                continue
+            if not quote:
+                if vhdl and c == "-" and nxt == "-":
+                    break
+                if not vhdl and c == "/" and nxt == "/":
+                    break
+                if not vhdl and c == "/" and nxt == "*":
+                    in_block = True; i += 2
+                    continue
+            res.append(c); i += 1
+        s = "".join(res).rstrip()
+        if s:
+            out.append(s)
+    return "\n".join(out)
+
+
 def _split_names(blob):
     return [n.strip() for n in blob.split(",") if n.strip()]
 
