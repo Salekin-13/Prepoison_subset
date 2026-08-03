@@ -207,18 +207,61 @@ exist.** The signal-recall loss has to be addressed by instruction (A-02), not b
 This also means v02 will face the same constraint: its 24 example assets are likewise 100%
 ports.
 
-### A-02 · Core prompt — re-legitimise internal state
-**Next arm.** Baseline is now **v01**, not v0.
+### A-02 · Core prompt — role, not location
+**Next arm.** Version `v01c2`, prompt sha `8df77c38fab9`. Baseline **v01**, not v0.
+`ASSET_PRIMARY_CORE_V2` = `ASSET_PRIMARY_CORE` plus one insertion in STEP 2 and nothing
+else — built by substitution with an assert, so "identical apart from the insertion" is
+guaranteed by construction rather than by care. ICL block held at v01. Diff: 0 lines
+removed, 11 added.
 
-A-01 traded signal recall for port recall, and A-01x showed no example can fix it: every
-Calgary manual asset list is 75–100% ports, so a composition-matched example does not exist.
-The correction has to be instruction.
+**Why instruction and not a better example.** A-01x: every Calgary manual asset list is
+75–100% ports, so a composition-matched example does not exist in the labelled corpus.
+Instruction is the only channel left.
 
-Phrase it without any count, proportion or threshold — a numeric hint becomes a quota
-however it is hedged (an earlier "~20% of the closed set" suggestion cost 7 of 17 recall
-losses on `cpu_cp_cfu`, whose ground-truth density is 38%).
+**Why the existing wording was not enough.** `ASSET_PRIMARY_CORE` already says *"Ports AND
+internal signals/registers are equally eligible"* and *"may fan out to SEVERAL elements"*.
+Both correct, both ignored — 18 port-bound demonstrations beat two correct sentences. So the
+insertion is **procedural** (a question to answer per conceptual asset) rather than a third
+restatement of eligibility, and it names the examples as the source of the skew so the
+instruction can reach past them.
 
-Expect: —
+**The failure is location, not concept.** v01's misses line up role-for-role against its own
+example assets:
+
+| v01 misses (internal) | role | example asset, a **port** |
+|---|---|---|
+| `div.start`, `mul.start`, `fifo.re` | operation enable / start | `per_en`, `p1_dout_en` |
+| `ctrl.rs1_is_signed`, `ctrl.rs2_is_signed` | operand / mode select | `p1_sel`, `per_we` |
+| `cache_o.cmd_dir` | direction control | `p1_dout_en` — also direction control |
+| `alu_add`, `alu_res` | computed result | `state_out` |
+| `a_req`, `b_req`, `keeper.halt` | request gate | `per_en` |
+
+The GPIO example's thesis is that direction control is an asset, and v01 then missed an
+internal direction signal in all three repeats.
+
+The role list in the insertion is tied to roles the examples already demonstrate, not a free
+checklist of signal types — a free-standing checklist became a generator once before (`cpu`
+emitted `ctrl.*` eleven times). No count, proportion or threshold appears.
+
+Expect:
+
+1. **Signal recall recovers toward v0's 0.771**, from v01's 0.573. Specifically the four
+   regressions — `a_req`, `b_req`, `fifo.re`, `cnt_timeout` — should return, since v0 found
+   every one of them in every repeat.
+2. **Port recall holds near v01's 0.589.** This is a guard, not a prediction of gain.
+3. Emissions rise modestly from 235; precision flat to slightly down from 0.288.
+
+Decision rule, fixed in advance:
+
+- signal up **and** port holds → the instruction works; `v01c2` becomes the new baseline.
+- signal up **and** port falls by a comparable amount → oscillation. The instruction is
+  displacing rather than adding, more instruction will not help, and the example channel
+  (v03, the P3164 §3.2.4 SRAM controller) becomes the only remaining lever.
+- signal flat → a demonstration cannot be overridden by instruction at all. That is itself a
+  finding about ICL in this pipeline, and it makes v03 the priority.
+
+Read `paired_classes()` output, not aggregate recall — A-01 is the proof that the aggregate
+hides exactly this kind of two-sided movement.
 
 Got: —
 

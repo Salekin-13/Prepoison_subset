@@ -241,6 +241,65 @@ If the module has no assets, return {"IP": "<module name>", "Assets": []}."""
 
 ASSET_PRIMARY_CORE = V0
 
+
+# ===================== Asset generation -- core variant V2 (arm A-02) =====================
+# V2 is V0 plus ONE insertion, and nothing else. It is built by substitution rather than by
+# copy-paste so that "identical except for the insertion" is guaranteed by construction; the
+# assert below fails loudly if the anchor ever stops matching.
+#
+# WHY. A-01 (v01) raised port recall +0.181 [+0.048, +0.302] and dropped signal recall
+# -0.157 [-0.229, -0.086], the latter unanimously -- not one module improved. Its examples
+# bind 18 of 18 assets to entity ports, and that demonstration overrode the core prompt,
+# which ALREADY said "Ports AND internal signals/registers are equally eligible" and "may
+# fan out to SEVERAL elements". Both statements are correct and both were ignored, so a
+# third restatement of eligibility would not help. The insertion is therefore PROCEDURAL --
+# a question the model must answer per conceptual asset -- and it names the examples as the
+# source of the skew so the instruction can reach past them.
+#
+# The failure is location, not concept: v01 missed div.start / mul.start / fifo.re (operation
+# enables) while its examples label per_en and p1_dout_en (also enables, but ports); it missed
+# ctrl.rs1_is_signed (a select) while labelling p1_sel; and it missed cache_o.cmd_dir -- an
+# internal DIRECTION signal -- although the GPIO example's whole thesis is that direction
+# control is an asset. Same roles, different location.
+#
+# The role list is tied to roles the examples already demonstrate rather than being a free
+# checklist of "signal types to look for": an earlier free-standing checklist became a
+# generator (cpu emitted ctrl.* eleven times). No count, proportion or threshold appears --
+# a numeric hint becomes a hard quota however it is hedged.
+
+_STEP2_ANCHOR = ("If NO closed-set element supports a conceptual asset, "
+                 "OMIT it -- never fabricate an element.")
+
+_ROLE_NOT_LOCATION = """
+
+STEP 2 (continued) -- ROLE, NOT LOCATION. P3164 3.1.2 asks for the RTL that PRODUCES a \
+conceptual asset, that STORES it, and that TRANSPORTS it. Those are usually different \
+elements, so one conceptual asset normally maps to several: emit one object per element.
+
+The worked examples below bind most of their assets to entity ports, because in a small \
+standalone IP the interface is where these roles live. In a larger module the SAME roles are \
+internal. An operation enable or start, a direction or mode select, a computed result, a \
+busy/ready/error condition -- each is a port in one design and a signal or register in \
+another. Judge the role, not where the element is declared.
+
+For each conceptual asset ask BOTH:
+ - which port carries it across the boundary?
+ - which internal signal or register produces, holds, or gates it inside the module?
+Emit an object for each that exists. When a module computes a condition internally and never \
+brings it to a port, that internal element is the only structural asset for it -- omit it and \
+the asset is lost.
+
+P3164's own conceptual assets are mostly registers rather than ports: Config Regs, Status \
+Regs and Key Reg for the AES engine (3.2.3); Memory Array, Data-In Register, Output Register \
+and Address Register for the SRAM controller (3.2.4), whose structural assets are the \
+internal signals ZBT_addr and ZBT_addr2."""
+
+ASSET_PRIMARY_CORE_V2 = V0.replace(_STEP2_ANCHOR, _STEP2_ANCHOR + _ROLE_NOT_LOCATION)
+assert ASSET_PRIMARY_CORE_V2 != V0, "STEP 2 anchor no longer matches -- V2 would equal V0"
+assert V0.replace(_STEP2_ANCHOR, "") == ASSET_PRIMARY_CORE_V2.replace(
+    _STEP2_ANCHOR + _ROLE_NOT_LOCATION, ""), "V2 differs from V0 outside the insertion"
+
+
 # The ICL splice (LAsset Alg.1 line 5: LLMASSET(..., ICLASSET)) is deliberately NOT done
 # here. It belongs to the version registry in the notebook's Stage B cell, which picks the
 # (core, examples) pair from VERSION:
