@@ -26,69 +26,132 @@ GT_DIR = Path("ground_truth")
 
 # --------------------------------------------------------------------- load ---
 
-def load_refs(gt_dir=GT_DIR) -> dict:
-    """-> {"gt": ..., "paper": ..., "paper_refined": ...}; each {module: {element: objective}}"""
+def load_refs(gt_dir=GT_DIR, parsed_dir="parsed_tuning18") -> dict:
+    """-> {"gt": ..., "paper": ..., "paper_refined": ...}; each {module: [(element, objective)]}
+
+    A LIST, not a dict keyed by element name. Two entities of one file can hold assets with
+    the same name -- neorv32_bus has `state` in both neorv32_bus_switch (arbiter FSM) and
+    neorv32_bus_amo_rvs (reservation FSM) -- and a name-keyed dict silently kept one.
+
+    Repeats are capped by how many entities actually declare the name; see _name_caps.
+    """
+    caps = _name_caps(parsed_dir)
+
     def read(name):
         p = Path(gt_dir) / name
         if not p.exists():
             return {}
         d = json.loads(p.read_text(encoding="utf-8"))
-        return {m: {a["element"]: a.get("objective", "")
-                    for a in v["assets"] if a.get("element")}
-                for m, v in d["modules"].items()}
+        out = {}
+        for m, v in d["modules"].items():
+            seen, keep = {}, []
+            for a in v["assets"]:
+                e = a.get("element")
+                if not e:
+                    continue
+                cap = caps.get(m, {}).get(e, 1) if caps.get(m) else None
+                seen[e] = seen.get(e, 0) + 1
+                if cap is None or seen[e] <= cap:
+                    keep.append((e, a.get("objective", "")))
+            out[m] = keep
+        return out
 
     return {"gt": read("manual_gt_neorv32.json"),
             "paper": read("lasset_initial.json"),
             "paper_refined": read("lasset_refined.json")}
 
 
-def load_run(assets_dir) -> dict:
-    """-> {module: {element: objective}} from a directory of <module>.json files.
+def _name_caps(parsed_dir) -> dict:
+    """{module: {name: how many entities declare it}}.
 
-    Files whose name starts with '_' are bookkeeping (e.g. _run_meta.json) and are
-    skipped, so they cannot be picked up as a module with zero assets.
+    Reference multiplicity is capped by this. A name may legitimately appear twice when two
+    entities of one file each declare it -- neorv32_bus has `state` in both
+    neorv32_bus_switch (arbiter FSM) and neorv32_bus_amo_rvs (reservation FSM), written
+    `state/state` in one cell. But neorv32_twi lists `twi_sda_i` in two separate rows while
+    only one entity declares it; that is annotation redundancy, and counting it twice would
+    make a ground-truth element permanently unreachable and depress recall for good.
+
+    Returns {} when the parsed sets are unavailable, in which case no capping is applied.
+    """
+    caps = {}
+    try:
+        for f in sorted(Path(parsed_dir).glob("*.json")):
+            d = json.loads(f.read_text(encoding="utf-8"))
+            per = {}
+            for e in d.get("ports", []) + d.get("signals", []):
+                per.setdefault(e["name"], set()).add(e["entity"])
+            caps[f.stem] = {k: len(v) for k, v in per.items()}
+    except Exception:
+        return {}
+    return caps
+
+
+def load_run(assets_dir) -> dict:
+    """-> {module: [(entity, name, objective)]} from a directory of <module>.json files.
+
+    Also a list, and carrying the entity, for the same reason as load_refs: a run that
+    correctly emitted both `state` assets of neorv32_bus had one of them overwritten by a
+    name-keyed dict, so the model was scored below what it actually produced.
+
+    Files whose name starts with '_' are bookkeeping (e.g. _run_meta.json) and are skipped,
+    so they cannot be picked up as a module with zero assets.
     """
     out = {}
     for f in sorted(Path(assets_dir).glob("*.json")):
         if f.name.startswith("_"):
             continue
         data = json.loads(f.read_text(encoding="utf-8"))
-        out[f.stem] = {a["Asset RTL"]: a.get("Security Objective", "")
-                       for a in data.get("Assets", []) if a.get("Asset RTL")}
+        out[f.stem] = [(a.get("Entity", ""), a["Asset RTL"], a.get("Security Objective", ""))
+                       for a in data.get("Assets", []) if a.get("Asset RTL")]
     return out
 
 
 # -------------------------------------------------------------------- score ---
 
-def _hit(pred_names, ref_name, strict=True):
-    """The predicted name matching ref_name, or None.
+def _hit_idx(cand, ref_name, strict=True):
+    """cand = {prediction index: name}. Returns the index that matches ref_name, or None.
+
+    Index-based rather than name-based so that two predictions sharing a name stay distinct
+    and each can be consumed by a different reference entry.
 
     Exact match first. Then the ONE legitimate near-match: the references name a whole
     record in some places and a single field in others, so `ctrl` <-> `ctrl.enable` must
     match in either direction.
 
-    What strict mode refuses is FIELD-TO-FIELD matching. The old rule also accepted any
-    two dotted names sharing a base, so a prediction of `fifo.avail` was credited against
-    a ground-truth `fifo.re` -- two different fields, both separately in the reference.
-    That silently rewards spraying record fields, and it inflated recall unevenly across
-    prompt versions (v0 by 4 TP, v1 by 2), which biases exactly the comparison an ablation
-    is trying to make. strict=False restores the old behaviour for back-comparison only.
+    What strict mode refuses is FIELD-TO-FIELD matching. The old rule also accepted any two
+    dotted names sharing a base, so a prediction of `fifo.avail` was credited against a
+    ground-truth `fifo.re` -- two different fields, both separately in the reference. That
+    silently rewards spraying record fields, and it inflated recall unevenly across prompt
+    versions (v0 by 4 TP, v1 by 2), biasing exactly the comparison an ablation is trying to
+    make. strict=False restores the old behaviour for back-comparison only.
 
-    Candidates are sorted before scanning: iterating a set would make the choice depend on
-    hash order, and two runs of the same data could then report different scores.
+    Candidates are scanned in (name, index) order: iterating a set would make the choice
+    depend on hash order, and two runs of the same data could then report different scores.
     """
-    if ref_name in pred_names:
-        return ref_name
+    order = sorted(cand, key=lambda i: (cand[i], i))
+    for i in order:
+        if cand[i] == ref_name:
+            return i
     rb = ref_name.split(".")[0]
     dotted = "." in ref_name
-    for p in sorted(pred_names):
+    for i in order:
+        p = cand[i]
         if (not dotted and p.split(".")[0] == ref_name) or (dotted and p == rb):
-            return p
+            return i
     if not strict:
-        for p in sorted(pred_names):
-            if p.split(".")[0] == rb:
-                return p
+        for i in order:
+            if cand[i].split(".")[0] == rb:
+                return i
     return None
+
+
+def _as_run(d: dict) -> dict:
+    """Normalise to run shape [(entity, name, objective)].
+
+    Accepts reference shape [(name, objective)] too, so a reference set can be scored as if
+    it were a run -- which is exactly what the 'LAsset paper' baseline row does.
+    """
+    return {m: [x if len(x) == 3 else ("", x[0], x[1]) for x in v] for m, v in d.items()}
 
 
 def _obj(s):
@@ -99,7 +162,7 @@ def _obj(s):
 
 
 def score(run, reference: dict, strict: bool = True, only=None) -> dict:
-    """`run` is a directory path or a {module: {element: objective}} dict.
+    """`run` is a directory path or a {module: [(entity, name, objective)]} dict.
 
     Modules absent from the reference are skipped, not counted as false positives:
     the paper pruned boot_rom / fifo / package before generating any assets.
@@ -107,28 +170,33 @@ def score(run, reference: dict, strict: bool = True, only=None) -> dict:
     `only` restricts scoring to a set of module names. Pass it whenever comparing runs:
     if one version failed a module its totals cover a different denominator and the
     versions are not comparable. ablate() computes the intersection and passes it here.
+
+    Matching consumes each prediction at most once, by index, so N reference entries
+    sharing a name require N distinct predictions to all be credited.
     """
-    pred = run if isinstance(run, dict) else load_run(run)
+    pred = _as_run(run) if isinstance(run, dict) else load_run(run)
     per, skipped = {}, []
-    for mod, elems in sorted(pred.items()):
+    for mod, preds in sorted(pred.items()):
         if mod not in reference or (only is not None and mod not in only):
             skipped.append(mod)
             continue
         ref = reference[mod]
-        matched, obj_ok, obj_n = {}, 0, 0
-        for r in ref:
-            h = _hit(set(elems) - set(matched.values()), r, strict)
-            if h:
-                matched[r] = h
-                po, ro = _obj(elems[h]), _obj(ref[r])
-                if po and ro:
-                    obj_n += 1
-                    obj_ok += (po == ro)
-        tp = len(matched)
+        used, hit_ref, obj_ok, obj_n = set(), set(), 0, 0
+        for ri, (rname, robj) in enumerate(ref):
+            cand = {i: preds[i][1] for i in range(len(preds)) if i not in used}
+            pi = _hit_idx(cand, rname, strict)
+            if pi is None:
+                continue
+            used.add(pi)
+            hit_ref.add(ri)
+            po, ro = _obj(preds[pi][2]), _obj(robj)
+            if po and ro:
+                obj_n += 1
+                obj_ok += (po == ro)
         per[mod] = {
-            "ref": len(ref), "emit": len(elems), "tp": tp,
-            "fp": sorted(set(elems) - set(matched.values())),
-            "fn": sorted(set(ref) - set(matched)),
+            "ref": len(ref), "emit": len(preds), "tp": len(hit_ref),
+            "fp": sorted(preds[i][1] for i in range(len(preds)) if i not in used),
+            "fn": sorted(ref[ri][0] for ri in range(len(ref)) if ri not in hit_ref),
             "obj_ok": obj_ok, "obj_n": obj_n,
         }
 
@@ -250,6 +318,53 @@ def per_module(res: dict, key: str = "f1") -> dict:
     return out
 
 
+# --- element classes -----------------------------------------------------------
+# The A-00 error analysis found the failure is not "too many" or "too few" assets but the
+# wrong CLASS of element: 64% of misses were plain top-level ports while 82% of false
+# positives were internal signals. Aggregate recall hides that completely, so it prints for
+# every arm from here on.
+
+CLASSES = ("port", "signal", "signal-field", "port-field", "absent")
+
+
+def load_closed(parsed_dir="parsed_tuning18") -> dict:
+    """{module: {"port": {names}, "signal": {names}}} from the parsed closed sets."""
+    out = {}
+    for f in sorted(Path(parsed_dir).glob("*.json")):
+        d = json.loads(f.read_text(encoding="utf-8"))
+        out[f.stem] = {"port": {e["name"] for e in d.get("ports", [])},
+                       "signal": {e["name"] for e in d.get("signals", [])}}
+    return out
+
+
+def elem_class(mod, name, closed) -> str:
+    c = closed.get(mod)
+    if not c:
+        return "absent"
+    dot = "." in name
+    base = name.split(".")[0]
+    if name in c["port"] or (dot and base in c["port"]):
+        return "port-field" if dot else "port"
+    if name in c["signal"] or (dot and base in c["signal"]):
+        return "signal-field" if dot else "signal"
+    return "absent"
+
+
+def by_class(res: dict, reference: dict, closed: dict) -> dict:
+    """{class: {"ref": n, "tp": n, "fn": n, "fp": n}} for one scored run."""
+    acc = {k: {"ref": 0, "tp": 0, "fn": 0, "fp": 0} for k in CLASSES}
+    for mod, m in res["per_module"].items():
+        for name, _o in reference[mod]:
+            acc[elem_class(mod, name, closed)]["ref"] += 1
+        for name in m["fn"]:
+            acc[elem_class(mod, name, closed)]["fn"] += 1
+        for name in m["fp"]:
+            acc[elem_class(mod, name, closed)]["fp"] += 1
+    for k in acc:
+        acc[k]["tp"] = acc[k]["ref"] - acc[k]["fn"]
+    return acc
+
+
 def _mean(xs):
     xs = list(xs)
     return sum(xs) / len(xs) if xs else 0.0
@@ -264,7 +379,7 @@ def _sd(xs):
 
 
 def ablate(runs_by_version: dict, reference: dict, extra: dict = None,
-           strict: bool = True, title: str = "") -> dict:
+           strict: bool = True, title: str = "", closed: dict = None) -> dict:
     """One row per version: mean over repeats, +/- sample sd. Returns {version: [score,...]}.
 
     `extra` adds unrepeated reference rows (e.g. {"LAsset paper": paper_run}).
@@ -292,7 +407,47 @@ def ablate(runs_by_version: dict, reference: dict, extra: dict = None,
         r = score(run, reference, strict, only=mods)
         print(f"{label:12s} {1:2d} {r['emit']:5d} {r['tp']:4d} {r['fp']:4d} {r['fn']:4d} "
               f"{r['precision']:6.3f} {r['recall']:7.3f} {'':6s} {r['f1']:7.3f}")
+
+    if closed is None:
+        try:
+            closed = load_closed()
+        except Exception:
+            closed = None
+    if closed:
+        _class_block(out, reference, closed, extra, strict, mods)
     return out
+
+
+def _class_block(out, reference, closed, extra, strict, mods):
+    """Per-class recall and FP composition. Aggregate recall hides which class is failing."""
+    show = ("port", "signal", "signal-field")
+    print(f"\n  recall by element class          "
+          + "".join(f"{c:>13s}" for c in show))
+    for v, rs in out.items():
+        cs = [by_class(r, reference, closed) for r in rs]
+        cells = []
+        for c in show:
+            rec = [x[c]["tp"] / x[c]["ref"] if x[c]["ref"] else 0.0 for x in cs]
+            cells.append(f"{_mean(rec):8.3f}{'':5s}")
+        n = cs[0]
+        print(f"  {v:12s} (ref {'/'.join(str(n[c]['ref']) for c in show)})".ljust(35)
+              + "".join(cells))
+    for label, run in (extra or {}).items():
+        c1 = by_class(score(run, reference, strict, only=mods), reference, closed)
+        cells = "".join(f"{(c1[c]['tp']/c1[c]['ref'] if c1[c]['ref'] else 0):8.3f}{'':5s}"
+                        for c in show)
+        print(f"  {label:12s}".ljust(35) + cells)
+
+    print(f"\n  false positives by class         "
+          + "".join(f"{c:>13s}" for c in CLASSES[:4]))
+    for v, rs in out.items():
+        cs = [by_class(r, reference, closed) for r in rs]
+        cells = "".join(f"{_mean(x[c]['fp'] for x in cs):8.0f}{'':5s}" for c in CLASSES[:4])
+        print(f"  {v:12s}".ljust(35) + cells)
+    for label, run in (extra or {}).items():
+        c1 = by_class(score(run, reference, strict, only=mods), reference, closed)
+        cells = "".join(f"{c1[c]['fp']:8d}{'':5s}" for c in CLASSES[:4])
+        print(f"  {label:12s}".ljust(35) + cells)
 
 
 def paired(runs_by_version: dict, a: str, b: str, reference: dict, key: str = "f1",

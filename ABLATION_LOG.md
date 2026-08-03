@@ -103,11 +103,23 @@ One entry per arm. Fill `Expect:` before running.
 
 ### A-00 · Noise floor
 **Run first.** One version, `REPEATS` runs, nothing varied. Establishes the minimum
-detectable effect; every later arm is read against it.
+detectable effect; every later arm is read against it. Not a separate run — the first arm
+at `REPEATS = 3` produces it for free. Run as v0, 2026-08-03, prompt sha `e0d31754ca62`.
 
-Expect: —
+Expect: — (not recorded before the run; the first arm, before the habit was in place)
 
-Got: —
+Got: **sd 0.019 recall, 0.010 F1** (M-2; per-repeat recall 0.536 / 0.555 / 0.564).
+
+Three things follow.
+
+1. The instrument is precise. Aggregate recall is good to about ±0.03, so most planned arms
+   are measurable.
+2. **Repeats are not the binding constraint — modules are.** Repeat sd is 0.019, but the
+   paired CI is driven by variance *across the 15 modules* and runs about ±0.14 wide.
+   More repeats will not narrow it. Effects below roughly 0.10 paired recall will come back
+   inconclusive whatever we spend. Design arms expected to move things a lot.
+3. The failure is not "too many" or "too few" assets but the **wrong class of element** —
+   see §4. That was not visible in the aggregate and is now printed for every arm.
 
 ### A-01 · ICL construction
 Line 5 takes an `ICLasset` argument whose contents the paper never specifies. Four
@@ -161,18 +173,30 @@ Got: —
 
 ## 4. Results
 
-All M-1 unless stated. Scored against `gt` on the modules common to every run. `n` =
-repeats. Paste from `ablate()`.
+All **M-2** unless stated. Scored against `gt` on the 15 modules common to every run
+(ref = 111 elements). `n` = repeats. Paste from `ablate()`; never retype a number.
 
 | arm | version | n | emit | TP | FP | FN | P | recall | sd | F1 | sd |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| | | | | | | | | | | | |
+| A-00 | v0 | 3 | 205 | 61 | 143 | 50 | 0.300 | 0.553 | 0.019 | 0.389 | 0.010 |
+| — | *LAsset paper* | 1 | 137 | 101 | 36 | 10 | 0.737 | 0.910 | | 0.815 | |
 
-*LAsset paper*, its own line 5 on the same 15 modules — the target:
+**Recall by element class.** The single most useful row in this file. The paper is roughly
+uniform across classes; we are not. The entire gap is the module boundary.
 
-| | n | emit | TP | FP | FN | P | recall | F1 |
-|---|---|---|---|---|---|---|---|---|
-| LAsset paper | 1 | 137 | 101 | 36 | 9 | 0.737 | 0.918 | 0.818 |
+| | port | signal | signal-field |
+|---|---|---|---|
+| reference size | 47 | 32 | 31 |
+| **v0** | **0.326** | 0.771 | 0.688 |
+| *LAsset paper* | *0.894* | *0.906* | *0.935* |
+
+False positives by class, v0: port 7, signal 43, signal-field 74, port-field 19.
+The paper's: port 6, signal 7, signal-field 19, port-field 0.
+
+So v0 misses two thirds of the ports it should find, and 82% of what it invents is internal
+signal state. It is cataloguing implementation and ignoring the interface. Confirmed
+per-module: a module's ground-truth port share predicts its recall
+(Spearman −0.611, CI [−0.864, −0.136]).
 
 Paired deltas, modules as the pairing unit, 95% bootstrap CI:
 
@@ -187,7 +211,7 @@ Paired deltas, modules as the pairing unit, 95% bootstrap CI:
 A result is comparable only to another under the same `M-n`. If this list grows, restamp or
 re-run; old numbers do not become wrong, they become unlabelled, which is worse.
 
-### M-1 — current, from 2026-08-02
+### M-1 — 2026-08-02, superseded
 Match is exact, or the one legitimate near-match where the reference names a whole record
 and the prediction names one of its fields, or the reverse. Field-to-field matching is
 refused — crediting a predicted `fifo.avail` against a ground-truth `fifo.re` rewards
@@ -197,19 +221,92 @@ arm that failed a module cannot report totals over a different denominator.
 TP / FP / FN with precision, recall, F1. No TN or FPR: the negative class outnumbers the
 positives ~14:1, so FPR reads ~0.1 while precision is ~0.3.
 
+### M-2 — current, from 2026-08-03
+Everything in M-1, plus: **same-name elements are no longer collapsed on either side.**
+
+M-1 held both the reference and each run in a dict keyed by element name, so two assets
+sharing a name in different entities of one file overwrote each other. Two consequences,
+both silent:
+
+- `neorv32_bus` ground truth reads `state/state` — the arbiter FSM in `neorv32_bus_switch`
+  and the reservation FSM in `neorv32_bus_amo_rvs`. It was extracted as one element. **This
+  single collapse was the entire reason the extraction totalled 301 against the paper's
+  stated 302.** That discrepancy is now closed.
+- Runs r1 and r2 correctly emitted *both* `state` assets and were credited for one. The
+  model was scored below what it actually produced.
+
+Reference multiplicity is capped by how many entities actually declare the name
+(`_name_caps`). Without the cap, `neorv32_twi`'s `twi_sda_i` — listed in two separate
+annotation rows but declared by only one entity — would become permanently unreachable and
+depress recall for good. So 302 annotated rows score as 300 distinct elements across the
+41 modules; 111 on our 15.
+
+Effect on A-00: recall 0.552 → 0.553, F1 0.386 → 0.389, sd 0.014 → 0.019. Small, but the
+generated assets were re-scored, not re-run, so the correction was free.
+
+Also added in M-2: per-class recall (port / signal / signal-field) prints for every arm,
+because the aggregate hid the actual failure mode completely.
+
 ---
 
 ## 6. Open threats
 
 Delete a line when it stops being true.
 
+- **Only large effects are detectable.** The paired CI runs about ±0.14 because there are 15
+  modules. Anything under ~0.10 paired recall will read as inconclusive. More repeats will
+  not help; more modules would.
 - **Tuning set sits inside the reporting set.** The 18 modules are a subset of the paper's
   41. Selecting prompts on 15 of them and later reporting on 41 contaminates 15. Plan: report
   the final number split into tuned-on and unseen.
 - **Three NEORV32 revisions in play.** `RTL_data` v1.11.4.3, `neorv32/rtl/core` v1.11.0.6,
   datasheet v1.11.2. Measured impact so far is one element (C-03).
 - **v01 vs v02 is confounded** — IP and label provenance move together (A-01).
-- **Pre-study run directories still on disk.** `assets_tuning18`, `_v0`, `_v1` are n=1
-  exploratory runs from before the framework. `collect()` prefers `_r*` directories, so they
-  are superseded automatically once an arm runs — but until then they will populate the
-  scoreboard. Do not report them.
+
+---
+
+## 7. Rejected hypotheses and misreadings
+
+Kept so they are not re-derived. A wrong idea that cost a day is worth three lines.
+
+### R-01 · Emit variance does not predict recall — 2026-08-03
+Six modules looked high-variance across the three A-00 repeats (`bus`, `cache`, `spi`,
+`trng`, `uart`, `wdt`) and four had recall below 0.5 (`bus`, `cache`, `cpu`, `cpu_cp_cfu`),
+suggesting unstable modules were the weak ones.
+
+Tested: Spearman **−0.261, CI [−0.614, +0.296]**. No relationship. Two counterexamples from
+the lists themselves: `cpu` has the third *lowest* CV (0.086 — it emits 16/19/18, steadily
+wrong) and `wdt` has the second *highest* recall (0.917). The two lists were built by
+different eyeball criteria and their overlap is chance.
+
+Method notes for next time: compare coefficient of variation, not raw ranges — a module
+emitting 25 swings more in absolute terms than one emitting 3, so a "high variance" list
+built on ranges is partly just a "high emit count" list. And picking 6 modules by eye, then
+4 by eye, and reading the overlap as signal will produce a pattern at n=15 more often than
+not. Also tested and null: emit CV vs closed-set size (+0.421), emit CV vs mean emit
+(+0.318), closed-set size vs recall (−0.343), GT size vs recall (−0.386) — every CI spans
+zero.
+
+What *is* real: GT port share vs recall, **−0.611, CI [−0.864, −0.136]**. But note this is
+a consistency check on the class-level finding rather than independent evidence — if ports
+are found at 33% and everything else at ~73%, that correlation follows arithmetically. Its
+value is showing the effect is uniform across modules rather than driven by one or two.
+
+### R-02 · `rvso` is not a missed asset — 2026-08-03
+`asset_list_neorv32_initial.json` lists `rvso` as a primary asset of `neorv32_bus_amo_rvs`,
+and it never appears in our FN lists — which looked like an evaluation bug.
+
+It is not. That file is LAsset's **line-5 output**, not the reference: it carries its own
+false positives, and `rvso` is one of them — it is absent from the manual ground truth and
+absent from `lasset_refined.json`, meaning LAsset's own refinement stage deleted it. We
+score against the manual ground truth, so its absence from the FN list is correct.
+
+Same for `sc_fail`, which we emit and which the paper classes as a *secondary* asset: our
+stage 5 emits primary assets only, so counting it as a false positive is right.
+
+The instinct that something was wrong was nonetheless correct — chasing it found the
+name-collapse bug now fixed in M-2. Wrong premise, real bug.
+
+### R-03 · Numbers in this file are pasted, not retyped — 2026-08-03
+`neorv32_bus` emit counts were transcribed as 10 / 19 / 26; the runs are 10 / 18 / 25.
+Harmless here, but it is the reason §4 says to paste from `ablate()`.

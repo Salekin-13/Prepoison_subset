@@ -47,7 +47,7 @@ print("\n" + "=" * 86)
 print("PER-STAGE RECALL CEILING")
 print("=" * 86)
 reach = sum(1 for m in gt if m in closed
-            for e in gt[m]
+            for e, _o in gt[m]
             if e in closed[m] or e.split(".")[0] in closed[m]
             or any(c.split(".")[0] == e for c in closed[m]))
 tot = sum(len(gt[m]) for m in gt if m in closed)
@@ -56,6 +56,5 @@ print(f"  reachable in the closed set                : {reach}")
 print(f"  -> stage 4 (LLMparse) recall ceiling       : {reach/tot:.3f}")
 print(f"     loss attributable to parsing            : {1-reach/tot:.3f}")
 print()
-print("  Stage 5 owns everything between its measured recall and that ceiling.")
-print("  With v1 at recall 0.691 (M-1, n=1, superseded): 0.991 - 0.691 = 0.300 sits in")
-print("  stage 5, versus 0.009 in stage 4 -- a 33x difference in available payoff.")
+print("  Stage 5 owns everything between its measured recall and that ceiling:")
+print("  the whole gap between an arm's measured recall and this number.")

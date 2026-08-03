@@ -82,24 +82,32 @@ def split_elements(cell: str) -> list:
 
     Parenthetical commentary is dropped, '/' is treated as a separator, and any leftover
     prose is mined for identifier-shaped tokens so composite cells still yield elements.
+
+    A REPEATED name in an explicit list is kept, because it denotes two distinct assets
+    that happen to share a name in different entities of the same file. neorv32_bus's cell
+    is literally 'state/state': the arbiter FSM state in neorv32_bus_switch and the
+    reservation FSM state in neorv32_bus_amo_rvs. De-duplicating it collapsed them into one
+    and was the sole reason this extraction totalled 301 elements against the paper's
+    stated 302.
+
+    Identifiers MINED FROM PROSE are still de-duplicated -- a sentence naming the same
+    signal twice describes one asset, not two.
     """
     s = re.sub(r"\([^()]*\)", " ", str(cell))       # drop parentheticals
     s = re.sub(r"\s*/\s*", ",", s)                  # 'a / b' -> 'a,b'
-    out = []
+    out, mined = [], set()
     for part in re.split(r"[,\n]", s):
         part = part.strip(" .;:\u2013-")
         if not part:
             continue
         if re.fullmatch(r"[A-Za-z_][\w.]*", part):
-            out.append(part)
+            out.append(part)                         # explicit: repeats are meaningful
         else:                                        # prose cell: mine identifiers
-            out.extend(t for t in _IDENT.findall(part) if "_" in t or "." in t)
-    seen, uniq = set(), []
-    for x in out:
-        if x not in seen:
-            seen.add(x)
-            uniq.append(x)
-    return uniq
+            for t in _IDENT.findall(part):
+                if ("_" in t or "." in t) and t not in mined and t not in out:
+                    mined.add(t)
+                    out.append(t)
+    return out
 
 
 def normalise_objective(raw: str) -> list:
