@@ -130,7 +130,9 @@ KNOWN LIMITATIONS (Example 1).
 EXAMPLE_01_OMSP_GPIO = """\
 ### CASE STUDY 1: omsp_gpio (openMSP430 digital I/O interface)
 
-TECHNICAL SUMMARY:
+TARGET IP MODULE: omsp_gpio
+
+=== TECHNICAL SUMMARY ===
 MODULE: omsp_gpio
 1. FUNCTION AND ROLE
 Digital I/O interface managing up to six GPIO ports for an openMSP430-class system. Each
@@ -170,7 +172,7 @@ on-chip block owns the pin. Both are freely writable over the peripheral bus and
 until rewritten. Interrupt generation depends on edge detection against a delayed copy of
 the synchronized input, gated by the per-bit enable and edge-select registers.
 
-PARSED I/O PORTS:
+=== PARSED I/O PORTS (JSON) ===
 [
  {
   "entity": "omsp_gpio",
@@ -405,7 +407,7 @@ PARSED I/O PORTS:
  }
 ]
 
-PARSED INTERNAL SIGNALS:
+=== PARSED INTERNAL SIGNALS (JSON) ===
 [
  {
   "entity": "omsp_gpio",
@@ -647,7 +649,7 @@ PARSED INTERNAL SIGNALS:
  }
 ]
 
-RTL (complete source, comments stripped -- exactly as the asset stage receives it):
+=== RTL ===
 module  omsp_gpio (
     irq_port1,
     irq_port2,
@@ -1142,6 +1144,8 @@ wire [15:0] per_dout  =  p1in_rd   |
                          p6sel_rd;
 endmodule
 
+Identify the primary security assets for 'omsp_gpio' and return the JSON object per the contract.
+
 CSA ANALYSIS (internal working; not emitted).
 
 P3164 3.1.1 rubric -- answer, then the conceptual asset it yields:
@@ -1311,7 +1315,9 @@ EMITTED OUTPUT:
 EXAMPLE_02_TINY_AES = """\
 ### CASE STUDY 2: tiny_aes (unrolled AES-128 encryption core)
 
-TECHNICAL SUMMARY:
+TARGET IP MODULE: tiny_aes
+
+=== TECHNICAL SUMMARY ===
 MODULE: tiny_aes
 1. FUNCTION AND ROLE
 Fully unrolled AES-128 encryption core. A 128-bit plaintext block and a 128-bit cipher key
@@ -1344,7 +1350,7 @@ intermediate state, or halt the datapath from outside. Correct ciphertext depend
 round keys and round constants being exactly right; a wrong round constant or round key
 silently produces a wrong result rather than an error.
 
-PARSED I/O PORTS:
+=== PARSED I/O PORTS (JSON) ===
 [
  {
   "entity": "aes_128",
@@ -1593,7 +1599,7 @@ PARSED I/O PORTS:
  }
 ]
 
-PARSED INTERNAL SIGNALS:
+=== PARSED INTERNAL SIGNALS (JSON) ===
 [
  {
   "entity": "aes_128",
@@ -2346,7 +2352,7 @@ PARSED INTERNAL SIGNALS:
  }
 ]
 
-RTL (complete source, comments stripped -- exactly as the asset stage receives it):
+=== RTL ===
 module aes_128(clk, state, key, out);
     input          clk;
     input  [127:0] state, key;
@@ -3023,6 +3029,8 @@ module xS (clk, in, out);
     8'hff: out <= 8'h2c;
     endcase
 endmodule
+
+Identify the primary security assets for 'tiny_aes' and return the JSON object per the contract.
 
 CSA ANALYSIS (internal working; not emitted).
 

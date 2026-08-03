@@ -84,7 +84,9 @@ KNOWN LIMITATIONS
 EXAMPLE_01_OMSP_GPIO = """\
 ### CASE STUDY 1: omsp_gpio (openMSP430 digital I/O interface)
 
-TECHNICAL SUMMARY:
+TARGET IP MODULE: omsp_gpio
+
+=== TECHNICAL SUMMARY ===
 MODULE: omsp_gpio
 1. FUNCTION AND ROLE
 Digital I/O interface managing up to six GPIO ports for an openMSP430-class system. Each
@@ -124,7 +126,7 @@ on-chip block owns the pin. Both are freely writable over the peripheral bus and
 until rewritten. Interrupt generation depends on edge detection against a delayed copy of
 the synchronized input, gated by the per-bit enable and edge-select registers.
 
-PARSED I/O PORTS:
+=== PARSED I/O PORTS (JSON) ===
 [
  {
   "entity": "omsp_gpio",
@@ -359,7 +361,7 @@ PARSED I/O PORTS:
  }
 ]
 
-PARSED INTERNAL SIGNALS:
+=== PARSED INTERNAL SIGNALS (JSON) ===
 [
  {
   "entity": "omsp_gpio",
@@ -601,7 +603,7 @@ PARSED INTERNAL SIGNALS:
  }
 ]
 
-RTL (complete source, comments stripped -- exactly as the asset stage receives it):
+=== RTL ===
 module  omsp_gpio (
     irq_port1,
     irq_port2,
@@ -1096,6 +1098,8 @@ wire [15:0] per_dout  =  p1in_rd   |
                          p6sel_rd;
 endmodule
 
+Identify the primary security assets for 'omsp_gpio' and return the JSON object per the contract.
+
 CSA ANALYSIS (internal working; not emitted).
 
 P3164 3.1.1 rubric -- answer, then the conceptual asset it yields:
@@ -1265,7 +1269,9 @@ EMITTED OUTPUT:
 EXAMPLE_02_AES_HT = """\
 ### CASE STUDY 2: aes_highthroughput_lowarea (AES-128/192/256 encrypt/decrypt core)
 
-TECHNICAL SUMMARY:
+TARGET IP MODULE: aes_highthroughput_lowarea
+
+=== TECHNICAL SUMMARY ===
 MODULE: aes_highthroughput_lowarea
 1. FUNCTION AND ROLE
 AES encryption/decryption core supporting 128-, 192- and 256-bit keys, built for high
@@ -1305,7 +1311,7 @@ datapath. Correct output depends on the mode select, the enable and the key-expa
 sequencing being exactly right; a wrong mode or a corrupted round key silently produces a
 wrong result rather than an error, as the core reports no error status.
 
-PARSED I/O PORTS:
+=== PARSED I/O PORTS (JSON) ===
 [
  {
   "entity": "aes",
@@ -1876,7 +1882,7 @@ PARSED I/O PORTS:
  }
 ]
 
-PARSED INTERNAL SIGNALS:
+=== PARSED INTERNAL SIGNALS (JSON) ===
 [
  {
   "entity": "aes",
@@ -2860,7 +2866,7 @@ PARSED INTERNAL SIGNALS:
  }
 ]
 
-RTL (complete source, comments stripped -- exactly as the asset stage receives it):
+=== RTL ===
 `define XILINX		1
 module aes (
 	clk, reset,
@@ -3735,6 +3741,8 @@ begin
 end
 assign rd_data = mem[rd_addr];
 endmodule
+
+Identify the primary security assets for 'aes_highthroughput_lowarea' and return the JSON object per the contract.
 
 CSA ANALYSIS (internal working; not emitted).
 

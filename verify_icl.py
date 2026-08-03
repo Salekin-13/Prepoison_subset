@@ -30,8 +30,12 @@ OBJECTIVES  = {"Confidentiality", "Integrity", "Availability"}
 # VHDL-derived examples say in/out; Verilog-derived ones say input/output.
 DIRS        = {"in", "out", "inout", "buffer", "input", "output"}
 KINDS       = {"register", "signal"}
-# Examples differ in how they head the ports block; accept either spelling.
-PORT_MARKERS = ("PARSED PORTS:", "PARSED I/O PORTS:")
+# Examples differ in how they head the parsed blocks; accept every spelling in use.
+# The '=== ... (JSON) ===' forms are what build_asset_user() actually sends, so the
+# format-matched variants (icl_examples_01/_02) use those verbatim; the earlier examples
+# use the bare forms.
+PORT_MARKERS = ("=== PARSED I/O PORTS (JSON) ===", "PARSED I/O PORTS:", "PARSED PORTS:")
+SIGNAL_MARKERS = ("=== PARSED INTERNAL SIGNALS (JSON) ===", "PARSED INTERNAL SIGNALS:")
 
 
 def _block(text, marker):
@@ -52,7 +56,7 @@ def check(name, text, errs):
     e = lambda msg: errs.append(f"[{name}] {msg}")
     try:
         ports   = _block(text, PORT_MARKERS)
-        signals = _block(text, "PARSED INTERNAL SIGNALS:")
+        signals = _block(text, SIGNAL_MARKERS)
         out     = _block(text, "EMITTED OUTPUT:")
     except (ValueError, json.JSONDecodeError) as ex:
         e(f"JSON block failed to parse: {ex}")
