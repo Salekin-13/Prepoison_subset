@@ -139,19 +139,103 @@ P3164 rather than sourced). Read it as architectural fidelity, not as a single v
 
 No NEORV32 module appears in any example, so the eventual 41-module run stays uncontaminated.
 
-Expect: —
+**v1 is not being run.** Its examples were fabricated rather than sourced — `dir_sel_i`,
+`pad_io`, `lfsr_state`, `Tausworthe` and others appear nowhere in P3164. They have no place
+in a replication. v01 is the first arm: real Verilog from published IPs, published manual
+labels, P3164 reasoning.
 
-Got: —
+Expect (registered before the run, in discussion rather than in this file — write it here
+next time): port recall rises, because v01's examples bind 18 of 18 assets to top-level
+ports while v0's bind to nothing. Registered discriminator: if the gain lands **only** in
+modules whose summaries already name their port assets, stage 3 is the constraint and no
+stage-5 prompt finishes the job; if it lands in both groups, stage 5 is. Also predicted:
+emissions rise and precision falls, because the GPIO example runs at 20.9% asset density
+against a real 6.8%.
 
-### A-02 · Core prompt
-Variants of `ASSET_PRIMARY_CORE`, holding the ICL block fixed. Versions not yet chosen.
+Got (v01, 2026-08-03, prompt sha `e99a0b798fd2`, 3 repeats, M-2):
+
+| | port | signal | signal-field | aggregate recall | F1 |
+|---|---|---|---|---|---|
+| v0 | 0.326 | 0.771 | 0.688 | 0.553 | 0.389 |
+| **v01** | **0.589** | **0.573** | 0.688 | 0.607 | 0.390 |
+| *paper* | *0.894* | *0.906* | *0.935* | *0.910* | *0.815* |
+
+Paired, modules as the pairing unit:
+
+| metric | Δ | 95% CI | modules |
+|---|---|---|---|
+| **port recall** | **+0.181** | **[+0.048, +0.302]** | 9 better / 1 worse (n=12) |
+| **signal recall** | **−0.157** | **[−0.229, −0.086]** | 0 better / 6 worse (n=8) |
+| signal-field recall | +0.008 | [−0.074, +0.123] | null |
+| aggregate recall | +0.049 | [−0.061, +0.166] | 7 better / 7 worse — null |
+| F1 | −0.020 | [−0.094, +0.059] | null |
+
+**Three findings.**
+
+1. **The port-blindness diagnosis was right and the fix works at stage 5.** Port recall
+   nearly doubled, and the effect clears zero.
+2. **It is a trade, not a gain.** Signal recall fell almost as much, and *unanimously* —
+   not one module improved. The examples bind 100% to ports; the model swapped one bias for
+   another. Predicted before the run, and the size was underestimated.
+3. **Stage 3 is not the constraint.** Group B — the 8 modules whose summaries name *none*
+   of their port assets — went 0.355 → 0.645. If the summary naming a port were necessary
+   for the model to find it, group B could not have moved at all. This closes the SpecRAG
+   hypothesis and saves regenerating every summary and re-baselining every arm.
+   (Group A went 0.271 → 0.479. The A-vs-B gap is **not** tested and would not survive a
+   test at 16 and 31 elements; only group B's movement carries the argument.)
+
+Also: emissions 205 → 235 (+15%) as predicted, and **port-field false positives 19 → 51**,
+now 30% of all FPs. Not predicted. The examples are Verilog, which has no record types, so
+they can never demonstrate the port-versus-port-field distinction — which is exactly what
+A-03 addresses.
+
+Decision: **keep v01 as the baseline for subsequent arms.** The port mechanism is real and
+its aggregate recall is higher; the signal loss is a separate defect to be fixed on top,
+not a reason to revert.
+
+### A-01x · Why no example can fix the signal loss
+Checked before planning the next arm: every manual asset list in the Calgary IP set is
+75–100% top-level ports — `axi_adapter` 75%, `hmac` 83%, `aes` 95%, and every remaining IP
+100%. NEORV32's ground truth is 42% port / 29% signal / 28% signal-field.
+
+That is the IP-regime versus SoC-regime split showing up in the labels: in a standalone IP
+the interface *is* the function, so its ports are the assets; in an SoC the bus is inherited
+plumbing and the assets are internal state.
+
+**So a composition-matched example cannot be built from this source — the labels do not
+exist.** The signal-recall loss has to be addressed by instruction (A-02), not by example.
+This also means v02 will face the same constraint: its 24 example assets are likewise 100%
+ports.
+
+### A-02 · Core prompt — re-legitimise internal state
+**Next arm.** Baseline is now **v01**, not v0.
+
+A-01 traded signal recall for port recall, and A-01x showed no example can fix it: every
+Calgary manual asset list is 75–100% ports, so a composition-matched example does not exist.
+The correction has to be instruction.
+
+Phrase it without any count, proportion or threshold — a numeric hint becomes a quota
+however it is hedged (an earlier "~20% of the closed set" suggestion cost 7 of 17 recall
+losses on `cpu_cp_cfu`, whose ground-truth density is 38%).
 
 Expect: —
 
 Got: —
 
 ### A-03 · Port-record granularity rule
-From C-05. Rule to add to a core variant:
+See below for the rule. Motivation strengthened by A-01: port-field false positives went
+19 → 51, now 30% of all FPs, because the examples are Verilog and can never demonstrate the
+port-versus-port-field distinction.
+
+**Run separately from A-02.** They touch the same prompt and could cancel the way port and
+signal did in A-01, leaving you unable to attribute either.
+
+Expect: —
+
+Got: —
+
+#### A-03 rule text
+From C-05:
 
 > A record-typed **port** carries the module's external interface; if it matters, name the
 > port, not its field (`ctrl_i`, not `ctrl_i.csr_wdata`). A record-typed **internal signal**
@@ -179,30 +263,48 @@ All **M-2** unless stated. Scored against `gt` on the 15 modules common to every
 | arm | version | n | emit | TP | FP | FN | P | recall | sd | F1 | sd |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | A-00 | v0 | 3 | 205 | 61 | 143 | 50 | 0.300 | 0.553 | 0.019 | 0.389 | 0.010 |
+| A-01 | v01 | 3 | 235 | 67 | 167 | 44 | 0.288 | 0.607 | 0.005 | 0.390 | 0.015 |
 | — | *LAsset paper* | 1 | 137 | 101 | 36 | 10 | 0.737 | 0.910 | | 0.815 | |
 
-**Recall by element class.** The single most useful row in this file. The paper is roughly
-uniform across classes; we are not. The entire gap is the module boundary.
+**Recall by element class is the PRIMARY metric here, not aggregate recall.** A-01 is the
+proof: aggregate recall read +0.049 [−0.061, +0.166], an honest null, while port recall rose
++0.181 [+0.048, +0.302] and signal recall fell −0.157 [−0.229, −0.086] — *both clearing
+zero* and cancelling. The aggregate was not wrong, it was uninformative. With 15 modules the
+aggregate CI runs ±0.14 and will keep failing to resolve real effects, so report the classes.
 
 | | port | signal | signal-field |
 |---|---|---|---|
 | reference size | 47 | 32 | 31 |
-| **v0** | **0.326** | 0.771 | 0.688 |
+| v0 | 0.326 | 0.771 | 0.688 |
+| **v01** | **0.589** | **0.573** | 0.688 |
 | *LAsset paper* | *0.894* | *0.906* | *0.935* |
 
-False positives by class, v0: port 7, signal 43, signal-field 74, port-field 19.
-The paper's: port 6, signal 7, signal-field 19, port-field 0.
+False positives by class:
 
-So v0 misses two thirds of the ports it should find, and 82% of what it invents is internal
-signal state. It is cataloguing implementation and ignoring the interface. Confirmed
-per-module: a module's ground-truth port share predicts its recall
-(Spearman −0.611, CI [−0.864, −0.136]).
+| | port | signal | signal-field | port-field |
+|---|---|---|---|---|
+| v0 | 7 | 43 | 74 | 19 |
+| v01 | 14 | 39 | 64 | **51** |
+| *paper* | *6* | *7* | *19* | *0* |
+
+v0 missed two thirds of the ports it should find while 82% of what it invented was internal
+signal state — cataloguing implementation, ignoring the interface. Confirmed per-module: a
+module's ground-truth port share predicted its recall (Spearman −0.611, CI [−0.864, −0.136]).
+v01 fixed that and broke the other half.
+
+Note the class means above are pooled across all elements (micro), while the paired deltas
+are means of per-module recall (macro). Both are correct; they differ because modules carry
+unequal numbers of each class. The paired figures are the ones with intervals.
 
 Paired deltas, modules as the pairing unit, 95% bootstrap CI:
 
-| comparison | Δrecall | ΔF1 |
-|---|---|---|
-| | | |
+| comparison | metric | Δ | 95% CI |
+|---|---|---|---|
+| v01 − v0 | **port recall** | **+0.181** | **[+0.048, +0.302]** |
+| v01 − v0 | **signal recall** | **−0.157** | **[−0.229, −0.086]** |
+| v01 − v0 | signal-field recall | +0.008 | [−0.074, +0.123] |
+| v01 − v0 | aggregate recall | +0.049 | [−0.061, +0.166] |
+| v01 − v0 | F1 | −0.020 | [−0.094, +0.059] |
 
 ---
 

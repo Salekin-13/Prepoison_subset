@@ -350,6 +350,23 @@ def elem_class(mod, name, closed) -> str:
     return "absent"
 
 
+def per_module_class(res: dict, reference: dict, closed: dict, cls: str) -> dict:
+    """{module: recall within `cls`}, for modules holding at least one element of it.
+
+    The pairing unit for paired(..., cls=...). Modules with no element of the class are
+    dropped rather than scored 0 -- they carry no information about that class and would
+    otherwise dilute the comparison toward zero.
+    """
+    out = {}
+    for mod, m in res["per_module"].items():
+        ref = sum(1 for e, _o in reference[mod] if elem_class(mod, e, closed) == cls)
+        if not ref:
+            continue
+        fn = sum(1 for e in m["fn"] if elem_class(mod, e, closed) == cls)
+        out[mod] = (ref - fn) / ref
+    return out
+
+
 def by_class(res: dict, reference: dict, closed: dict) -> dict:
     """{class: {"ref": n, "tp": n, "fn": n, "fp": n}} for one scored run."""
     acc = {k: {"ref": 0, "tp": 0, "fn": 0, "fp": 0} for k in CLASSES}
@@ -451,21 +468,32 @@ def _class_block(out, reference, closed, extra, strict, mods):
 
 
 def paired(runs_by_version: dict, a: str, b: str, reference: dict, key: str = "f1",
-           B: int = 10000, seed: int = 0, strict: bool = True) -> dict:
+           B: int = 10000, seed: int = 0, strict: bool = True,
+           cls: str = None, closed: dict = None) -> dict:
     """Paired bootstrap of (b - a) on per-module `key`. Prints and returns the result.
 
-    A CI straddling zero is an honest null: with ~15 modules many real-looking
-    differences will not clear it. Report the interval, not just the point estimate.
+    With `cls` set ("port" / "signal" / "signal-field") the pairing unit becomes that
+    class's per-module recall. Use it: A-01 showed the aggregate can read "inconclusive"
+    while the classes move +0.263 and -0.198 in opposite directions and cancel. Aggregate
+    recall is the metric most likely to hide a real effect at this sample size.
+
+    A CI straddling zero is an honest null: with ~15 modules many real-looking differences
+    will not clear it. Report the interval, not just the point estimate.
     """
     import random
     mods = sorted(common_modules(runs_by_version, reference))
+    if cls and closed is None:
+        closed = load_closed()
 
     def avg(v):
-        pms = [per_module(score(r, reference, strict, only=set(mods)), key)
-               for r in runs_by_version[v]]
-        return {m: _mean(p[m] for p in pms) for m in mods}
+        scored = [score(r, reference, strict, only=set(mods)) for r in runs_by_version[v]]
+        pms = ([per_module_class(s, reference, closed, cls) for s in scored] if cls
+               else [per_module(s, key) for s in scored])
+        return {m: _mean(p[m] for p in pms if m in p) for m in mods
+                if any(m in p for p in pms)}
 
     A, Bv = avg(a), avg(b)
+    mods = sorted(set(A) & set(Bv))          # cls drops modules lacking that element type
     d = [Bv[m] - A[m] for m in mods]
     rng = random.Random(seed)
     boot = sorted(_mean(rng.choices(d, k=len(d))) for _ in range(B))
@@ -474,10 +502,31 @@ def paired(runs_by_version: dict, a: str, b: str, reference: dict, key: str = "f
            "wins": sum(1 for x in d if x > 1e-9),
            "losses": sum(1 for x in d if x < -1e-9),
            "per_module": dict(zip(mods, d))}
+    res["class"] = cls
+    label = f"{cls} recall" if cls else key
     sig = "" if res["lo"] <= 0 <= res["hi"] else "  *"
-    print(f"{b} - {a}   d{key} = {res['delta']:+.3f}  "
+    print(f"  {b} - {a}   d({label}) = {res['delta']:+.3f}  "
           f"95% CI [{res['lo']:+.3f}, {res['hi']:+.3f}]{sig}   "
           f"n={res['n']} modules, {res['wins']} better / {res['losses']} worse")
     if res["lo"] <= 0 <= res["hi"]:
-        print("    CI includes 0 -- not distinguishable from no effect at this sample size")
+        print("      CI includes 0 -- not distinguishable from no effect at this sample size")
     return res
+
+
+def paired_classes(runs_by_version: dict, a: str, b: str, reference: dict,
+                   closed: dict = None, **kw) -> dict:
+    """paired() for each element class plus the aggregate -- the primary report.
+
+    Print this rather than the aggregate alone. A-01 is the worked example of why:
+    aggregate recall +0.049 [-0.061, +0.166] read as "no effect", while port recall rose
+    0.263 and signal recall fell 0.198. The aggregate was not wrong, it was uninformative.
+    """
+    if closed is None:
+        closed = load_closed()
+    out = {}
+    print(f"\npaired deltas, {b} vs {a} (modules as the pairing unit):")
+    for c in ("port", "signal", "signal-field"):
+        out[c] = paired(runs_by_version, a, b, reference, cls=c, closed=closed, **kw)
+    for k in ("recall", "f1"):
+        out[k] = paired(runs_by_version, a, b, reference, key=k, **kw)
+    return out
