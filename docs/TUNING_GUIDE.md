@@ -28,8 +28,8 @@ bound: remove the stage entirely and see how far the metric falls.
 
 | stage | ceiling | headroom | how it was measured |
 |---|---|---|---|
-| 4 `LLMparse` | recall 0.991 | **0.009** | fraction of GT elements present in the closed set at all — one is unreachable, `inval_i`/`inv_i` |
-| 5 `LLMasset` | — | **~0.30** | everything between measured recall and 0.991 |
+| 4 `LLMparse` | recall 0.982 | **0.018** | fraction of GT elements present in the closed set at all — **two** are unreachable, both in `cache`: `inval_i` (is `inv_i` here) and `cache_o.cmd_dir` (no such field in this revision). Re-audited 2026-08-07; the earlier 0.991 counted only the first |
+| 5 `LLMasset` | — | **~0.30** | everything between measured recall and 0.982 |
 | 3 `SpecRAG` | not yet measured | unknown | see below |
 
 Stage 5 has ~33× the available recall of stage 4. That is the allocation, and it will not

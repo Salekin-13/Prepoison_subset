@@ -19,6 +19,7 @@ record in some places and a single field in others.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 
 GT_DIR = Path("ground_truth")
@@ -285,8 +286,26 @@ def collect(versions, root=".", stem="assets_tuning18") -> dict:
     """
     out = {}
     for v in versions:
-        runs = [r for d in sorted(Path(root).glob(f"{stem}_{v}_r*"))
-                for r in [load_run(d)] if r]
+        dirs = sorted(Path(root).glob(f"{stem}_{v}_r*"))
+        pairs = [(d, load_run(d)) for d in dirs]
+        pairs = [(d, r) for d, r in pairs if r]
+        # A repeat still being generated holds only the modules written so far. Folding it
+        # in as a complete repeat drives common_modules() -- the intersection across every
+        # run of every version -- down to whatever that partial directory contains, which
+        # silently rescopes EVERY version's totals. Observed live: an in-progress r3 with
+        # one module (neorv32_boot_rom, alphabetically first) took the common set from 15
+        # modules to 0 with no error raised anywhere.
+        if pairs:
+            full = max(len(r) for _d, r in pairs)
+            keep = []
+            for d, r in pairs:
+                if len(r) < full:
+                    print(f"  [warn] {d.name} has {len(r)}/{full} modules -- INCOMPLETE, "
+                          f"excluded. Re-run collect() once generation finishes.")
+                else:
+                    keep.append(r)
+            pairs = keep
+        runs = pairs
         if not runs:                      # empty repeat dirs must not shadow a real run
             runs = [r for d in Path(root).glob(f"{stem}_{v}") for r in [load_run(d)] if r]
         if runs:
@@ -395,6 +414,47 @@ def _sd(xs):
     return (sum((x - m) ** 2 for x in xs) / (len(xs) - 1)) ** 0.5
 
 
+def near_matches(run, reference: dict, mods=None) -> dict:
+    """How many true positives were scored by a NEAR-match rather than exact equality.
+
+    _hit_idx allows two, and both let a prediction score at a different granularity than the
+    reference asked for:
+        A  record -> field   reference `ctrl`,        prediction `ctrl.enable`
+        B  field  -> record  reference `ctrl.enable`, prediction `ctrl`
+    B is the weaker: naming the whole record is a coarser claim than naming the field the
+    reference singled out. Both exist because the reference set is itself inconsistent about
+    granularity (32 whole-signal references against 31 signal-field ones), so M-1 hedged.
+
+    Measured 2026-08-07 and printed by ablate() ever since, because the only way to see it
+    before was to write a bespoke script. It is small and shrinking -- 2.7% of TPs at v0,
+    0.4% at v01c6 -- and every version-to-version GAIN survives exact-only matching (A-08's
+    is identical to three decimals). But an arm that ever rests on it must be visible.
+
+    NOT a way to double-count: predictions are consumed by index, so one bare `ctrl` can
+    satisfy exactly one dotted reference, never three.
+    """
+    pred = _as_run(run) if isinstance(run, dict) else load_run(run)
+    out = Counter()
+    for mod in sorted(pred):
+        if mod not in reference or (mods is not None and mod not in mods):
+            continue
+        preds, used = pred[mod], set()
+        for rname, _o in reference[mod]:
+            cand = {i: preds[i][1] for i in range(len(preds)) if i not in used}
+            pi = _hit_idx(cand, rname, True)
+            if pi is None:
+                continue
+            used.add(pi)
+            p = preds[pi][1]
+            if p == rname:
+                out["exact"] += 1
+            elif "." not in rname and p.split(".")[0] == rname:
+                out["A"] += 1
+            elif "." in rname and p == rname.split(".")[0]:
+                out["B"] += 1
+    return dict(out)
+
+
 def ablate(runs_by_version: dict, reference: dict, extra: dict = None,
            strict: bool = True, title: str = "", closed: dict = None) -> dict:
     """One row per version: mean over repeats, +/- sample sd. Returns {version: [score,...]}.
@@ -402,13 +462,17 @@ def ablate(runs_by_version: dict, reference: dict, extra: dict = None,
     `extra` adds unrepeated reference rows (e.g. {"LAsset paper": paper_run}).
     The sd column is the number to read first: any difference between versions smaller
     than it is not measurable with this many repeats.
+
+    The `near` column is TPs scored by a near-match rather than exact equality -- see
+    near_matches(). Read it whenever an arm's gain is small: a gain that lives there is a
+    gain in vagueness, not in identification.
     """
     mods = common_modules(runs_by_version, reference)
     print(title or "ablation vs manual ground truth")
     print(f"scored on {len(mods)} modules common to every run"
           + ("" if strict else "   [LENIENT matching -- inflates recall]"))
     hdr = (f"{'version':12s} {'n':>2s} {'emit':>5s} {'TP':>4s} {'FP':>4s} {'FN':>4s} "
-           f"{'P':>6s} {'recall':>7s} {'sd':>6s} {'F1':>7s} {'sd':>6s}")
+           f"{'P':>6s} {'recall':>7s} {'sd':>6s} {'F1':>7s} {'sd':>6s} {'near':>5s}")
     print(hdr)
     print("-" * len(hdr))
     out = {}
@@ -416,14 +480,18 @@ def ablate(runs_by_version: dict, reference: dict, extra: dict = None,
         rs = [score(r, reference, strict, only=mods) for r in runs]
         out[v] = rs
         col = lambda k: [x[k] for x in rs]                            # noqa: E731
+        nm = [near_matches(r, reference, mods) for r in runs]
+        near = _mean([n.get("A", 0) + n.get("B", 0) for n in nm])
         print(f"{v:12s} {len(rs):2d} {_mean(col('emit')):5.0f} {_mean(col('tp')):4.0f} "
               f"{_mean(col('fp')):4.0f} {_mean(col('fn')):4.0f} {_mean(col('precision')):6.3f} "
               f"{_mean(col('recall')):7.3f} {_sd(col('recall')):6.3f} "
-              f"{_mean(col('f1')):7.3f} {_sd(col('f1')):6.3f}")
+              f"{_mean(col('f1')):7.3f} {_sd(col('f1')):6.3f} {near:5.1f}")
     for label, run in (extra or {}).items():
         r = score(run, reference, strict, only=mods)
+        n = near_matches(run, reference, mods)
         print(f"{label:12s} {1:2d} {r['emit']:5d} {r['tp']:4d} {r['fp']:4d} {r['fn']:4d} "
-              f"{r['precision']:6.3f} {r['recall']:7.3f} {'':6s} {r['f1']:7.3f}")
+              f"{r['precision']:6.3f} {r['recall']:7.3f} {'':6s} {r['f1']:7.3f} {'':6s}"
+              f"{n.get('A', 0) + n.get('B', 0):5.1f}")
 
     if closed is None:
         try:
@@ -529,4 +597,90 @@ def paired_classes(runs_by_version: dict, a: str, b: str, reference: dict,
         out[c] = paired(runs_by_version, a, b, reference, cls=c, closed=closed, **kw)
     for k in ("recall", "f1"):
         out[k] = paired(runs_by_version, a, b, reference, key=k, **kw)
+    return out
+
+
+# ------------------------------------------------------------- validation ---
+# The run loop writes <run_dir>/_validation.json per repeat. Through v01c6p1 that file is
+# uninteresting -- every version receiving the parsed closed set sits at zero ungrounded
+# names. P-2 withholds that list, so from v01c6p1p2 onward the ungrounded rate is a headline
+# number of the arm, not bookkeeping.
+
+def load_validation(versions, root=".", stem="assets_tuning18") -> dict:
+    """{version: [report per repeat]} from each run directory's _validation.json.
+
+    Missing files are skipped silently: every run before 2026-08-08 predates the report,
+    and their absence is not an error.
+
+    INCOMPLETE REPEATS ARE EXCLUDED, exactly as collect() excludes them. The run loop writes
+    this file after the thread pool drains, so a repeat that was interrupted -- or never
+    started, because the loop creates all REPEATS directories up front -- still leaves a
+    valid report behind describing 0 or 10 modules. Averaging those in with a complete
+    repeat silently divides every count by the number of aborted repeats. First observed on
+    P-2, where r0's 40 ungrounded names over 493 assets read as 8.2 over 144 because r1-r4
+    were empty or partial.
+    """
+    out = {}
+    for v in versions:
+        reps = []
+        for d in sorted(Path(root).glob(f"{stem}_{v}_r*")):
+            p = d / "_validation.json"
+            if p.exists():
+                reps.append((d, json.loads(p.read_text(encoding="utf-8"))))
+        if not reps:
+            continue
+        full = max(len(r.get("modules", {})) for _d, r in reps)
+        keep = []
+        for d, r in reps:
+            n = len(r.get("modules", {}))
+            if n < full:
+                print(f"  [warn] {d.name}/_validation.json covers {n}/{full} modules -- "
+                      f"INCOMPLETE, excluded")
+            else:
+                keep.append(r)
+        if keep:
+            out[v] = keep
+    return out
+
+
+def validation_table(versions, root=".", stem="assets_tuning18") -> dict:
+    """One row per version: mean counts by issue kind, and where the ungrounded names came
+    from. Returns the aggregated dict as well as printing it.
+
+    The three ungrounded columns are the point. An ungrounded name whose base identifier IS
+    present in the RTL is evidence about rtl_parse -- the model found something our regex
+    did not -- while one that is absent from the RTL is a plain invention. Reporting them as
+    a single count would hide a parser gap inside a model error rate.
+    """
+    reports = load_validation(versions, root=root, stem=stem)
+    print(f"  {'version':12s}{'n':>3s}{'assets':>8s}{'ungnd':>7s}{'rate':>7s} |"
+          f"{'in RTL':>8s}{'near<=2':>9s}{'invented':>10s} |{'ent.mism':>10s}{'bad obj':>9s}"
+          f"{'concept':>9s}")
+    out = {}
+    for v in versions:
+        reps = reports.get(v)
+        if not reps:
+            print(f"  {v:12s}  -   (no _validation.json -- run predates the report)")
+            continue
+        acc = []
+        for rep in reps:
+            t = rep.get("totals", {})
+            issues = [i for m in rep.get("modules", {}).values() for i in m.get("issues", [])]
+            ung = [i for i in issues if i.get("kind") == "ungrounded"]
+            acc.append({
+                "assets": t.get("assets", 0), "ungrounded": len(ung),
+                "in_rtl": sum(1 for i in ung if i.get("in_rtl_base")),
+                "near": sum(1 for i in ung if (i.get("distance") is not None
+                                               and i["distance"] <= 2)),
+                "invented": sum(1 for i in ung if i.get("in_rtl_base") is False),
+                "entity_mismatch": t.get("entity_mismatch", 0),
+                "bad_objective": t.get("bad_objective", 0),
+                "concept_contract": t.get("concept_contract", 0)})
+        m = {k: sum(a[k] for a in acc) / len(acc) for k in acc[0]}
+        out[v] = m
+        print(f"  {v:12s}{len(acc):3d}{m['assets']:8.0f}{m['ungrounded']:7.1f}"
+              f"{m['ungrounded'] / max(1, m['assets']):7.1%} |"
+              f"{m['in_rtl']:8.1f}{m['near']:9.1f}{m['invented']:10.1f} |"
+              f"{m['entity_mismatch']:10.1f}{m['bad_objective']:9.1f}"
+              f"{m['concept_contract']:9.1f}")
     return out
