@@ -1,0 +1,2436 @@
+{
+  "module": "neorv32_cache",
+  "entities": [
+    "neorv32_cache",
+    "neorv32_cache_memory"
+  ],
+  "ports": [
+    {
+      "entity": "neorv32_cache",
+      "name": "clk_i",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "system clock input",
+      "functionality": "Provides rising-edge timing for the control register updates and supplies clock to the instantiated cache memory. Drives sequential updates in ctrl_engine_sync and clocks the neorv32_cache_memory instance.",
+      "role": [
+        "sequences ctrl register updates",
+        "clock for cache memory instance",
+        "synchronizes sequential logic"
+      ],
+      "relationship": [
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "ctrl"
+          ]
+        },
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "neorv32_cache_memory_inst.clk_i"
+          ]
+        }
+      ],
+      "evidence": "process ctrl_engine_sync uses rising_edge(clk_i); instance port map clk_i => clk_i"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "rstn_i",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "active-low reset input",
+      "functionality": "Asynchronous active-low reset that forces ctrl fields to defined defaults and also feeds reset to the instantiated cache memory. Overrides normal updates on reset and resets the memory instance.",
+      "role": [
+        "overrides ctrl on reset",
+        "resets memory instance",
+        "synchronizes reset behaviour"
+      ],
+      "relationship": [
+        {
+          "type": "OVERRIDES",
+          "targets": [
+            "ctrl.state",
+            "ctrl.buf_req",
+            "ctrl.buf_sync",
+            "ctrl.buf_err",
+            "ctrl.buf_dir",
+            "ctrl.tag",
+            "ctrl.idx",
+            "ctrl.ofs"
+          ]
+        },
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "ctrl"
+          ]
+        },
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "neorv32_cache_memory_inst.rstn_i"
+          ]
+        }
+      ],
+      "evidence": "process ctrl_engine_sync sensitivity and reset branch if (rstn_i = '0') assigns ctrl fields; instance port map rstn_i => rstn_i"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "host_req_i",
+      "dir": "in",
+      "type": "bus_req_t",
+      "function": "host request input bundle",
+      "functionality": "Supplies the whole host request record to combinational control: it is copied to bus_req_o, used to form cache outputs and to drive state decisions (stb,fence,rw and addr-based checks).",
+      "role": [
+        "source of host request fields",
+        "gates control state transitions",
+        "feeds bus and cache outputs"
+      ],
+      "relationship": [
+        {
+          "type": "CARRIES",
+          "targets": [
+            "bus_req_o"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "ctrl_nxt.state",
+            "ctrl_nxt.buf_sync",
+            "ctrl_nxt.buf_req"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "cache_o.addr",
+            "cache_o.data"
+          ]
+        }
+      ],
+      "evidence": "ctrl_engine_comb copies bus_req_o <= host_req_i; uses host_req_i.stb/fence/rw/address in conditions; cache_o.addr <= host_req_i.addr"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "host_req_i.addr",
+      "dir": "in",
+      "type": "std_ulogic_vector(31 downto 0)",
+      "function": "request address input",
+      "functionality": "Provides address bits used to populate cache_o.addr and to derive ctrl_nxt.tag and ctrl_nxt.idx; also compared to UC_BEGIN to decide direct handling (buf_dir).",
+      "role": [
+        "addresses cache requests",
+        "sources tag and index fields",
+        "constrains direct-mode decision"
+      ],
+      "relationship": [
+        {
+          "type": "CARRIES",
+          "targets": [
+            "cache_o.addr",
+            "bus_req_o.addr"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "ctrl_nxt.tag",
+            "ctrl_nxt.idx"
+          ]
+        },
+        {
+          "type": "CONSTRAINS",
+          "targets": [
+            "ctrl_nxt.buf_dir"
+          ]
+        }
+      ],
+      "evidence": "cache_o.addr <= host_req_i.addr; ctrl_nxt.tag/idx <= host_req_i.addr(...) in S_LOOKUP; comparison unsigned(host_req_i.addr(31 downto 28)) >= unsigned(UC_BEGIN)"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "host_req_i.data",
+      "dir": "in",
+      "type": "std_ulogic_vector(31 downto 0)",
+      "function": "request write data",
+      "functionality": "Supplies write data to cache outputs and is carried into bus requests; used when write operations are propagated to cache or bus.",
+      "role": [
+        "data source for writes",
+        "flows to cache and bus"
+      ],
+      "relationship": [
+        {
+          "type": "CARRIES",
+          "targets": [
+            "cache_o.data",
+            "bus_req_o.data"
+          ]
+        }
+      ],
+      "evidence": "cache_o.data <= host_req_i.data; initial bus_req_o <= host_req_i copies data field"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "host_req_i.ben",
+      "dir": "in",
+      "type": "std_ulogic_vector(3 downto 0)",
+      "function": "byte-enable vector input",
+      "functionality": "Provides write byte-enable signals; copied into bus requests and used to set cache_o.we on host write paths.",
+      "role": [
+        "write byte-enable source",
+        "controls cache write mask"
+      ],
+      "relationship": [
+        {
+          "type": "CARRIES",
+          "targets": [
+            "cache_o.we",
+            "bus_req_o.ben"
+          ]
+        }
+      ],
+      "evidence": "cache_o.we <= host_req_i.ben in S_LOOKUP write path; bus_req_o <= host_req_i initial copy"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "host_req_i.stb",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "host request strobe",
+      "functionality": "Indicates an active host request; it enters combinational logic to set buf_req and to trigger state transitions from IDLE into lookup/download flows.",
+      "role": [
+        "gates request buffering",
+        "starts lookup/download state transitions"
+      ],
+      "relationship": [
+        {
+          "type": "GATES",
+          "targets": [
+            "ctrl_nxt.buf_req",
+            "ctrl_nxt.state"
+          ]
+        }
+      ],
+      "evidence": "ctrl_nxt.buf_req <= ctrl.buf_req or host_req_i.stb; S_IDLE checks host_req_i.stb to move to S_LOOKUP"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "host_req_i.rw",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "read/write indicator",
+      "functionality": "Controls read vs write handling in combinational control: it gates whether a host request can be served from cache or must generate bus transactions, and is passed to bus_req_o.",
+      "role": [
+        "gates read/write paths",
+        "flows to bus request"
+      ],
+      "relationship": [
+        {
+          "type": "GATES",
+          "targets": [
+            "ctrl_nxt.state"
+          ]
+        },
+        {
+          "type": "CARRIES",
+          "targets": [
+            "bus_req_o.rw"
+          ]
+        }
+      ],
+      "evidence": "S_LOOKUP uses host_req_i.rw to choose responses; bus_req_o <= host_req_i initial copy"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "host_req_i.src",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "request source field",
+      "functionality": "Is part of the host request record copied into the outgoing bus request; not used in control decisions in this source.",
+      "role": [
+        "carried to bus request"
+      ],
+      "relationship": [
+        {
+          "type": "CARRIES",
+          "targets": [
+            "bus_req_o.src"
+          ]
+        }
+      ],
+      "evidence": "bus_req_o <= host_req_i at start of ctrl_engine_comb"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "host_req_i.priv",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "privilege indicator",
+      "functionality": "Is part of the host request record passed through to bus_req_o; not used in combinational control here.",
+      "role": [
+        "carried to bus request"
+      ],
+      "relationship": [
+        {
+          "type": "CARRIES",
+          "targets": [
+            "bus_req_o.priv"
+          ]
+        }
+      ],
+      "evidence": "bus_req_o <= host_req_i at start of ctrl_engine_comb"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "host_req_i.debug",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "debug request flag",
+      "functionality": "Participates in the direct-mode decision: if debug is set the request is forced into direct mode (buf_dir). It is otherwise passed through in the bus request copy.",
+      "role": [
+        "constrains direct-mode decision",
+        "carried to bus request"
+      ],
+      "relationship": [
+        {
+          "type": "GATES",
+          "targets": [
+            "ctrl_nxt.buf_dir"
+          ]
+        },
+        {
+          "type": "CARRIES",
+          "targets": [
+            "bus_req_o.debug"
+          ]
+        }
+      ],
+      "evidence": "S_IDLE compares host_req_i.debug to set ctrl_nxt.buf_dir; bus_req_o <= host_req_i copy"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "host_req_i.amo",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "atomic-memory-op flag",
+      "functionality": "Used to force direct handling of certain host requests (sets buf_dir) and otherwise flows into bus_req_o when copying the request.",
+      "role": [
+        "constrains direct-mode decision",
+        "carried to bus request"
+      ],
+      "relationship": [
+        {
+          "type": "GATES",
+          "targets": [
+            "ctrl_nxt.buf_dir"
+          ]
+        },
+        {
+          "type": "CARRIES",
+          "targets": [
+            "bus_req_o.amo"
+          ]
+        }
+      ],
+      "evidence": "S_IDLE includes host_req_i.amo in condition setting ctrl_nxt.buf_dir; bus_req_o <= host_req_i"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "host_req_i.amoop",
+      "dir": "in",
+      "type": "std_ulogic_vector(3 downto 0)",
+      "function": "AMO operation code",
+      "functionality": "Is part of the host request record copied into bus_req_o; not operated on by control logic here.",
+      "role": [
+        "carried to bus request"
+      ],
+      "relationship": [
+        {
+          "type": "CARRIES",
+          "targets": [
+            "bus_req_o.amoop"
+          ]
+        }
+      ],
+      "evidence": "bus_req_o <= host_req_i initial copy in ctrl_engine_comb"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "host_req_i.lock",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "lock flag",
+      "functionality": "Is passed through into bus_req_o and also set explicitly in download sequences; host lock may be overwritten by state assignments.",
+      "role": [
+        "carried to bus request",
+        "overridden in download sequences"
+      ],
+      "relationship": [
+        {
+          "type": "CARRIES",
+          "targets": [
+            "bus_req_o.lock"
+          ]
+        }
+      ],
+      "evidence": "bus_req_o <= host_req_i copy; S_DOWNLOAD_REQ/S_DOWNLOAD_RSP set bus_req_o.lock <= '1'"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "host_req_i.fence",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "fence/sync request flag",
+      "functionality": "Either sets buf_sync (buffered sync) or triggers immediate clear state; it gates the controller's transition into S_CLEAR and is carried into bus_req_o if not overridden.",
+      "role": [
+        "gates sync/clear control",
+        "carried to bus request"
+      ],
+      "relationship": [
+        {
+          "type": "GATES",
+          "targets": [
+            "ctrl_nxt.buf_sync",
+            "ctrl_nxt.state"
+          ]
+        },
+        {
+          "type": "CARRIES",
+          "targets": [
+            "bus_req_o.fence"
+          ]
+        }
+      ],
+      "evidence": "ctrl_nxt.buf_sync <= ctrl.buf_sync or host_req_i.fence; S_IDLE checks host_req_i.fence to go to S_CLEAR; bus_req_o <= host_req_i"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "host_rsp_o",
+      "dir": "out",
+      "type": "bus_rsp_t",
+      "function": "host response output bundle",
+      "functionality": "Reports responses back to the host: its fields are driven from cache data by default or forwarded from bus_rsp_i during direct responses; ack/err may be set on download completion.",
+      "role": [
+        "exports response to host",
+        "reports cache or bus responses"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "bus_rsp_i",
+            "cache_i.data"
+          ]
+        },
+        {
+          "type": "EXPORTS",
+          "targets": []
+        }
+      ],
+      "evidence": "host_rsp_o.data <= cache_i.data default; host_rsp_o <= bus_rsp_i in S_DIRECT_RSP; S_DOWNLOAD_DONE assigns host_rsp_o.ack/err"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "host_rsp_o.ack",
+      "dir": "out",
+      "type": "std_ulogic",
+      "function": "host ack output",
+      "functionality": "Indicates a completed response to the host; it is driven from bus_rsp_i during direct responses and asserted on download completion when buf_err is set.",
+      "role": [
+        "reports acknowledgment to host",
+        "driven by bus responses and download status"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "bus_rsp_i"
+          ]
+        },
+        {
+          "type": "OVERRIDES",
+          "targets": [
+            "ctrl.buf_err"
+          ]
+        }
+      ],
+      "evidence": "host_rsp_o <= bus_rsp_i in S_DIRECT_RSP; S_DOWNLOAD_DONE sets host_rsp_o.ack <= '1' when ctrl.buf_err = '1'"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "host_rsp_o.err",
+      "dir": "out",
+      "type": "std_ulogic",
+      "function": "host error flag output",
+      "functionality": "Signals an error to the host; default cleared, forwarded from bus_rsp_i on direct responses and asserted together with ack on download error.",
+      "role": [
+        "reports error to host",
+        "reflects bus or download error"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "bus_rsp_i"
+          ]
+        },
+        {
+          "type": "OVERRIDES",
+          "targets": [
+            "ctrl.buf_err"
+          ]
+        }
+      ],
+      "evidence": "host_rsp_o <= bus_rsp_i in S_DIRECT_RSP; S_DOWNLOAD_DONE sets host_rsp_o.err <= '1' when ctrl.buf_err = '1'"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "host_rsp_o.data",
+      "dir": "out",
+      "type": "std_ulogic_vector(31 downto 0)",
+      "function": "host response data output",
+      "functionality": "Carries read data to the host; by default driven from cache_i.data and overridden by bus_rsp_i when forwarding direct bus responses.",
+      "role": [
+        "exports read data to host",
+        "sourced from cache or bus"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "cache_i.data",
+            "bus_rsp_i.data"
+          ]
+        }
+      ],
+      "evidence": "host_rsp_o.data <= cache_i.data default; host_rsp_o <= bus_rsp_i in S_DIRECT_RSP"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "bus_req_o",
+      "dir": "out",
+      "type": "bus_req_t",
+      "function": "outgoing bus request bundle",
+      "functionality": "Sends requests to the external bus: it is initialized from host_req_i then modified in state branches (stb, fence, addr, rw, lock) to start direct or download transactions.",
+      "role": [
+        "exports requests to external bus",
+        "carries host request by default",
+        "is driven/overridden by control state"
+      ],
+      "relationship": [
+        {
+          "type": "CARRIES",
+          "targets": [
+            "host_req_i"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "ctrl.tag",
+            "ctrl.idx",
+            "ctrl.ofs"
+          ]
+        },
+        {
+          "type": "EXPORTS",
+          "targets": []
+        }
+      ],
+      "evidence": "bus_req_o <= host_req_i initial copy; S_DOWNLOAD_REQ/S_DOWNLOAD_RSP set bus_req_o.addr/rw/stb/lock/fence"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "bus_req_o.addr",
+      "dir": "out",
+      "type": "std_ulogic_vector(31 downto 0)",
+      "function": "bus request address output",
+      "functionality": "Carries the address for outgoing bus transactions; normally copied from host_req_i.addr but overwritten with ctrl.tag/idx/ofs when performing downloads.",
+      "role": [
+        "addresses bus transactions",
+        "overridden during downloads"
+      ],
+      "relationship": [
+        {
+          "type": "CARRIES",
+          "targets": [
+            "host_req_i.addr"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "ctrl.tag",
+            "ctrl.idx",
+            "ctrl.ofs"
+          ]
+        }
+      ],
+      "evidence": "bus_req_o <= host_req_i copy; S_DOWNLOAD_REQ assigns bus_req_o.addr <= ctrl.tag & ctrl.idx & ctrl.ofs & \"00\""
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "bus_req_o.data",
+      "dir": "out",
+      "type": "std_ulogic_vector(31 downto 0)",
+      "function": "bus request data output",
+      "functionality": "Transmits write data on bus requests; by default carried from host_req_i.data and used in download/write sequences when bus transaction is issued.",
+      "role": [
+        "carries write data to bus"
+      ],
+      "relationship": [
+        {
+          "type": "CARRIES",
+          "targets": [
+            "host_req_i.data"
+          ]
+        }
+      ],
+      "evidence": "bus_req_o <= host_req_i initial copy; bus transactions use bus_req_o.data"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "bus_req_o.ben",
+      "dir": "out",
+      "type": "std_ulogic_vector(3 downto 0)",
+      "function": "bus byte-enable output",
+      "functionality": "Carries write byte-enable to bus requests; defaulted from host_req_i.ben and used when issuing write transactions.",
+      "role": [
+        "carries byte-enable to bus"
+      ],
+      "relationship": [
+        {
+          "type": "CARRIES",
+          "targets": [
+            "host_req_i.ben"
+          ]
+        }
+      ],
+      "evidence": "bus_req_o <= host_req_i initial copy; cache write uses host_req_i.ben"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "bus_req_o.stb",
+      "dir": "out",
+      "type": "std_ulogic",
+      "function": "bus request strobe output",
+      "functionality": "Signals the start of a bus transaction; cleared by default and asserted in states that issue immediate bus requests (direct or download).",
+      "role": [
+        "starts bus transactions",
+        "driven by control state"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "ctrl.state"
+          ]
+        }
+      ],
+      "evidence": "bus_req_o.stb <= '0' default; set to '1' in S_LOOKUP, S_DOWNLOAD_REQ, S_DOWNLOAD_RSP when transactions are issued"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "bus_req_o.rw",
+      "dir": "out",
+      "type": "std_ulogic",
+      "function": "bus read/write flag output",
+      "functionality": "Indicates read or write on the bus; default copied from host_req_i but set explicitly to read ('0') in download sequences.",
+      "role": [
+        "controls bus read/write direction",
+        "overridden for downloads"
+      ],
+      "relationship": [
+        {
+          "type": "CARRIES",
+          "targets": [
+            "host_req_i.rw"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "ctrl.state"
+          ]
+        }
+      ],
+      "evidence": "bus_req_o <= host_req_i initial copy; S_DOWNLOAD_REQ sets bus_req_o.rw <= '0'"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "bus_req_o.src",
+      "dir": "out",
+      "type": "std_ulogic",
+      "function": "bus request source field",
+      "functionality": "Passed through from the host request into the bus request record; not used directly in control decisions here.",
+      "role": [
+        "carried to bus"
+      ],
+      "relationship": [
+        {
+          "type": "CARRIES",
+          "targets": [
+            "host_req_i.src"
+          ]
+        }
+      ],
+      "evidence": "bus_req_o <= host_req_i initial copy in ctrl_engine_comb"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "bus_req_o.priv",
+      "dir": "out",
+      "type": "std_ulogic",
+      "function": "bus request privilege field",
+      "functionality": "Carried from the host request to the outgoing bus request; the controller does not otherwise act on it in this source.",
+      "role": [
+        "carried to bus"
+      ],
+      "relationship": [
+        {
+          "type": "CARRIES",
+          "targets": [
+            "host_req_i.priv"
+          ]
+        }
+      ],
+      "evidence": "bus_req_o <= host_req_i at start of ctrl_engine_comb"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "bus_req_o.debug",
+      "dir": "out",
+      "type": "std_ulogic",
+      "function": "bus debug flag output",
+      "functionality": "Propagates the debug flag from the host to the bus request record; debug also participates in the direct handling decision earlier in control.",
+      "role": [
+        "carried to bus",
+        "participates in direct decision"
+      ],
+      "relationship": [
+        {
+          "type": "CARRIES",
+          "targets": [
+            "host_req_i.debug"
+          ]
+        }
+      ],
+      "evidence": "bus_req_o <= host_req_i initial copy; host_req_i.debug used in S_IDLE condition"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "bus_req_o.amo",
+      "dir": "out",
+      "type": "std_ulogic",
+      "function": "bus AMO flag output",
+      "functionality": "Passed to the bus request; AMO participates in the direct-mode decision at lookup time and is otherwise carried through to the bus.",
+      "role": [
+        "carried to bus",
+        "constrains direct-mode decision"
+      ],
+      "relationship": [
+        {
+          "type": "CARRIES",
+          "targets": [
+            "host_req_i.amo"
+          ]
+        }
+      ],
+      "evidence": "bus_req_o <= host_req_i; S_IDLE uses host_req_i.amo in buf_dir decision"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "bus_req_o.amoop",
+      "dir": "out",
+      "type": "std_ulogic_vector(3 downto 0)",
+      "function": "AMO opcode output",
+      "functionality": "Is copied from the host request into the bus request; control does not transform it here.",
+      "role": [
+        "carried to bus"
+      ],
+      "relationship": [
+        {
+          "type": "CARRIES",
+          "targets": [
+            "host_req_i.amoop"
+          ]
+        }
+      ],
+      "evidence": "bus_req_o <= host_req_i copy in comb process"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "bus_req_o.lock",
+      "dir": "out",
+      "type": "std_ulogic",
+      "function": "bus lock flag output",
+      "functionality": "Signals locked transactions on the bus; defaulted from host_req_i but explicitly asserted during download request/response sequences.",
+      "role": [
+        "carries lock from host",
+        "asserted by download sequences"
+      ],
+      "relationship": [
+        {
+          "type": "CARRIES",
+          "targets": [
+            "host_req_i.lock"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "ctrl.state"
+          ]
+        }
+      ],
+      "evidence": "bus_req_o <= host_req_i; S_DOWNLOAD_REQ and S_DOWNLOAD_RSP set bus_req_o.lock <= '1'"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "bus_req_o.fence",
+      "dir": "out",
+      "type": "std_ulogic",
+      "function": "bus fence output",
+      "functionality": "Requests a fence on the bus when clearing cache; set in S_CLEAR when READ_ONLY = false, otherwise default copy from host_req_i.",
+      "role": [
+        "requests bus fence",
+        "driven by clear state"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "ctrl.state"
+          ]
+        },
+        {
+          "type": "CARRIES",
+          "targets": [
+            "host_req_i.fence"
+          ]
+        }
+      ],
+      "evidence": "If READ_ONLY = false then S_CLEAR sets bus_req_o.fence <= '1'; bus_req_o <= host_req_i initial copy"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "bus_rsp_i",
+      "dir": "in",
+      "type": "bus_rsp_t",
+      "function": "incoming bus response bundle",
+      "functionality": "Provides bus responses to be forwarded to the host or used to write into cache memory; its fields drive host_rsp_o and cache_o.data and update controller state on ack/err.",
+      "role": [
+        "source of bus responses",
+        "drives host responses and cache writes"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "host_rsp_o",
+            "cache_o.data"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "ctrl_nxt.state",
+            "ctrl_nxt.buf_err"
+          ]
+        }
+      ],
+      "evidence": "host_rsp_o <= bus_rsp_i in S_DIRECT_RSP; S_DOWNLOAD_RSP assigns cache_o.data <= bus_rsp_i.data and ctrl_nxt.buf_err <= ctrl.buf_err or bus_rsp_i.err; conditions check bus_rsp_i.ack"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "bus_rsp_i.ack",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "bus ack input",
+      "functionality": "Indicates a completed bus transaction and is consulted to move controller between states (e.g., finishing direct responses and download responses).",
+      "role": [
+        "gates controller transitions",
+        "signals bus transaction completion"
+      ],
+      "relationship": [
+        {
+          "type": "GATES",
+          "targets": [
+            "ctrl_nxt.state"
+          ]
+        }
+      ],
+      "evidence": "S_DIRECT_RSP uses if (bus_rsp_i.ack = '1') then ctrl_nxt.state <= S_IDLE; S_DOWNLOAD_RSP advances ofs when bus_rsp_i.ack = '1'"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "bus_rsp_i.err",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "bus error input",
+      "functionality": "Signals an error from the bus; it is ORed into ctrl_nxt.buf_err during download responses and later influences download completion behaviour.",
+      "role": [
+        "records bus error into buffer",
+        "affects download completion"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "ctrl_nxt.buf_err"
+          ]
+        }
+      ],
+      "evidence": "S_DOWNLOAD_RSP: ctrl_nxt.buf_err <= ctrl.buf_err or bus_rsp_i.err"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "bus_rsp_i.data",
+      "dir": "in",
+      "type": "std_ulogic_vector(31 downto 0)",
+      "function": "bus response data input",
+      "functionality": "Carries data returned from the bus into cache_o.data for downloads and can be forwarded to the host when direct-forwarding occurs.",
+      "role": [
+        "feeds cache download data",
+        "can be forwarded to host"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "cache_o.data",
+            "host_rsp_o.data"
+          ]
+        }
+      ],
+      "evidence": "S_DOWNLOAD_RSP sets cache_o.data <= bus_rsp_i.data; host_rsp_o <= bus_rsp_i in S_DIRECT_RSP"
+    },
+    {
+      "entity": "neorv32_cache_memory",
+      "name": "rstn_i",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "asynchronous reset control",
+      "functionality": "Provides an active-low asynchronous reset that forces valid bits and the valid pipeline register to zero; it governs assignments in the status_memory process's reset branch.",
+      "role": [
+        "asynchronous reset input",
+        "GOVERNS valid_mem reset",
+        "GOVERNS valid_mem_rd reset"
+      ],
+      "relationship": [
+        {
+          "type": "GATES",
+          "targets": [
+            "valid_mem"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "valid_mem_rd"
+          ]
+        }
+      ],
+      "evidence": "status_memory process if (rstn_i = '0') then valid_mem <= (others=>'0'); valid_mem_rd <= '0'."
+    },
+    {
+      "entity": "neorv32_cache_memory",
+      "name": "clk_i",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "clock for sequential storage",
+      "functionality": "Clocks the status, tag and data memory processes; sequences updates to valid bits, tag storage, data byte memories and the read-data output on rising edges.",
+      "role": [
+        "clock input",
+        "SEQUENCES register updates"
+      ],
+      "relationship": [
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "valid_mem"
+          ]
+        },
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "valid_mem_rd"
+          ]
+        },
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "tag_mem"
+          ]
+        },
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "tag_mem_rd"
+          ]
+        },
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "data_mem_b0",
+            "data_mem_b1",
+            "data_mem_b2",
+            "data_mem_b3"
+          ]
+        },
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "rdata_o"
+          ]
+        }
+      ],
+      "evidence": "Processes use rising_edge(clk_i) in status_memory, tag_memory and data_memory."
+    },
+    {
+      "entity": "neorv32_cache_memory",
+      "name": "clr_i",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "clear all valid bits",
+      "functionality": "When asserted at a clock edge clears the entire valid_mem vector to zeros; it gates the full-vector valid assignment in the status_memory process.",
+      "role": [
+        "control input",
+        "GOVERNS full valid_mem clear"
+      ],
+      "relationship": [
+        {
+          "type": "GATES",
+          "targets": [
+            "valid_mem"
+          ]
+        }
+      ],
+      "evidence": "status_memory: elsif (clr_i = '1') then valid_mem <= (others => '0')."
+    },
+    {
+      "entity": "neorv32_cache_memory",
+      "name": "inv_i",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "invalidate single line",
+      "functionality": "When asserted at a clock edge clears the indexed valid bit at acc_idx, gating the indexed write to valid_mem for single-line invalidation.",
+      "role": [
+        "control input",
+        "GOVERNS indexed valid_mem clear"
+      ],
+      "relationship": [
+        {
+          "type": "GATES",
+          "targets": [
+            "valid_mem"
+          ]
+        }
+      ],
+      "evidence": "status_memory: elsif (inv_i = '1') then valid_mem(to_integer(unsigned(acc_idx))) <= '0'."
+    },
+    {
+      "entity": "neorv32_cache_memory",
+      "name": "new_i",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "line fill enable",
+      "functionality": "When asserted at a clock edge sets the indexed valid bit and writes the tag_mem entry at acc_idx; it gates both valid and tag updates on fill events.",
+      "role": [
+        "control input",
+        "GOVERNS valid and tag writes"
+      ],
+      "relationship": [
+        {
+          "type": "GATES",
+          "targets": [
+            "valid_mem"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "tag_mem"
+          ]
+        }
+      ],
+      "evidence": "status_memory and tag_memory use elsif (new_i = '1') then valid_mem(...) <= '1' and tag_mem(...) <= acc_tag."
+    },
+    {
+      "entity": "neorv32_cache_memory",
+      "name": "hit_o",
+      "dir": "out",
+      "type": "std_ulogic",
+      "function": "report cache hit",
+      "functionality": "Outputs '1' when the selected valid bit is set and the stored tag equals the accessed tag; it reports the hit condition derived from valid_mem_rd, tag_mem_rd and acc_tag.",
+      "role": [
+        "status output",
+        "EXPORTS hit status"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "valid_mem_rd",
+            "tag_mem_rd",
+            "acc_tag"
+          ]
+        },
+        {
+          "type": "EXPORTS",
+          "targets": []
+        }
+      ],
+      "evidence": "Concurrent assignment: hit_o <= '1' when (valid_mem_rd = '1') and (tag_mem_rd = acc_tag) else '0'."
+    },
+    {
+      "entity": "neorv32_cache_memory",
+      "name": "addr_i",
+      "dir": "in",
+      "type": "std_ulogic_vector(31 downto 0)",
+      "function": "address input",
+      "functionality": "Provides the 32-bit address whose slices produce acc_tag, acc_idx and acc_off; these derived fields drive memory indexing and tag comparisons.",
+      "role": [
+        "address input",
+        "SOURCES acc_tag, acc_idx, acc_off"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "acc_tag"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "acc_idx"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "acc_off"
+          ]
+        }
+      ],
+      "evidence": "Concurrent assigns: acc_tag <= addr_i(...); acc_idx <= addr_i(...); acc_off <= addr_i(...)."
+    },
+    {
+      "entity": "neorv32_cache_memory",
+      "name": "we_i",
+      "dir": "in",
+      "type": "std_ulogic_vector(3 downto 0)",
+      "function": "byte write enables",
+      "functionality": "Each bit gates the corresponding byte write into the data byte memory arrays during the clocked data_memory process; individual bits enable writes to data_mem_b0..b3.",
+      "role": [
+        "write-enable input",
+        "GOVERNS byte writes to data memories"
+      ],
+      "relationship": [
+        {
+          "type": "GATES",
+          "targets": [
+            "data_mem_b0",
+            "data_mem_b1",
+            "data_mem_b2",
+            "data_mem_b3"
+          ]
+        }
+      ],
+      "evidence": "data_memory: if (we_i(0)='1') then data_mem_b0(...) <= wdata_i(7 downto 0) etc."
+    },
+    {
+      "entity": "neorv32_cache_memory",
+      "name": "wdata_i",
+      "dir": "in",
+      "type": "std_ulogic_vector(31 downto 0)",
+      "function": "write data source",
+      "functionality": "Supplies 32-bit write data; its byte slices are captured into the respective data_mem_b arrays on enabled writes during the clocked data_memory process.",
+      "role": [
+        "write data input",
+        "SOURCES byte writes into data_mem"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "data_mem_b0"
+          ],
+          "bits": "7 downto 0"
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "data_mem_b1"
+          ],
+          "bits": "15 downto 8"
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "data_mem_b2"
+          ],
+          "bits": "23 downto 16"
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "data_mem_b3"
+          ],
+          "bits": "31 downto 24"
+        }
+      ],
+      "evidence": "data_memory assigns data_mem_b0 <= wdata_i(7 downto 0), b1 <= wdata_i(15 downto 8), etc."
+    },
+    {
+      "entity": "neorv32_cache_memory",
+      "name": "rdata_o",
+      "dir": "out",
+      "type": "std_ulogic_vector(31 downto 0)",
+      "function": "read data output",
+      "functionality": "Delivers the 32-bit read word assembled from the four byte memory arrays; each rdata_o slice is clocked from the corresponding data_mem_b array.",
+      "role": [
+        "read data output",
+        "EXPORTS read bytes",
+        "CAPTURES data_mem reads"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "data_mem_b0"
+          ],
+          "bits": "7 downto 0"
+        },
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "data_mem_b1"
+          ],
+          "bits": "15 downto 8"
+        },
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "data_mem_b2"
+          ],
+          "bits": "23 downto 16"
+        },
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "data_mem_b3"
+          ],
+          "bits": "31 downto 24"
+        },
+        {
+          "type": "EXPORTS",
+          "targets": []
+        }
+      ],
+      "evidence": "data_memory: rdata_o(7 downto 0) <= data_mem_b0(...), etc., inside rising_edge(clk_i)."
+    }
+  ],
+  "signals": [
+    {
+      "entity": "neorv32_cache",
+      "name": "cache_o",
+      "type": "cache_o_t",
+      "kind": "signal",
+      "function": "cache memory command and I/O bundle",
+      "functionality": "Aggregate signal carrying cache memory control (clr,inv,new), address, data and write mask. It is driven by combinational control and connected to the cache memory instance ports.",
+      "role": [
+        "drives cache memory instance",
+        "combinational cache command bundle"
+      ],
+      "relationship": [
+        {
+          "type": "AGGREGATES",
+          "targets": [
+            "cache_o.cmd_clr",
+            "cache_o.cmd_inv",
+            "cache_o.cmd_new",
+            "cache_o.addr",
+            "cache_o.data",
+            "cache_o.we"
+          ]
+        },
+        {
+          "type": "EXPORTS",
+          "targets": []
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "neorv32_cache_memory_inst.clr_i",
+            "neorv32_cache_memory_inst.inv_i",
+            "neorv32_cache_memory_inst.new_i",
+            "neorv32_cache_memory_inst.addr_i",
+            "neorv32_cache_memory_inst.we_i",
+            "neorv32_cache_memory_inst.wdata_i"
+          ]
+        }
+      ],
+      "evidence": "cache_o fields set in ctrl_engine_comb; port map connects cache_o.* to neorv32_cache_memory instance ports"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "cache_o.cmd_clr",
+      "type": "std_ulogic",
+      "kind": "signal",
+      "function": "cache clear command",
+      "functionality": "Control signal asserted in S_CLEAR to request the cache memory to clear its contents; driven combinationally from the controller and routed to the memory instance clr_i port.",
+      "role": [
+        "commands cache clear",
+        "combinational control output"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "neorv32_cache_memory_inst.clr_i"
+          ]
+        }
+      ],
+      "evidence": "S_CLEAR sets cache_o.cmd_clr <= '1'; port map clr_i => cache_o.cmd_clr"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "cache_o.cmd_inv",
+      "type": "std_ulogic",
+      "kind": "signal",
+      "function": "cache invalidate command",
+      "functionality": "Asserted in S_DOWNLOAD_DONE on download error to invalidate the new line; driven in combinational control and mapped to the memory inv_i port.",
+      "role": [
+        "commands cache invalidate",
+        "driven by download result"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "neorv32_cache_memory_inst.inv_i"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "host_rsp_o.ack",
+            "host_rsp_o.err"
+          ]
+        }
+      ],
+      "evidence": "S_DOWNLOAD_DONE sets cache_o.cmd_inv <= '1' on ctrl.buf_err; port map inv_i => cache_o.cmd_inv"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "cache_o.cmd_new",
+      "type": "std_ulogic",
+      "kind": "signal",
+      "function": "cache allocate/new-line command",
+      "functionality": "Asserted during download sequences (S_DOWNLOAD_REQ) to start writing a new cache line; drives the memory new_i input and is combinationally assigned from ctrl values.",
+      "role": [
+        "starts cache line fill",
+        "combinational control output"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "neorv32_cache_memory_inst.new_i"
+          ]
+        }
+      ],
+      "evidence": "S_DOWNLOAD_REQ sets cache_o.cmd_new <= '1'; port map new_i => cache_o.cmd_new"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "cache_o.addr",
+      "type": "std_ulogic_vector(31 downto 0)",
+      "kind": "signal",
+      "function": "cache memory address output",
+      "functionality": "Carries the 32-bit address presented to the cache memory; driven either from host_req_i.addr by default or from ctrl.tag/idx/ofs during downloads, and connected to the instance addr_i.",
+      "role": [
+        "addresses internal cache memory",
+        "sourced from host or ctrl during download"
+      ],
+      "relationship": [
+        {
+          "type": "CARRIES",
+          "targets": [
+            "host_req_i.addr"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "ctrl.tag",
+            "ctrl.idx",
+            "ctrl.ofs"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "neorv32_cache_memory_inst.addr_i"
+          ]
+        }
+      ],
+      "evidence": "cache_o.addr <= host_req_i.addr default; S_DOWNLOAD_REQ sets cache_o.addr <= ctrl.tag & ctrl.idx & ctrl.ofs & \"00\"; port map addr_i => cache_o.addr"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "cache_o.data",
+      "type": "std_ulogic_vector(31 downto 0)",
+      "kind": "signal",
+      "function": "cache write data bus",
+      "functionality": "Carries write data to the cache memory instance; typically comes from host_req_i.data or from bus_rsp_i.data during downloads and maps to the memory wdata_i port.",
+      "role": [
+        "feeds memory write data",
+        "used for host writes and downloads"
+      ],
+      "relationship": [
+        {
+          "type": "CARRIES",
+          "targets": [
+            "host_req_i.data"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "neorv32_cache_memory_inst.wdata_i"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "bus_rsp_i.data"
+          ]
+        }
+      ],
+      "evidence": "cache_o.data <= host_req_i.data default; S_DOWNLOAD_RSP sets cache_o.data <= bus_rsp_i.data; port map wdata_i => cache_o.data"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "cache_o.we",
+      "type": "std_ulogic_vector(3 downto 0)",
+      "kind": "signal",
+      "function": "cache write-enable mask",
+      "functionality": "Byte write enables presented to the cache memory; default zero, set from host_req_i.ben on host writes and set to all ones during download responses, and routed to memory we_i.",
+      "role": [
+        "controls memory write lanes",
+        "driven by host writes and downloads"
+      ],
+      "relationship": [
+        {
+          "type": "CARRIES",
+          "targets": [
+            "host_req_i.ben"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "neorv32_cache_memory_inst.we_i"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "ctrl.state"
+          ]
+        }
+      ],
+      "evidence": "cache_o.we <= (others => '0') default; S_LOOKUP sets cache_o.we <= host_req_i.ben for writes; S_DOWNLOAD_RSP sets cache_o.we <= (others=>'1'); port map we_i => cache_o.we"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "cache_i",
+      "type": "cache_i_t",
+      "kind": "signal",
+      "function": "cache memory status and read data bundle",
+      "functionality": "Aggregate input record from the cache memory instance providing hit status and read data. It is driven by the memory instance's outputs and read by controller combinational logic and fed to host_rsp_o.",
+      "role": [
+        "receives memory outputs",
+        "supplies hit and data to control"
+      ],
+      "relationship": [
+        {
+          "type": "AGGREGATES",
+          "targets": [
+            "cache_i.sta_hit",
+            "cache_i.data"
+          ]
+        },
+        {
+          "type": "SLICES",
+          "targets": []
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "host_rsp_o.data"
+          ]
+        },
+        {
+          "type": "ISOLATED",
+          "targets": []
+        }
+      ],
+      "evidence": "port map rdata_o => cache_i.data and hit_o => cache_i.sta_hit; cache_i used in ctrl_engine_comb to test sta_hit and supply host_rsp_o.data"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "cache_i.sta_hit",
+      "type": "std_ulogic",
+      "kind": "signal",
+      "function": "cache hit indicator",
+      "functionality": "Indicates whether the requested address hits in the cache; driven by the memory instance and used in lookup state decisions to choose direct response, write-through, or download paths.",
+      "role": [
+        "selects lookup outcome",
+        "drives direct vs download decisions"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "ctrl_nxt.state"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "host_rsp_o.data"
+          ]
+        },
+        {
+          "type": "CARRIES",
+          "targets": [
+            "neorv32_cache_memory_inst.hit_o"
+          ]
+        }
+      ],
+      "evidence": "S_LOOKUP tests if cache_i.sta_hit = '1' to choose responses; port map hit_o => cache_i.sta_hit"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "cache_i.data",
+      "type": "std_ulogic_vector(31 downto 0)",
+      "kind": "signal",
+      "function": "cache read data input",
+      "functionality": "Provides 32-bit read data from the cache memory instance to controller; used as default source for host response data and in lookup logic.",
+      "role": [
+        "provides read data to host",
+        "feeds lookup responses"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "host_rsp_o.data"
+          ]
+        },
+        {
+          "type": "CARRIES",
+          "targets": [
+            "neorv32_cache_memory_inst.rdata_o"
+          ]
+        }
+      ],
+      "evidence": "host_rsp_o.data <= cache_i.data default; port map rdata_o => cache_i.data"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "ctrl",
+      "type": "ctrl_t",
+      "kind": "register",
+      "function": "controller state and buffers",
+      "functionality": "Register holding the current controller state, buffered request flags, error/dir flags and selected tag/index/offset; updated on clk_i from ctrl_nxt and initialized on reset.",
+      "role": [
+        "holds controller state across cycles",
+        "stores buffered request/sync/error flags",
+        "provides tag/index/offset for downloads"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "ctrl_nxt"
+          ]
+        },
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "clk_i",
+            "rstn_i"
+          ]
+        }
+      ],
+      "evidence": "process ctrl_engine_sync assigns ctrl <= ctrl_nxt on rising_edge(clk_i); reset branch assigns ctrl.* when rstn_i = '0'"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "ctrl.state",
+      "type": "state_t",
+      "kind": "register",
+      "function": "finite state machine state",
+      "functionality": "Holds the current FSM state (S_IDLE, S_LOOKUP, ...); updated from ctrl_nxt in the clocked process and used to select control actions in the combinational engine.",
+      "role": [
+        "holds FSM state",
+        "governs control-path decisions"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "ctrl_nxt.state"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "ctrl_engine_comb"
+          ]
+        }
+      ],
+      "evidence": "ctrl_engine_sync updates ctrl <= ctrl_nxt on rising_edge(clk_i); ctrl.state used in case statement in ctrl_engine_comb"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "ctrl.buf_req",
+      "type": "std_ulogic",
+      "kind": "register",
+      "function": "buffered request flag",
+      "functionality": "Sticky flag that records an outstanding host request (set from host_req_i.stb) and held across cycles; cleared in combinational next-state logic when consumed.",
+      "role": [
+        "holds pending request across cycles",
+        "gates state entry from idle"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "ctrl_nxt.buf_req"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "ctrl_nxt.state"
+          ]
+        }
+      ],
+      "evidence": "ctrl_engine_sync captures ctrl <= ctrl_nxt; ctrl_nxt.buf_req <= ctrl.buf_req or host_req_i.stb; S_IDLE tests ctrl.buf_req"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "ctrl.buf_sync",
+      "type": "std_ulogic",
+      "kind": "register",
+      "function": "buffered fence/sync flag",
+      "functionality": "Sticky fence flag set by host_req_i.fence and cleared when a clear is performed; it can trigger S_CLEAR from idle and is stored across cycles.",
+      "role": [
+        "holds pending fence across cycles",
+        "triggers clear state"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "ctrl_nxt.buf_sync"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "ctrl_nxt.state"
+          ]
+        }
+      ],
+      "evidence": "ctrl_engine_sync captures ctrl <= ctrl_nxt; ctrl_nxt.buf_sync <= ctrl.buf_sync or host_req_i.fence; S_IDLE checks ctrl.buf_sync"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "ctrl.buf_err",
+      "type": "std_ulogic",
+      "kind": "register",
+      "function": "buffered error flag",
+      "functionality": "Records whether any bus error occurred during a multi-beat download; updated with bus_rsp_i.err during download responses and inspected on download completion.",
+      "role": [
+        "stores download error status",
+        "affects download completion actions"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "ctrl_nxt.buf_err"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "bus_rsp_i.err"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "cache_o.cmd_inv",
+            "host_rsp_o.ack",
+            "host_rsp_o.err"
+          ]
+        }
+      ],
+      "evidence": "S_DOWNLOAD_RSP: ctrl_nxt.buf_err <= ctrl.buf_err or bus_rsp_i.err; S_DOWNLOAD_DONE checks ctrl.buf_err to invalidate and set host_rsp_o"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "ctrl.buf_dir",
+      "type": "std_ulogic",
+      "kind": "register",
+      "function": "direct-mode request flag",
+      "functionality": "When set, forces the current request to be forwarded directly to the bus (bypass cache). It is set in IDLE based on address/amo/debug and cleared in next-state defaults.",
+      "role": [
+        "selects direct/bypass handling",
+        "stored across cycle boundary"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "ctrl_nxt.buf_dir"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "bus_req_o.stb",
+            "ctrl_nxt.state"
+          ]
+        }
+      ],
+      "evidence": "S_IDLE sets ctrl_nxt.buf_dir <= '1' when address in UC range or amo/debug; S_LOOKUP checks ctrl.buf_dir to set bus_req_o.stb"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "ctrl.tag",
+      "type": "std_ulogic_vector(tag_size_c-1 downto 0)",
+      "kind": "register",
+      "function": "cached-line tag register",
+      "functionality": "Holds the tag bits derived from the host address at lookup time and used to form addresses for downloads; loaded from ctrl_nxt.tag in the clocked update.",
+      "role": [
+        "holds tag for cache operations",
+        "sources download addresses"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "ctrl_nxt.tag"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "cache_o.addr",
+            "bus_req_o.addr"
+          ]
+        }
+      ],
+      "evidence": "S_LOOKUP sets ctrl_nxt.tag <= host_req_i.addr(...); S_DOWNLOAD_REQ uses ctrl.tag & ctrl.idx & ctrl.ofs for addresses"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "ctrl.idx",
+      "type": "std_ulogic_vector(index_size_c-1 downto 0)",
+      "kind": "register",
+      "function": "cache index register",
+      "functionality": "Stores the index bits of the address when a lookup occurs and is used with tag/ofs to form download addresses; updated from ctrl_nxt.idx and captured on clock edges.",
+      "role": [
+        "holds index for cache addressing",
+        "used to form download addresses"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "ctrl_nxt.idx"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "cache_o.addr",
+            "bus_req_o.addr"
+          ]
+        }
+      ],
+      "evidence": "S_LOOKUP sets ctrl_nxt.idx <= host_req_i.addr(...); S_DOWNLOAD_REQ uses ctrl.idx in bus/cache addresses"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "ctrl.ofs",
+      "type": "std_ulogic_vector(offset_size_c-1 downto 0)",
+      "kind": "register",
+      "function": "cache block offset counter",
+      "functionality": "Tracks the current word offset inside a cache block during multi-beat downloads; incremented in S_DOWNLOAD_RSP when a bus beat completes and captured across cycles.",
+      "role": [
+        "holds download beat offset",
+        "addresses successive words during download"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "ctrl_nxt.ofs"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "bus_rsp_i.ack"
+          ]
+        }
+      ],
+      "evidence": "S_DOWNLOAD_RSP increments ctrl_nxt.ofs <= std_ulogic_vector(unsigned(ctrl.ofs) + 1) on bus_rsp_i.ack"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "ctrl_nxt",
+      "type": "ctrl_t",
+      "kind": "signal",
+      "function": "next-state controller bundle",
+      "functionality": "Combinational next-state record computed by ctrl_engine_comb from current ctrl, host_req_i, cache_i and bus_rsp_i; then captured into ctrl on clk_i.",
+      "role": [
+        "holds combinational next-state",
+        "source for ctrl capture"
+      ],
+      "relationship": [
+        {
+          "type": "AGGREGATES",
+          "targets": [
+            "ctrl_nxt.state",
+            "ctrl_nxt.buf_req",
+            "ctrl_nxt.buf_sync",
+            "ctrl_nxt.buf_err",
+            "ctrl_nxt.buf_dir",
+            "ctrl_nxt.tag",
+            "ctrl_nxt.idx",
+            "ctrl_nxt.ofs"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "ctrl"
+          ]
+        },
+        {
+          "type": "SLICES",
+          "targets": []
+        }
+      ],
+      "evidence": "ctrl_engine_comb assigns defaults to ctrl_nxt.* and modifies them in state case; ctrl captures ctrl_nxt on rising_edge(clk_i)"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "ctrl_nxt.state",
+      "type": "state_t",
+      "kind": "signal",
+      "function": "next FSM state",
+      "functionality": "Combinationally computed successor state of the controller FSM based on current ctrl, host_req_i, cache_i and bus_rsp_i; written in every case branch and then captured into ctrl.state on clock edge.",
+      "role": [
+        "drives next FSM state",
+        "computed combinationally"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "ctrl.state",
+            "host_req_i",
+            "cache_i",
+            "bus_rsp_i"
+          ]
+        },
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "ctrl.state"
+          ]
+        }
+      ],
+      "evidence": "ctrl_engine_comb sets ctrl_nxt.state <= ... in case ctrl.state branches; ctrl <= ctrl_nxt in clocked process"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "ctrl_nxt.buf_req",
+      "type": "std_ulogic",
+      "kind": "signal",
+      "function": "next buffered request flag",
+      "functionality": "Combinational next value for buf_req: set from ctrl.buf_req or host_req_i.stb and cleared in lookup; captured to ctrl.buf_req on clock edge.",
+      "role": [
+        "next-state pending request flag",
+        "feeds ctrl capture"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "ctrl.buf_req",
+            "host_req_i.stb"
+          ]
+        },
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "ctrl.buf_req"
+          ]
+        }
+      ],
+      "evidence": "ctrl_nxt.buf_req <= ctrl.buf_req or host_req_i.stb default; cleared in S_LOOKUP; captured into ctrl.buf_req on clock"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "ctrl_nxt.buf_sync",
+      "type": "std_ulogic",
+      "kind": "signal",
+      "function": "next buffered fence flag",
+      "functionality": "Combinational next value for buf_sync built from previous buf_sync or host_req_i.fence; cleared on performing a clear and captured to ctrl on clock edge.",
+      "role": [
+        "next-state fence flag",
+        "stored into ctrl on clock"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "ctrl.buf_sync",
+            "host_req_i.fence"
+          ]
+        },
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "ctrl.buf_sync"
+          ]
+        }
+      ],
+      "evidence": "ctrl_nxt.buf_sync <= ctrl.buf_sync or host_req_i.fence default; S_CLEAR clears ctrl_nxt.buf_sync"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "ctrl_nxt.buf_err",
+      "type": "std_ulogic",
+      "kind": "signal",
+      "function": "next buffered error flag",
+      "functionality": "Combinational accumulator for bus error during download; receives current ctrl.buf_err ORed with bus_rsp_i.err in S_DOWNLOAD_RSP and is then captured into ctrl.buf_err.",
+      "role": [
+        "next-state error accumulator",
+        "feeds ctrl capture"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "ctrl.buf_err",
+            "bus_rsp_i.err"
+          ]
+        },
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "ctrl.buf_err"
+          ]
+        }
+      ],
+      "evidence": "S_DOWNLOAD_RSP: ctrl_nxt.buf_err <= ctrl.buf_err or bus_rsp_i.err; captured into ctrl.buf_err"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "ctrl_nxt.buf_dir",
+      "type": "std_ulogic",
+      "kind": "signal",
+      "function": "next direct-mode flag",
+      "functionality": "Combinational next value for buf_dir: default cleared on entry then set in S_IDLE if address/amo/debug conditions apply; captured to ctrl.buf_dir on clock edge.",
+      "role": [
+        "next-state direct-mode indicator",
+        "affects immediate bus forwarding"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "host_req_i.addr",
+            "host_req_i.amo",
+            "host_req_i.debug"
+          ]
+        },
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "ctrl.buf_dir"
+          ]
+        }
+      ],
+      "evidence": "S_IDLE sets ctrl_nxt.buf_dir <= '1' when unsigned(host_req_i.addr(31 downto 28)) >= unsigned(UC_BEGIN) or host_req_i.amo/debug"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "ctrl_nxt.tag",
+      "type": "std_ulogic_vector(tag_size_c-1 downto 0)",
+      "kind": "signal",
+      "function": "next tag field",
+      "functionality": "Combinationally derived tag bits from host_req_i.addr in S_LOOKUP and preserved otherwise; captured into ctrl.tag on clock edge for later downloads.",
+      "role": [
+        "next-state tag value",
+        "drives subsequent download addresses"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "host_req_i.addr"
+          ]
+        },
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "ctrl.tag"
+          ]
+        }
+      ],
+      "evidence": "S_LOOKUP sets ctrl_nxt.tag <= host_req_i.addr(31 downto 32-tag_size_c); captured into ctrl.tag on rising_edge(clk_i)"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "ctrl_nxt.idx",
+      "type": "std_ulogic_vector(index_size_c-1 downto 0)",
+      "kind": "signal",
+      "function": "next index field",
+      "functionality": "Combinationally derived index bits from host_req_i.addr in S_LOOKUP and captured to ctrl.idx for download/address formation.",
+      "role": [
+        "next-state index value",
+        "used to form download address"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "host_req_i.addr"
+          ]
+        },
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "ctrl.idx"
+          ]
+        }
+      ],
+      "evidence": "S_LOOKUP sets ctrl_nxt.idx <= host_req_i.addr(...) ; captured into ctrl.idx"
+    },
+    {
+      "entity": "neorv32_cache",
+      "name": "ctrl_nxt.ofs",
+      "type": "std_ulogic_vector(offset_size_c-1 downto 0)",
+      "kind": "signal",
+      "function": "next offset field",
+      "functionality": "Combinationally set to zero on lookup start and incremented across download responses; captured into ctrl.ofs as the download beat counter.",
+      "role": [
+        "next-state offset counter",
+        "used to index download beats"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "ctrl.ofs",
+            "bus_rsp_i.ack"
+          ]
+        },
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "ctrl.ofs"
+          ]
+        }
+      ],
+      "evidence": "S_LOOKUP sets ctrl_nxt.ofs <= (others => '0'); S_DOWNLOAD_RSP increments ctrl_nxt.ofs when bus_rsp_i.ack = '1'"
+    },
+    {
+      "entity": "neorv32_cache_memory",
+      "name": "valid_mem",
+      "type": "std_ulogic_vector(NUM_BLOCKS-1 downto 0)",
+      "kind": "register",
+      "function": "per-line valid bits storage",
+      "functionality": "Holds NUM_BLOCKS valid bits updated on clock: cleared by rstn_i/ clr_i, cleared per-index by inv_i, and set per-index by new_i; its selected bit is read into valid_mem_rd.",
+      "role": [
+        "holds per-line valid bits",
+        "UPDATED by clr/inv/new",
+        "SOURCES valid_mem_rd"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "valid_mem_rd"
+          ]
+        }
+      ],
+      "evidence": "status_memory assigns valid_mem <= (others=>'0') and indexed writes valid_mem(to_integer(unsigned(acc_idx))) <= '0'/'1'."
+    },
+    {
+      "entity": "neorv32_cache_memory",
+      "name": "valid_mem_rd",
+      "type": "std_ulogic",
+      "kind": "register",
+      "function": "selected valid bit register",
+      "functionality": "Captures the valid_mem bit indexed by acc_idx at clock edge and provides that single-bit to the hit comparator and external logic.",
+      "role": [
+        "pipeline register for valid bit",
+        "CAPTURES valid_mem",
+        "SOURCES hit_o"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "valid_mem"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "hit_o"
+          ]
+        }
+      ],
+      "evidence": "status_memory: valid_mem_rd <= valid_mem(to_integer(unsigned(acc_idx))) at rising_edge(clk_i)."
+    },
+    {
+      "entity": "neorv32_cache_memory",
+      "name": "tag_mem",
+      "type": "tag_mem_t",
+      "kind": "register",
+      "function": "per-line tag storage",
+      "functionality": "Stores tag vectors per index; on new_i at a clock edge the tag at acc_idx is written from acc_tag, and tag entries are read into tag_mem_rd for hit comparison.",
+      "role": [
+        "holds tags per index",
+        "UPDATED on fills",
+        "SOURCES tag_mem_rd"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "acc_tag"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "tag_mem_rd"
+          ]
+        }
+      ],
+      "evidence": "tag_memory: if (new_i='1') then tag_mem(to_integer(unsigned(acc_idx))) <= acc_tag; tag_mem_rd <= tag_mem(...)."
+    },
+    {
+      "entity": "neorv32_cache_memory",
+      "name": "tag_mem_rd",
+      "type": "std_ulogic_vector(tag_size_c-1 downto 0)",
+      "kind": "register",
+      "function": "selected tag register",
+      "functionality": "Captures the tag_mem entry indexed by acc_idx on clock edge and provides the stored tag for the hit comparator.",
+      "role": [
+        "pipeline register for tag",
+        "CAPTURES tag_mem",
+        "SOURCES hit_o"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "tag_mem"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "hit_o"
+          ]
+        }
+      ],
+      "evidence": "tag_memory: tag_mem_rd <= tag_mem(to_integer(unsigned(acc_idx))) inside rising_edge(clk_i)."
+    },
+    {
+      "entity": "neorv32_cache_memory",
+      "name": "data_mem_b0",
+      "type": "data_mem_t",
+      "kind": "register",
+      "function": "byte-0 storage array",
+      "functionality": "Array of stored lowest-order bytes; on enabled writes stores wdata_i(7 downto 0) at acc_adr index and supplies that byte to rdata_o(7 downto 0) on read (clocked).",
+      "role": [
+        "stores byte 0 per address",
+        "CAPTURES wdata_i(7 downto 0) on write",
+        "SOURCES rdata_o(7 downto 0)"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "wdata_i"
+          ],
+          "bits": "7 downto 0"
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "rdata_o"
+          ],
+          "bits": "7 downto 0"
+        },
+        {
+          "type": "SELECTS",
+          "targets": [
+            "data_mem_b0"
+          ]
+        }
+      ],
+      "evidence": "data_memory: if (we_i(0)='1') then data_mem_b0(to_integer(unsigned(acc_adr))) <= wdata_i(7 downto 0); rdata_o(7 downto 0) <= data_mem_b0(...)."
+    },
+    {
+      "entity": "neorv32_cache_memory",
+      "name": "data_mem_b1",
+      "type": "data_mem_t",
+      "kind": "register",
+      "function": "byte-1 storage array",
+      "functionality": "Array of stored second bytes; on enabled writes stores wdata_i(15 downto 8) at acc_adr index and supplies that byte to rdata_o(15 downto 8) on read (clocked).",
+      "role": [
+        "stores byte 1 per address",
+        "CAPTURES wdata_i(15 downto 8) on write",
+        "SOURCES rdata_o(15 downto 8)"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "wdata_i"
+          ],
+          "bits": "15 downto 8"
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "rdata_o"
+          ],
+          "bits": "15 downto 8"
+        },
+        {
+          "type": "SELECTS",
+          "targets": [
+            "data_mem_b1"
+          ]
+        }
+      ],
+      "evidence": "data_memory: if (we_i(1)='1') then data_mem_b1(to_integer(unsigned(acc_adr))) <= wdata_i(15 downto 8); rdata_o(15 downto 8) <= data_mem_b1(...)."
+    },
+    {
+      "entity": "neorv32_cache_memory",
+      "name": "data_mem_b2",
+      "type": "data_mem_t",
+      "kind": "register",
+      "function": "byte-2 storage array",
+      "functionality": "Array of stored third bytes; on enabled writes stores wdata_i(23 downto 16) at acc_adr index and supplies that byte to rdata_o(23 downto 16) on read (clocked).",
+      "role": [
+        "stores byte 2 per address",
+        "CAPTURES wdata_i(23 downto 16) on write",
+        "SOURCES rdata_o(23 downto 16)"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "wdata_i"
+          ],
+          "bits": "23 downto 16"
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "rdata_o"
+          ],
+          "bits": "23 downto 16"
+        },
+        {
+          "type": "SELECTS",
+          "targets": [
+            "data_mem_b2"
+          ]
+        }
+      ],
+      "evidence": "data_memory: if (we_i(2)='1') then data_mem_b2(to_integer(unsigned(acc_adr))) <= wdata_i(23 downto 16); rdata_o(23 downto 16) <= data_mem_b2(...)."
+    },
+    {
+      "entity": "neorv32_cache_memory",
+      "name": "data_mem_b3",
+      "type": "data_mem_t",
+      "kind": "register",
+      "function": "byte-3 storage array",
+      "functionality": "Array of stored highest-order bytes; on enabled writes stores wdata_i(31 downto 24) at acc_adr index and supplies that byte to rdata_o(31 downto 24) on read (clocked).",
+      "role": [
+        "stores byte 3 per address",
+        "CAPTURES wdata_i(31 downto 24) on write",
+        "SOURCES rdata_o(31 downto 24)"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "wdata_i"
+          ],
+          "bits": "31 downto 24"
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "rdata_o"
+          ],
+          "bits": "31 downto 24"
+        },
+        {
+          "type": "SELECTS",
+          "targets": [
+            "data_mem_b3"
+          ]
+        }
+      ],
+      "evidence": "data_memory: if (we_i(3)='1') then data_mem_b3(to_integer(unsigned(acc_adr))) <= wdata_i(31 downto 24); rdata_o(31 downto 24) <= data_mem_b3(...)."
+    },
+    {
+      "entity": "neorv32_cache_memory",
+      "name": "acc_tag",
+      "type": "std_ulogic_vector(tag_size_c-1 downto 0)",
+      "kind": "signal",
+      "function": "extracted address tag",
+      "functionality": "Derives the tag slice from addr_i and provides it to tag writes and the hit comparator; assigned combinationally from addr_i slices.",
+      "role": [
+        "derived tag",
+        "SOURCES tag write and hit comparator"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "tag_mem"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "hit_o"
+          ]
+        }
+      ],
+      "evidence": "Concurrent: acc_tag <= addr_i(31 downto 31-(tag_size_c-1)); used in tag_mem write and hit compare."
+    },
+    {
+      "entity": "neorv32_cache_memory",
+      "name": "acc_idx",
+      "type": "std_ulogic_vector(index_size_c-1 downto 0)",
+      "kind": "signal",
+      "function": "extracted index bits",
+      "functionality": "Derives index bits from addr_i, selects entries in tag and valid memories and participates in acc_adr formation via concatenation with acc_off.",
+      "role": [
+        "derived index",
+        "SELECTS entries of tag and valid memories",
+        "SOURCES acc_adr"
+      ],
+      "relationship": [
+        {
+          "type": "SELECTS",
+          "targets": [
+            "valid_mem",
+            "tag_mem",
+            "valid_mem_rd",
+            "tag_mem_rd"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "acc_adr"
+          ]
+        }
+      ],
+      "evidence": "acc_idx <= addr_i(...); used as to_integer(unsigned(acc_idx)) for indexing valid_mem and tag_mem and concatenated into acc_adr."
+    },
+    {
+      "entity": "neorv32_cache_memory",
+      "name": "acc_off",
+      "type": "std_ulogic_vector(offset_size_c-1 downto 0)",
+      "kind": "signal",
+      "function": "extracted block offset",
+      "functionality": "Derives the offset bits from addr_i and is concatenated with acc_idx to form acc_adr for byte addressing of data memories.",
+      "role": [
+        "derived offset",
+        "SOURCES acc_adr"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "acc_adr"
+          ]
+        }
+      ],
+      "evidence": "acc_off <= addr_i(2+(offset_size_c-1) downto 2); then acc_adr <= acc_idx & acc_off."
+    },
+    {
+      "entity": "neorv32_cache_memory",
+      "name": "acc_adr",
+      "type": "std_ulogic_vector((index_size_c+offset_size_c)-1 downto 0)",
+      "kind": "signal",
+      "function": "combined index+offset address",
+      "functionality": "Concatenates acc_idx and acc_off to form a combined address used to index the byte arrays data_mem_b0..b3 for reads and writes.",
+      "role": [
+        "derived combined address",
+        "SELECTS entries in data byte memories"
+      ],
+      "relationship": [
+        {
+          "type": "AGGREGATES",
+          "targets": [
+            "acc_idx",
+            "acc_off"
+          ]
+        },
+        {
+          "type": "SELECTS",
+          "targets": [
+            "data_mem_b0",
+            "data_mem_b1",
+            "data_mem_b2",
+            "data_mem_b3"
+          ]
+        }
+      ],
+      "evidence": "acc_adr <= acc_idx & acc_off; used as index to data_mem_b0..b3 in data_memory (to_integer(unsigned(acc_adr)))."
+    }
+  ],
+  "_issues": {
+    "banned_word": {
+      "may": 2
+    },
+    "_offenders": {
+      "neorv32_cache/neorv32_cache/host_req_i.lock": 1,
+      "neorv32_cache/neorv32_cache/host_rsp_o": 1
+    },
+    "unresolved_target": {
+      "ctrl_engine_comb": 1
+    }
+  }
+}

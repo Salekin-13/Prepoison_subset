@@ -1,0 +1,1533 @@
+{
+  "module": "neorv32_cpu_pmp",
+  "entities": [
+    "neorv32_cpu_pmp"
+  ],
+  "ports": [
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "clk_i",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "global clock",
+      "functionality": "Drives rising_edge sampling for PMP state elements. It times updates of pmpcfg, pmpaddr, addr_mask and the fault output so those registers change synchronously on clock edges.",
+      "role": [
+        "clock source",
+        "synchronises register updates"
+      ],
+      "relationship": [
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "pmpcfg"
+          ]
+        },
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "pmpaddr"
+          ]
+        },
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "addr_mask"
+          ]
+        },
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "fault_o"
+          ]
+        }
+      ],
+      "evidence": "rising_edge(clk_i) branches in csr_pmpcfg, csr_pmpaddr, addr_masking and fault_check processes"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "rstn_i",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "active-low reset",
+      "functionality": "Asynchronously or synchronously forces initial values for PMP registers. It resets pmpcfg, pmpaddr, addr_mask and fault_o in the processes' reset branches.",
+      "role": [
+        "reset source",
+        "initialises registers"
+      ],
+      "relationship": [
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "pmpcfg"
+          ]
+        },
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "pmpaddr"
+          ]
+        },
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "addr_mask"
+          ]
+        },
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "fault_o"
+          ]
+        }
+      ],
+      "evidence": "if (rstn_i = '0') reset branches in csr_pmpcfg, csr_pmpaddr, addr_masking and fault_check processes"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i",
+      "dir": "in",
+      "type": "ctrl_bus_t",
+      "function": "control bus bundle input",
+      "functionality": "Provides CSR addresses, enables, write data and access/control fields; its constituent fields drive CSR write enables, address selection, privilege selection and permission computation, and thereby influence internal PMP state and fault reporting.",
+      "role": [
+        "input bundle",
+        "supplies CSR control",
+        "selects access address and privileges",
+        "gates CSR write enables"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "pmpcfg_we"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "pmpaddr_we"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "acc_addr"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "acc_priv"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "allow"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "cfg_rd32"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "addr_rd"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "fault_o"
+          ]
+        }
+      ],
+      "evidence": "process headers and many RHS uses: csr_we_cfg, csr_we_addr, acc_addr/acc_priv assignments, perm_gen and fault_check processes (uses fields like csr_addr, csr_we, csr_wdata, lsu_mo_we, lsu_priv, lsu_rw, cpu_priv, cpu_debug)"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.if_fence",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused bus field",
+      "functionality": "Not referenced anywhere in this source; the entity neither reads nor forwards this field.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.if_fence in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.if_reset",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused bus field",
+      "functionality": "Not referenced in this source; no logic consumes or forwards it here.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.if_reset in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.if_ack",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused bus field",
+      "functionality": "Not referenced in this source; it does not affect PMP logic here.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.if_ack in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.pc_cur",
+      "dir": "in",
+      "type": "std_ulogic_vector(31 downto 0)",
+      "function": "unused PC field",
+      "functionality": "Declared in the control bundle but not read by this entity; it does not contribute to PMP decisions here.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.pc_cur in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.pc_nxt",
+      "dir": "in",
+      "type": "std_ulogic_vector(31 downto 0)",
+      "function": "next-PC address source",
+      "functionality": "Supplies the PC value used as the access address when lsu_mo_we = '0'; that acc_addr is then used for matching and permission checks.",
+      "role": [
+        "address operand",
+        "combinational input"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "acc_addr"
+          ]
+        }
+      ],
+      "evidence": "acc_addr <= ctrl_i.pc_nxt when (ctrl_i.lsu_mo_we = '0') else addr_ls_i"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.pc_ret",
+      "dir": "in",
+      "type": "std_ulogic_vector(31 downto 0)",
+      "function": "unused PC field",
+      "functionality": "Present in the control bundle but not read in this source.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.pc_ret in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.rf_wb_en",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused bus field",
+      "functionality": "Not referenced by this entity.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.rf_wb_en in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.rf_rs1",
+      "dir": "in",
+      "type": "std_ulogic_vector(4 downto 0)",
+      "function": "unused bus field",
+      "functionality": "Not referenced by this entity.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.rf_rs1 in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.rf_rs2",
+      "dir": "in",
+      "type": "std_ulogic_vector(4 downto 0)",
+      "function": "unused bus field",
+      "functionality": "Not referenced by this entity.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.rf_rs2 in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.rf_rd",
+      "dir": "in",
+      "type": "std_ulogic_vector(4 downto 0)",
+      "function": "unused bus field",
+      "functionality": "Not referenced by this entity.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.rf_rd in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.rf_zero_we",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused bus field",
+      "functionality": "Not referenced by this entity.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.rf_zero_we in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.alu_op",
+      "dir": "in",
+      "type": "std_ulogic_vector(2 downto 0)",
+      "function": "unused ALU field",
+      "functionality": "Part of the control bundle but not read here.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.alu_op in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.alu_sub",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused ALU field",
+      "functionality": "Present in the record but not used by PMP logic here.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.alu_sub in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.alu_opa_mux",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused ALU field",
+      "functionality": "Not referenced in this entity.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.alu_opa_mux in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.alu_opb_mux",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused ALU field",
+      "functionality": "Not referenced in this entity.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.alu_opb_mux in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.alu_unsigned",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused ALU field",
+      "functionality": "Not referenced in this entity.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.alu_unsigned in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.alu_imm",
+      "dir": "in",
+      "type": "std_ulogic_vector(31 downto 0)",
+      "function": "unused ALU immediate",
+      "functionality": "Not read by this entity.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.alu_imm in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.alu_cp_alu",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused co-processor field",
+      "functionality": "Present but not used here.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.alu_cp_alu in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.alu_cp_cfu",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused co-processor field",
+      "functionality": "Present but not used here.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.alu_cp_cfu in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.alu_cp_fpu",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused co-processor field",
+      "functionality": "Present but not used here.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.alu_cp_fpu in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.lsu_req",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused LSU request field",
+      "functionality": "Part of the bundle but not read in this source.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.lsu_req in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.lsu_rw",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "LSU read/write indicator",
+      "functionality": "Used by permission logic to choose the R or W permission check path when lsu_mo_we indicates a memory operation; it thus influences allow(r) computation.",
+      "role": [
+        "permission selector",
+        "combinational input"
+      ],
+      "relationship": [
+        {
+          "type": "GATES",
+          "targets": [
+            "allow"
+          ]
+        }
+      ],
+      "evidence": "perm_gen: branches using ctrl_i.lsu_rw to select read vs write permission path"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.lsu_amo",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused LSU AMO field",
+      "functionality": "Not referenced by the PMP logic here.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.lsu_amo in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.lsu_mo_we",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "memory-op indicator",
+      "functionality": "Controls whether acc_addr/acc_priv come from the core (pc_nxt/cpu_priv) or from the LSU (addr_ls_i/lsu_priv); it also selects the instruction vs memory permission branch in the allow computation.",
+      "role": [
+        "branch selector",
+        "gates address/privilege selection"
+      ],
+      "relationship": [
+        {
+          "type": "GATES",
+          "targets": [
+            "acc_addr"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "acc_priv"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "allow"
+          ]
+        }
+      ],
+      "evidence": "acc_addr and acc_priv conditional assignments; perm_gen's outer if (ctrl_i.lsu_mo_we = '0')"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.lsu_fence",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused LSU fence field",
+      "functionality": "Not referenced by PMP logic in this source.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.lsu_fence in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.lsu_priv",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "LSU privilege input",
+      "functionality": "Supplies the privilege level used for memory operations (chosen into acc_priv when lsu_mo_we = '1'), which then factors into the allow computation.",
+      "role": [
+        "privilege operand",
+        "combinational input"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "acc_priv"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "allow"
+          ]
+        }
+      ],
+      "evidence": "acc_priv <= ctrl_i.cpu_priv when (ctrl_i.lsu_mo_we = '0') else ctrl_i.lsu_priv; perm_gen reads acc_priv and ctrl_i.lsu_priv in branches"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.csr_we",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "CSR write enable",
+      "functionality": "Used to qualify CSR writes: combined with csr_addr it drives pmpcfg_we and pmpaddr_we signals that enable writes into PMP configuration and address registers.",
+      "role": [
+        "write enable input",
+        "gates CSR write strobes"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "pmpcfg_we"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "pmpaddr_we"
+          ]
+        }
+      ],
+      "evidence": "csr_we_cfg and csr_we_addr processes compare ctrl_i.csr_we and ctrl_i.csr_addr to set pmpcfg_we/pmpaddr_we"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.csr_re",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused CSR read-enable",
+      "functionality": "Declared but not used for CSR read selection inside this entity; csr_read_access uses csr_addr directly.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.csr_re in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.csr_addr",
+      "dir": "in",
+      "type": "std_ulogic_vector(11 downto 0)",
+      "function": "CSR address selector",
+      "functionality": "Chooses which CSR word is read or which pmpcfg/pmpaddr write-lane to enable; its low bits index pmpcfg_we/pmpaddr_we and select entries from cfg_rd32/addr_rd for csr_o.",
+      "role": [
+        "index selector",
+        "CSR read/write selector"
+      ],
+      "relationship": [
+        {
+          "type": "SELECTS",
+          "targets": [
+            "pmpcfg_we"
+          ]
+        },
+        {
+          "type": "SELECTS",
+          "targets": [
+            "pmpaddr_we"
+          ]
+        },
+        {
+          "type": "SELECTS",
+          "targets": [
+            "cfg_rd32"
+          ]
+        },
+        {
+          "type": "SELECTS",
+          "targets": [
+            "addr_rd"
+          ]
+        },
+        {
+          "type": "SELECTS",
+          "targets": [
+            "csr_o"
+          ]
+        }
+      ],
+      "evidence": "csr_we_cfg and csr_we_addr processes index write enables; csr_read_access uses ctrl_i.csr_addr to choose cfg_rd32 or addr_rd outputs"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.csr_wdata",
+      "dir": "in",
+      "type": "std_ulogic_vector(31 downto 0)",
+      "function": "CSR write data",
+      "functionality": "Supplies write data bits for PMP configuration and address writes; pmpcfg and pmpaddr capture slices of this vector when their write enables are active.",
+      "role": [
+        "write-data source",
+        "provides configuration bits"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "pmpcfg"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "pmpaddr"
+          ]
+        }
+      ],
+      "evidence": "pmpcfg process assigns pmpcfg(i)(...) <= ctrl_i.csr_wdata(...); pmpaddr process assigns pmpaddr(i) <= \"00\" & ctrl_i.csr_wdata(XLEN-3 downto 0)"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.cnt_halt",
+      "dir": "in",
+      "type": "std_ulogic_vector(15 downto 0)",
+      "function": "unused counter field",
+      "functionality": "Part of the control record but not consumed in this entity.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.cnt_halt in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.cnt_event",
+      "dir": "in",
+      "type": "std_ulogic_vector(11 downto 0)",
+      "function": "unused counter field",
+      "functionality": "Part of the control record but not consumed in this entity.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.cnt_event in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.ir_funct3",
+      "dir": "in",
+      "type": "std_ulogic_vector(2 downto 0)",
+      "function": "unused instruction field",
+      "functionality": "Not referenced in this entity.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.ir_funct3 in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.ir_funct12",
+      "dir": "in",
+      "type": "std_ulogic_vector(11 downto 0)",
+      "function": "unused instruction field",
+      "functionality": "Not referenced in this entity.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.ir_funct12 in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.ir_opcode",
+      "dir": "in",
+      "type": "std_ulogic_vector(6 downto 0)",
+      "function": "unused instruction field",
+      "functionality": "Not referenced in this entity.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.ir_opcode in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.cpu_priv",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "CPU privilege input",
+      "functionality": "Supplies the CPU privilege level used for instruction accesses and, when chosen into acc_priv, factors into allow(r) permission computation.",
+      "role": [
+        "privilege operand",
+        "combinational input"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "acc_priv"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "allow"
+          ]
+        }
+      ],
+      "evidence": "acc_priv selection and perm_gen read ctrl_i.cpu_priv to decide allow(r)"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.cpu_sleep",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused CPU field",
+      "functionality": "Part of the bundle but unused by this entity.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.cpu_sleep in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.cpu_trap",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused CPU field",
+      "functionality": "Part of the bundle but unused by this entity.",
+      "role": [
+        "unused"
+      ],
+      "relationship": [],
+      "evidence": "no occurrences of ctrl_i.cpu_trap in the source"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "ctrl_i.cpu_debug",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "CPU debug input",
+      "functionality": "Used to suppress fault reporting: the fault output samples (not ctrl_i.cpu_debug) AND fail(0) on clock edges, so cpu_debug effectively gates fault generation at the output.",
+      "role": [
+        "fault gate",
+        "combinational input"
+      ],
+      "relationship": [
+        {
+          "type": "GATES",
+          "targets": [
+            "fault_o"
+          ]
+        }
+      ],
+      "evidence": "fault_check process: fault_o <= (not ctrl_i.cpu_debug) and fail(0) on rising_edge(clk_i)"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "csr_o",
+      "dir": "out",
+      "type": "std_ulogic_vector(XLEN-1 downto 0)",
+      "function": "CSR readback output",
+      "functionality": "Drives CSR read result to the outside based on ctrl_i.csr_addr: it presents packed pmpcfg bytes (cfg_rd32) or read-back addresses (addr_rd) onto the bus.",
+      "role": [
+        "CSR read output",
+        "exports internal readback"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "cfg_rd32"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "addr_rd"
+          ]
+        },
+        {
+          "type": "SELECTS",
+          "targets": [
+            "ctrl_i.csr_addr"
+          ]
+        }
+      ],
+      "evidence": "csr_read_access process assigns csr_o <= cfg_rd32(...) or addr_rd(...) based on ctrl_i.csr_addr"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "addr_ls_i",
+      "dir": "in",
+      "type": "std_ulogic_vector(XLEN-1 downto 0)",
+      "function": "LSU address input",
+      "functionality": "Supplies the load/store address used as acc_addr when lsu_mo_we = '1'; that chosen address is used for matching and permission checks.",
+      "role": [
+        "address operand",
+        "combinational input"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "acc_addr"
+          ]
+        }
+      ],
+      "evidence": "acc_addr <= ctrl_i.pc_nxt when (ctrl_i.lsu_mo_we = '0') else addr_ls_i"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "fault_o",
+      "dir": "out",
+      "type": "std_ulogic",
+      "function": "fault indicator output",
+      "functionality": "Reports the sampled fault condition synchronous to clk: on clock edges it captures the combination of not cpu_debug AND fail(0), producing an external fault signal.",
+      "role": [
+        "status output",
+        "reports sampled fault"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "fail"
+          ],
+          "bits": "0"
+        }
+      ],
+      "evidence": "fault_check process: on rising_edge(clk_i) fault_o <= (not ctrl_i.cpu_debug) and fail(0)"
+    }
+  ],
+  "signals": [
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "pmpcfg",
+      "type": "pmpcfg_t",
+      "kind": "register",
+      "function": "PMP configuration registers",
+      "functionality": "Holds per-region 8-bit PMP configuration captured from CSR write data when write-enable is set; supplies these cfg bytes for readback, matching and permission logic.",
+      "role": [
+        "registered PMP config",
+        "holds region permissions",
+        "gates address writes"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "ctrl_i.csr_wdata"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "cfg_rd"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "addr_rd"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "match"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "allow"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "pmpaddr"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "pmpcfg"
+          ]
+        }
+      ],
+      "evidence": "csr_pmpcfg process captures bits from ctrl_i.csr_wdata on rising_edge(clk_i); used by cfg_rd assignment, match_gen and perm_gen and gating pmpaddr writes"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "pmpcfg_we",
+      "type": "std_ulogic_vector(3 downto 0)",
+      "kind": "signal",
+      "function": "pmpcfg write strobes",
+      "functionality": "Derived from CSR address and csr_we; it marks which pmpcfg byte-lane is being written and thus gates writes into pmpcfg registers.",
+      "role": [
+        "write strobe",
+        "selects pmpcfg lane"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "ctrl_i.csr_addr"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "ctrl_i.csr_we"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "pmpcfg"
+          ]
+        }
+      ],
+      "evidence": "csr_we_cfg process sets pmpcfg_we based on ctrl_i.csr_addr(1 downto 0) and ctrl_i.csr_we"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "pmpaddr",
+      "type": "pmpaddr_t",
+      "kind": "register",
+      "function": "PMP address registers",
+      "functionality": "Holds per-region PMP address values captured from CSR write data (with top bits padded); these addresses feed readback logic and form the basis for region comparisons.",
+      "role": [
+        "registered PMP address",
+        "provides match/address readback"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "ctrl_i.csr_wdata"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "addr_rd"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "addr_mask_napot"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "cmp_ge"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "cmp_lt"
+          ]
+        }
+      ],
+      "evidence": "csr_pmpaddr process captures \"00\" & ctrl_i.csr_wdata(XLEN-3 downto 0) on rising_edge(clk_i); pmpaddr used in address_read_back, addr_mask_napot_gen and comparison expressions"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "pmpaddr_we",
+      "type": "std_ulogic_vector(15 downto 0)",
+      "kind": "signal",
+      "function": "pmpaddr write strobes",
+      "functionality": "Derived from CSR address and csr_we; it selects which pmpaddr entry to write and thus gates pmpaddr register updates.",
+      "role": [
+        "write strobe",
+        "selects pmpaddr lane"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "ctrl_i.csr_addr"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "ctrl_i.csr_we"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "pmpaddr"
+          ]
+        }
+      ],
+      "evidence": "csr_we_addr process sets pmpaddr_we based on ctrl_i.csr_addr(3 downto 0) and ctrl_i.csr_we"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "cfg_rd",
+      "type": "csr_cfg_rd_t",
+      "kind": "signal",
+      "function": "readback cfg bytes",
+      "functionality": "Carries a direct copy of each pmpcfg entry for readback and packing; it is assigned the pmpcfg bytes and then aggregated into 32-bit words.",
+      "role": [
+        "readback source",
+        "carries pmpcfg value"
+      ],
+      "relationship": [
+        {
+          "type": "CARRIES",
+          "targets": [
+            "pmpcfg"
+          ]
+        },
+        {
+          "type": "AGGREGATES",
+          "targets": [
+            "cfg_rd32"
+          ]
+        }
+      ],
+      "evidence": "cfg_rd(i) <= pmpcfg(i); cfg_rd32 packed from cfg_rd entries"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "cfg_rd32",
+      "type": "csr_cfg_rd32_t",
+      "kind": "signal",
+      "function": "packed cfg read words",
+      "functionality": "Aggregates four cfg_rd bytes into a 32-bit word for CSR reads; these words drive csr_o when CSR read selects them.",
+      "role": [
+        "packed readback",
+        "export source for csr_o"
+      ],
+      "relationship": [
+        {
+          "type": "AGGREGATES",
+          "targets": [
+            "cfg_rd"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "csr_o"
+          ]
+        }
+      ],
+      "evidence": "cfg_rd32(i) <= cfg_rd(i*4+3) & ... & cfg_rd(i*4+0); csr_read_access drives csr_o from cfg_rd32"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "addr_rd",
+      "type": "csr_addr_rd_t",
+      "kind": "signal",
+      "function": "address readback words",
+      "functionality": "Derived from pmpaddr and configuration bits (masks, TOR settings) to produce a canonical readback address; selected addr_rd entries drive csr_o for address CSR reads.",
+      "role": [
+        "readback address",
+        "derived output"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "pmpaddr"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "pmpcfg"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "csr_o"
+          ]
+        }
+      ],
+      "evidence": "address_read_back process assigns addr_rd(i) from pmpaddr(i) and pmpcfg(i); csr_read_access uses addr_rd(...) to drive csr_o"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "acc_addr",
+      "type": "std_ulogic_vector(XLEN-1 downto 0)",
+      "kind": "signal",
+      "function": "access address operand",
+      "functionality": "Combinationally selects the access address from ctrl_i.pc_nxt or addr_ls_i based on ctrl_i.lsu_mo_we; the chosen acc_addr is used for matching and comparison logic.",
+      "role": [
+        "combinational carrier",
+        "address source for matching"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "ctrl_i.pc_nxt"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "addr_ls_i"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "ctrl_i.lsu_mo_we"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "cmp_ge"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "cmp_lt"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "cmp_na"
+          ]
+        }
+      ],
+      "evidence": "acc_addr <= ctrl_i.pc_nxt when (ctrl_i.lsu_mo_we = '0') else addr_ls_i; cmp_ge/cmp_lt/cmp_na use acc_addr in their comparisons"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "acc_priv",
+      "type": "std_ulogic",
+      "kind": "signal",
+      "function": "access privilege operand",
+      "functionality": "Combinationally selects privilege from cpu_priv or lsu_priv (based on lsu_mo_we) and supplies it to the permission logic for allow(r) decisions.",
+      "role": [
+        "privilege carrier",
+        "chosen by operation type"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "ctrl_i.cpu_priv"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "ctrl_i.lsu_priv"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "ctrl_i.lsu_mo_we"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "allow"
+          ]
+        }
+      ],
+      "evidence": "acc_priv <= ctrl_i.cpu_priv when (ctrl_i.lsu_mo_we = '0') else ctrl_i.lsu_priv; perm_gen uses acc_priv to compute allow(r)"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "addr_mask_napot",
+      "type": "addr_mask_t",
+      "kind": "signal",
+      "function": "NAPOT address mask",
+      "functionality": "Combinationally builds the NPOT (NAPOT) match mask from pmpaddr bits for each region when NAP mode is enabled; the mask is a source for addr_mask assignment.",
+      "role": [
+        "mask generator",
+        "for NAPOT matching"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "pmpaddr"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "addr_mask"
+          ]
+        }
+      ],
+      "evidence": "addr_mask_napot_gen generate assigns bits from pmpaddr; addr_masking process assigns addr_mask(r) <= addr_mask_napot(r)"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "addr_mask",
+      "type": "addr_mask_t",
+      "kind": "register",
+      "function": "region address mask",
+      "functionality": "Registered per-region mask that is loaded from addr_mask_napot when al bit is set; it is used in the NAPOT comparison to determine matches.",
+      "role": [
+        "registered mask",
+        "used for matching"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "addr_mask_napot"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "cmp_na"
+          ]
+        }
+      ],
+      "evidence": "addr_masking clocked process captures addr_mask_napot into addr_mask when pmpcfg(r)(cfg_al_c) = '1'; cmp_na uses addr_mask(r)"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "cmp_na",
+      "type": "std_ulogic_vector(NUM_REGIONS-1 downto 0)",
+      "kind": "signal",
+      "function": "NAPOT equality compare",
+      "functionality": "Produces per-region 'NA' comparison results by comparing (acc_addr AND addr_mask) with (pmpaddr AND addr_mask) when NAP mode is enabled; its result is used to declare matches for NAPOT regions.",
+      "role": [
+        "NA comparator",
+        "match input"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "acc_addr"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "addr_mask"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "pmpaddr"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "match"
+          ]
+        }
+      ],
+      "evidence": "cmp_na(r) <= '1' when ((acc_addr(...) and addr_mask(r)) = (pmpaddr(r)(...) and addr_mask(r))) and NAP_EN else '0'"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "cmp_ge",
+      "type": "std_ulogic_vector(NUM_REGIONS-1 downto 0)",
+      "kind": "signal",
+      "function": "TOR lower-bound compare",
+      "functionality": "Per-region comparison indicating acc_addr >= pmpaddr(r-1) used for TOR region lower-bound testing when TOR is enabled; feeds match decision for TOR regions.",
+      "role": [
+        "GE comparator",
+        "match input"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "acc_addr"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "pmpaddr"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "match"
+          ]
+        }
+      ],
+      "evidence": "cmp_ge(r) <= '1' when (unsigned(acc_addr(...)) >= unsigned(pmpaddr(r-1)(...))) and TOR_EN else '0'"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "cmp_lt",
+      "type": "std_ulogic_vector(NUM_REGIONS-1 downto 0)",
+      "kind": "signal",
+      "function": "TOR upper-bound compare",
+      "functionality": "Per-region comparison indicating acc_addr < pmpaddr(r) used for TOR upper-bound testing when TOR is enabled; combined with cmp_ge to detect addresses inside TOR regions.",
+      "role": [
+        "LT comparator",
+        "match input"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "acc_addr"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "pmpaddr"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "match"
+          ]
+        }
+      ],
+      "evidence": "cmp_lt(r) <= '1' when (unsigned(acc_addr(...)) < unsigned(pmpaddr(r)(...))) and TOR_EN else '0'"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "match",
+      "type": "std_ulogic_vector(NUM_REGIONS-1 downto 0)",
+      "kind": "signal",
+      "function": "region match flags",
+      "functionality": "Per-region match result computed from pmpcfg mode and comparison signals (cmp_ge/cmp_lt for TOR, cmp_na for NAPOT); its asserted bits gate which region's permissions apply to an access.",
+      "role": [
+        "match vector",
+        "selects failing region"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "pmpcfg"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "cmp_ge"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "cmp_lt"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "cmp_na"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "fail"
+          ]
+        }
+      ],
+      "evidence": "match_gen process sets match(r) from pmpcfg(...) and cmp_ge/cmp_lt/cmp_na"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "allow",
+      "type": "std_ulogic_vector(NUM_REGIONS-1 downto 0)",
+      "kind": "signal",
+      "function": "per-region allow flags",
+      "functionality": "Per-region permission bits computed from pmpcfg, acc_priv and the type of access (instruction/read/write as chosen by ctrl_i fields); an allow bit indicates the region permits execution/read/write for the current access.",
+      "role": [
+        "permission vector",
+        "operand for fault computation"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "pmpcfg"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "acc_priv"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "ctrl_i.lsu_mo_we"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "ctrl_i.lsu_rw"
+          ]
+        }
+      ],
+      "evidence": "perm_gen process computes allow(r) via branches using pmpcfg(r) and acc_priv and tests ctrl_i.lsu_mo_we/ctrl_i.lsu_rw"
+    },
+    {
+      "entity": "neorv32_cpu_pmp",
+      "name": "fail",
+      "type": "std_ulogic_vector(NUM_REGIONS   downto 0)",
+      "kind": "signal",
+      "function": "fault propagation vector",
+      "functionality": "Reduction-style vector that produces a chained fault indication: fail(NUM_REGIONS) is set when acc_priv != machine, and for each region fail(r) becomes not allow(r) if that region matches, otherwise propagates the next fail. fail(0) drives fault output.",
+      "role": [
+        "fault chain",
+        "feeds fault output"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "acc_priv"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "allow"
+          ]
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "match"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "fault_o"
+          ]
+        }
+      ],
+      "evidence": "fail(NUM_REGIONS) <= '1' when (acc_priv /= priv_mode_m_c) else '0'; fail(r) <= not allow(r) when (match(r) = '1') else fail(r+1); fault_check uses fail(0)"
+    }
+  ],
+  "_issues": {
+    "over_three_roles": {
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i": 1
+    },
+    "no_relationship": {
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.if_fence": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.if_reset": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.if_ack": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.pc_cur": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.pc_ret": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.rf_wb_en": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.rf_rs1": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.rf_rs2": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.rf_rd": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.rf_zero_we": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.alu_op": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.alu_sub": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.alu_opa_mux": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.alu_opb_mux": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.alu_unsigned": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.alu_imm": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.alu_cp_alu": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.alu_cp_cfu": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.alu_cp_fpu": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.lsu_req": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.lsu_amo": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.lsu_fence": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.csr_re": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.cnt_halt": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.cnt_event": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.ir_funct3": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.ir_funct12": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.ir_opcode": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.cpu_sleep": 1,
+      "neorv32_cpu_pmp/neorv32_cpu_pmp/ctrl_i.cpu_trap": 1
+    }
+  }
+}

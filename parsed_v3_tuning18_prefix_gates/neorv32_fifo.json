@@ -1,0 +1,814 @@
+{
+  "module": "neorv32_fifo",
+  "entities": [
+    "neorv32_fifo"
+  ],
+  "ports": [
+    {
+      "entity": "neorv32_fifo",
+      "name": "clk_i",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "clock input for sequential logic",
+      "functionality": "Supplies the rising-edge clock for all clocked processes. Sequences pointer registers, memory write/read flops and status-register updates used by the FIFO logic.",
+      "role": [
+        "clock source",
+        "sequences registers and memory"
+      ],
+      "relationship": [
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "w_pnt",
+            "r_pnt",
+            "fifo_reg",
+            "fifo_mem",
+            "r_pnt_ff",
+            "rdata_o",
+            "free_o",
+            "avail_o",
+            "half_o"
+          ]
+        }
+      ],
+      "evidence": "rising_edge(clk_i) in pointer_reg, write_* processes, async_r_pnt_reg, sync_read_large and sync_status processes"
+    },
+    {
+      "entity": "neorv32_fifo",
+      "name": "rstn_i",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "active-low reset input",
+      "functionality": "Provides asynchronous reset that clears pointer registers, memory/register storage and synchronized status outputs in reset branches. Overrides normal updates when '0'.",
+      "role": [
+        "reset source",
+        "overrides registers on reset"
+      ],
+      "relationship": [
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "w_pnt",
+            "r_pnt",
+            "fifo_reg",
+            "fifo_mem",
+            "free_o",
+            "avail_o",
+            "half_o"
+          ]
+        },
+        {
+          "type": "OVERRIDES",
+          "targets": [
+            "w_pnt",
+            "r_pnt",
+            "fifo_reg",
+            "fifo_mem",
+            "free_o",
+            "avail_o",
+            "half_o"
+          ]
+        }
+      ],
+      "evidence": "if (rstn_i = '0') branches in pointer_reg, write_reset_* and sync_status processes"
+    },
+    {
+      "entity": "neorv32_fifo",
+      "name": "clear_i",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "clear next-pointer control",
+      "functionality": "When asserted forces the combinational next pointers w_nxt and r_nxt to zero, overriding increment logic and thereby clearing pointer progression.",
+      "role": [
+        "pointer-clear control",
+        "overrides next-pointer computation"
+      ],
+      "relationship": [
+        {
+          "type": "OVERRIDES",
+          "targets": [
+            "w_nxt",
+            "r_nxt"
+          ]
+        }
+      ],
+      "evidence": "w_nxt <= (others => '0') when (clear_i = '1') else ... and r_nxt <= (others => '0') when (clear_i = '1') else ..."
+    },
+    {
+      "entity": "neorv32_fifo",
+      "name": "half_o",
+      "dir": "out",
+      "type": "std_ulogic",
+      "function": "half/full status output",
+      "functionality": "Exports the FIFO half/full indicator to the outside. In the asynchronous-status configuration it is driven combinationally from internal 'half'; in the synchronous-status configuration it is captured into half_o on clk_i.",
+      "role": [
+        "status output",
+        "exports half indicator",
+        "combinational or registered reporter"
+      ],
+      "relationship": [
+        {
+          "type": "EXPORTS",
+          "targets": []
+        },
+        {
+          "type": "CARRIES",
+          "targets": [
+            "half"
+          ]
+        },
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "half"
+          ]
+        }
+      ],
+      "evidence": "half_o <= half in async branch; sync_status process assigns half_o <= '0' in reset and half_o <= half on rising_edge(clk_i)"
+    },
+    {
+      "entity": "neorv32_fifo",
+      "name": "level_o",
+      "dir": "out",
+      "type": "std_ulogic_vector(31 downto 0)",
+      "function": "zero-extended level output",
+      "functionality": "Reports the FIFO fill level by extending internal 'level' into the 32-bit output. A combinational process writes low bits from 'level' into level_o and zeros the remaining bits.",
+      "role": [
+        "status output",
+        "exports level information"
+      ],
+      "relationship": [
+        {
+          "type": "EXPORTS",
+          "targets": []
+        },
+        {
+          "type": "SLICES",
+          "targets": [
+            "level"
+          ],
+          "bits": "level'left downto 0"
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "level"
+          ]
+        }
+      ],
+      "evidence": "level_extend process: level_o(level'left downto 0) <= level(level'left downto 0)"
+    },
+    {
+      "entity": "neorv32_fifo",
+      "name": "wdata_i",
+      "dir": "in",
+      "type": "std_ulogic_vector(FIFO_WIDTH-1 downto 0)",
+      "function": "write data input",
+      "functionality": "Supplies the FIFO write word. Is captured into fifo_reg or written into fifo_mem at the addressed write location when internal 'we' enables a write.",
+      "role": [
+        "write-data source",
+        "feeds FIFO storage"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "fifo_reg",
+            "fifo_mem"
+          ]
+        }
+      ],
+      "evidence": "fifo_reg <= wdata_i and fifo_mem(...) <= wdata_i inside write_* processes"
+    },
+    {
+      "entity": "neorv32_fifo",
+      "name": "we_i",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "write enable input",
+      "functionality": "Provides the raw write request input; combined with internal 'free' when FIFO_SAFE is true to form internal 'we' which gates writes and pointer increments.",
+      "role": [
+        "write request input",
+        "drives internal write enable"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "we"
+          ]
+        }
+      ],
+      "evidence": "we <= we_i when (FIFO_SAFE = false) else (we_i and free)"
+    },
+    {
+      "entity": "neorv32_fifo",
+      "name": "free_o",
+      "dir": "out",
+      "type": "std_ulogic",
+      "function": "not-full status output",
+      "functionality": "Exports the FIFO free (not-full) status. In asynchronous-status mode it is driven directly from internal 'free'; in synchronous mode it is registered into free_o on clk_i.",
+      "role": [
+        "status output",
+        "exports free flag",
+        "combinational or registered reporter"
+      ],
+      "relationship": [
+        {
+          "type": "EXPORTS",
+          "targets": []
+        },
+        {
+          "type": "CARRIES",
+          "targets": [
+            "free"
+          ]
+        },
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "free"
+          ]
+        }
+      ],
+      "evidence": "free_o <= free in async branch; sync_status process assigns free_o <= free on rising_edge(clk_i)"
+    },
+    {
+      "entity": "neorv32_fifo",
+      "name": "re_i",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "read enable input",
+      "functionality": "Provides the raw read request; combined with internal 'avail' when FIFO_SAFE is true to form internal 're' which gates read-pointer advancement.",
+      "role": [
+        "read request input",
+        "drives internal read enable"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "re"
+          ]
+        }
+      ],
+      "evidence": "re <= re_i when (FIFO_SAFE = false) else (re_i and avail)"
+    },
+    {
+      "entity": "neorv32_fifo",
+      "name": "rdata_o",
+      "dir": "out",
+      "type": "std_ulogic_vector(FIFO_WIDTH-1 downto 0)",
+      "function": "read data output",
+      "functionality": "Exports the FIFO output word. Driven either directly from fifo_reg (depth=1) or from fifo_mem indexed by r_pnt_ff (async read) or r_pnt (sync read), combinationally or registered depending on FIFO_RSYNC.",
+      "role": [
+        "data output",
+        "exports FIFO word",
+        "comb or registered reporter"
+      ],
+      "relationship": [
+        {
+          "type": "EXPORTS",
+          "targets": []
+        },
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "fifo_reg",
+            "fifo_mem"
+          ]
+        }
+      ],
+      "evidence": "rdata_o <= fifo_reg (small) and rdata_o <= fifo_mem(to_integer(unsigned(r_pnt_ff(...)))) or assigned in sync_read_large process from fifo_mem"
+    },
+    {
+      "entity": "neorv32_fifo",
+      "name": "avail_o",
+      "dir": "out",
+      "type": "std_ulogic",
+      "function": "not-empty status output",
+      "functionality": "Exports the FIFO available (not-empty) status. In async mode driven combinationally from internal 'avail'; in sync mode captured into avail_o on clk_i.",
+      "role": [
+        "status output",
+        "exports avail flag",
+        "combinational or registered reporter"
+      ],
+      "relationship": [
+        {
+          "type": "EXPORTS",
+          "targets": []
+        },
+        {
+          "type": "CARRIES",
+          "targets": [
+            "avail"
+          ]
+        },
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "avail"
+          ]
+        }
+      ],
+      "evidence": "avail_o <= avail in async branch; sync_status process assigns avail_o <= avail on rising_edge(clk_i)"
+    }
+  ],
+  "signals": [
+    {
+      "entity": "neorv32_fifo",
+      "name": "fifo_mem",
+      "type": "fifo_mem_t",
+      "kind": "register",
+      "function": "array storage for FIFO words",
+      "functionality": "Holds FIFO entries across cycles. Is written from wdata_i at address derived from w_pnt on writes, read by rdata_o via r_pnt_ff or r_pnt, and reset to zeros when FULL_RESET path is active.",
+      "role": [
+        "FIFO storage",
+        "holds written data across cycles",
+        "sources read data"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "wdata_i"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "rdata_o"
+          ]
+        }
+      ],
+      "evidence": "fifo_mem(...) <= wdata_i in write_* processes; rdata_o <= fifo_mem(to_integer(unsigned(r_pnt_ff(...)))) and reset fifo_mem <= (others => (others => '0')) in write_reset_large"
+    },
+    {
+      "entity": "neorv32_fifo",
+      "name": "fifo_reg",
+      "type": "std_ulogic_vector(FIFO_WIDTH-1 downto 0)",
+      "kind": "register",
+      "function": "single-word FIFO storage for depth=1",
+      "functionality": "Used when FIFO depth equals 1; captures wdata_i on writes and directly supplies rdata_o on reads; reset to zero in FULL_RESET mode.",
+      "role": [
+        "depth-1 storage",
+        "holds word across cycles",
+        "sources rdata_o"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "wdata_i"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "rdata_o"
+          ]
+        }
+      ],
+      "evidence": "fifo_reg <= wdata_i inside write_small / write_reset_small; rdata_o <= fifo_reg in read small branches"
+    },
+    {
+      "entity": "neorv32_fifo",
+      "name": "we",
+      "type": "std_ulogic",
+      "kind": "signal",
+      "function": "internal write enable",
+      "functionality": "Derived internal write enable used by write logic. Equals we_i or we_i AND free depending on FIFO_SAFE; gates writes to storage and increments the write pointer.",
+      "role": [
+        "derived write enable",
+        "gates writes and pointer increment"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "we_i",
+            "free"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "fifo_mem",
+            "fifo_reg",
+            "w_nxt"
+          ]
+        }
+      ],
+      "evidence": "we <= we_i when (FIFO_SAFE = false) else (we_i and free); used as condition if (we = '1') then fifo_mem(...) <= wdata_i and w_nxt updates when (we = '1')"
+    },
+    {
+      "entity": "neorv32_fifo",
+      "name": "re",
+      "type": "std_ulogic",
+      "kind": "signal",
+      "function": "internal read enable",
+      "functionality": "Derived internal read enable that is the input re_i possibly masked by avail when FIFO_SAFE is true. Gates read-pointer advancement (r_nxt) and thus reads.",
+      "role": [
+        "derived read enable",
+        "gates pointer advance"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "re_i",
+            "avail"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "r_nxt",
+            "r_pnt"
+          ]
+        }
+      ],
+      "evidence": "re <= re_i when (FIFO_SAFE = false) else (re_i and avail); r_nxt <= ... when (re = '1') else ..."
+    },
+    {
+      "entity": "neorv32_fifo",
+      "name": "match",
+      "type": "std_ulogic",
+      "kind": "signal",
+      "function": "pointer-equality indicator",
+      "functionality": "Indicates whether the lower index bits of r_pnt and w_pnt are equal; used together with MSB bits to determine full/empty conditions.",
+      "role": [
+        "comparator flag",
+        "governs full/empty logic"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "r_pnt",
+            "w_pnt"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "full",
+            "empty"
+          ]
+        }
+      ],
+      "evidence": "match <= '1' when (r_pnt(...)=w_pnt(...)) else '0' in generate check_large/small"
+    },
+    {
+      "entity": "neorv32_fifo",
+      "name": "empty",
+      "type": "std_ulogic",
+      "kind": "signal",
+      "function": "empty flag",
+      "functionality": "Indicates FIFO empty condition computed from pointer bits and match; used to form avail and to gate reads in safe mode.",
+      "role": [
+        "status flag",
+        "drives avail"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "r_pnt",
+            "w_pnt",
+            "match"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "avail"
+          ]
+        }
+      ],
+      "evidence": "empty <= '1' when (r_pnt(...)=w_pnt(...)) and (match='1') else '0'; avail <= not empty"
+    },
+    {
+      "entity": "neorv32_fifo",
+      "name": "full",
+      "type": "std_ulogic",
+      "kind": "signal",
+      "function": "full flag",
+      "functionality": "Indicates FIFO full condition computed from pointer MSB bits and match; used to form free and to prevent writes in safe mode.",
+      "role": [
+        "status flag",
+        "drives free"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "r_pnt",
+            "w_pnt",
+            "match"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "free"
+          ]
+        }
+      ],
+      "evidence": "full <= '1' when (r_pnt(r_pnt'left) /= w_pnt(w_pnt'left)) and (match = '1') else '0'; free <= not full"
+    },
+    {
+      "entity": "neorv32_fifo",
+      "name": "half",
+      "type": "std_ulogic",
+      "kind": "signal",
+      "function": "half-full indicator",
+      "functionality": "Derived from the top bit(s) of 'level' or from 'full' in small depth case; drives the external half_o status signal.",
+      "role": [
+        "status indicator",
+        "drives half_o"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "level",
+            "full"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "half_o"
+          ]
+        }
+      ],
+      "evidence": "half <= level(level'left-1) or full in large case; half <= full in small case; half_o <= half in async branch"
+    },
+    {
+      "entity": "neorv32_fifo",
+      "name": "free",
+      "type": "std_ulogic",
+      "kind": "signal",
+      "function": "not-full internal signal",
+      "functionality": "Logical negation of 'full'. Feeds the safe-mode write gating and the free_o export.",
+      "role": [
+        "status internal",
+        "feeds write gating and free_o"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "full"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "we",
+            "free_o"
+          ]
+        }
+      ],
+      "evidence": "free <= not full; used in we <= we_i when ... else (we_i and free); free_o <= free in async branch"
+    },
+    {
+      "entity": "neorv32_fifo",
+      "name": "avail",
+      "type": "std_ulogic",
+      "kind": "signal",
+      "function": "not-empty internal signal",
+      "functionality": "Logical negation of 'empty'. Feeds safe-mode read gating and the avail_o export.",
+      "role": [
+        "status internal",
+        "feeds read gating and avail_o"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "empty"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "re",
+            "avail_o"
+          ]
+        }
+      ],
+      "evidence": "avail <= not empty; used in re <= re_i when ... else (re_i and avail); avail_o <= avail in async branch"
+    },
+    {
+      "entity": "neorv32_fifo",
+      "name": "w_pnt",
+      "type": "std_ulogic_vector(index_size_f(fifo_depth_c) downto 0)",
+      "kind": "register",
+      "function": "write pointer register",
+      "functionality": "Holds the current write pointer across cycles; captures w_nxt on clock and its lower bits index fifo_mem for writes; participates in full/empty/level calculations.",
+      "role": [
+        "pointer register",
+        "holds write address",
+        "indexes fifo_mem",
+        "feeds status logic"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "w_nxt"
+          ]
+        },
+        {
+          "type": "SELECTS",
+          "targets": [
+            "fifo_mem"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "match",
+            "full",
+            "empty",
+            "level"
+          ]
+        }
+      ],
+      "evidence": "pointer_reg process assigns w_pnt <= w_nxt; fifo_mem(...) uses w_pnt(w_pnt'left-1 downto 0); match/full/level compute use w_pnt"
+    },
+    {
+      "entity": "neorv32_fifo",
+      "name": "w_nxt",
+      "type": "std_ulogic_vector(index_size_f(fifo_depth_c) downto 0)",
+      "kind": "signal",
+      "function": "next write-pointer combinational",
+      "functionality": "Combinational next-state for the write pointer: cleared when clear_i='1', incremented when 'we'='1', otherwise holds w_pnt. Feeds w_pnt register on the clock edge.",
+      "role": [
+        "next-pointer combinational",
+        "drives w_pnt update"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "w_pnt",
+            "we",
+            "clear_i"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "w_pnt"
+          ]
+        }
+      ],
+      "evidence": "w_nxt <= (others=>'0') when (clear_i='1') else std_ulogic_vector(unsigned(w_pnt)+1) when (we='1') else w_pnt; w_pnt <= w_nxt in pointer_reg"
+    },
+    {
+      "entity": "neorv32_fifo",
+      "name": "r_pnt",
+      "type": "std_ulogic_vector(index_size_f(fifo_depth_c) downto 0)",
+      "kind": "register",
+      "function": "read pointer register",
+      "functionality": "Holds the current read pointer across cycles; captures r_nxt on clock and its lower bits index fifo_mem for synchronous reads; used in status and level calculations.",
+      "role": [
+        "pointer register",
+        "holds read address",
+        "indexes fifo_mem for sync read",
+        "feeds status logic"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "r_nxt"
+          ]
+        },
+        {
+          "type": "SELECTS",
+          "targets": [
+            "fifo_mem"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "match",
+            "full",
+            "empty",
+            "level"
+          ]
+        }
+      ],
+      "evidence": "pointer_reg assigns r_pnt <= r_nxt; check_large uses r_pnt slices; sync_read_large reads fifo_mem using r_pnt"
+    },
+    {
+      "entity": "neorv32_fifo",
+      "name": "r_nxt",
+      "type": "std_ulogic_vector(index_size_f(fifo_depth_c) downto 0)",
+      "kind": "signal",
+      "function": "next read-pointer combinational",
+      "functionality": "Combinational next-state for the read pointer: cleared when clear_i='1', incremented when 're'='1', otherwise holds r_pnt. Feeds r_pnt register on clock edge or r_pnt_ff in async path.",
+      "role": [
+        "next-pointer combinational",
+        "drives r_pnt update / r_pnt_ff"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "r_pnt",
+            "re",
+            "clear_i"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "r_pnt",
+            "r_pnt_ff"
+          ]
+        }
+      ],
+      "evidence": "r_nxt <= (others=>'0') when (clear_i='1') else ... when (re='1') else r_pnt; r_pnt <= r_nxt in pointer_reg; r_pnt_ff <= r_nxt in async_r_pnt_reg"
+    },
+    {
+      "entity": "neorv32_fifo",
+      "name": "r_pnt_ff",
+      "type": "std_ulogic_vector(index_size_f(fifo_depth_c) downto 0)",
+      "kind": "register",
+      "function": "read-pointer flop for async read",
+      "functionality": "Clocked flop that captures r_nxt for use by asynchronous read logic; its lower bits index fifo_mem for async rdata_o sourcing.",
+      "role": [
+        "async read pointer register",
+        "indexes fifo_mem for async read"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "r_nxt"
+          ]
+        },
+        {
+          "type": "SELECTS",
+          "targets": [
+            "fifo_mem"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "rdata_o"
+          ]
+        }
+      ],
+      "evidence": "async_r_pnt_reg process: r_pnt_ff <= r_nxt; rdata_o <= fifo_mem(to_integer(unsigned(r_pnt_ff(...))))"
+    },
+    {
+      "entity": "neorv32_fifo",
+      "name": "level",
+      "type": "std_ulogic_vector(index_size_f(fifo_depth_c) downto 0)",
+      "kind": "signal",
+      "function": "fill-level vector",
+      "functionality": "Represents FIFO fill level as std_ulogic_vector computed from unsigned(w_pnt) - unsigned(r_pnt) (or all-full value for depth=1). Drives 'half' and is exported to level_o.",
+      "role": [
+        "fill-level state",
+        "drives half and level_o"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "w_pnt",
+            "r_pnt"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "half",
+            "level_o"
+          ]
+        }
+      ],
+      "evidence": "level <= std_ulogic_vector(unsigned(w_pnt) - unsigned(r_pnt)) in check_large; level_o(level'left downto 0) <= level(level'left downto 0) in level_extend"
+    }
+  ],
+  "_issues": {
+    "banned_word": {
+      "possibly": 1
+    },
+    "_offenders": {
+      "neorv32_fifo/neorv32_fifo/re": 1
+    },
+    "over_three_roles": {
+      "neorv32_fifo/neorv32_fifo/w_pnt": 1,
+      "neorv32_fifo/neorv32_fifo/r_pnt": 1
+    }
+  }
+}

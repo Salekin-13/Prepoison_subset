@@ -1,0 +1,1515 @@
+{
+  "module": "neorv32_trng",
+  "entities": [
+    "neorv32_trng",
+    "neoTRNG",
+    "neoTRNG_cell"
+  ],
+  "ports": [
+    {
+      "entity": "neorv32_trng",
+      "name": "clk_i",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "system clock input",
+      "functionality": "Supplies rising-edge timing to the bus_access process (sequencing assignments to bus_rsp_o, enable and fifo_clr) and is forwarded to instantiated components (neoTRNG_inst, rnd_pool_fifo_inst).",
+      "role": [
+        "clock source for sequential logic",
+        "forwarded to instantiated components"
+      ],
+      "relationship": [
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "enable",
+            "fifo_clr",
+            "bus_rsp_o"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "neoTRNG_inst.clk_i",
+            "rnd_pool_fifo_inst.clk_i"
+          ]
+        }
+      ],
+      "evidence": "process sensitivity and rising_edge(clk_i); clk_i port mapped to neoTRNG_inst and rnd_pool_fifo_inst."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "rstn_i",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "active-low reset input",
+      "functionality": "Drives the reset branch that initializes bus_rsp_o, fifo_clr and enable on '0' and is passed to the instantiated components' reset ports.",
+      "role": [
+        "reset source for sequential logic",
+        "forwarded to instantiated components"
+      ],
+      "relationship": [
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "bus_rsp_o",
+            "fifo_clr",
+            "enable"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "neoTRNG_inst.rstn_i",
+            "rnd_pool_fifo_inst.rstn_i"
+          ]
+        }
+      ],
+      "evidence": "if (rstn_i = '0') then ... in bus_access; rstn_i port mapped to neoTRNG_inst and rnd_pool_fifo_inst."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "bus_req_i",
+      "dir": "in",
+      "type": "bus_req_t",
+      "function": "bus request record input",
+      "functionality": "Aggregates bus request fields (stb, rw, addr, data, etc.) that are consumed individually by this entity to control read/write behavior and FIFO access.",
+      "role": [
+        "input bus request aggregator",
+        "supplies fields used to control logic"
+      ],
+      "relationship": [
+        {
+          "type": "AGGREGATES",
+          "targets": [
+            "bus_req_i.addr",
+            "bus_req_i.data",
+            "bus_req_i.ben",
+            "bus_req_i.stb",
+            "bus_req_i.rw",
+            "bus_req_i.src",
+            "bus_req_i.priv",
+            "bus_req_i.debug",
+            "bus_req_i.amo",
+            "bus_req_i.amoop",
+            "bus_req_i.lock",
+            "bus_req_i.fence"
+          ]
+        }
+      ],
+      "evidence": "port declaration; individual fields used throughout bus_access and concurrent assignments."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "bus_req_i.addr",
+      "dir": "in",
+      "type": "std_ulogic_vector(31 downto 0)",
+      "function": "address vector bit(s)",
+      "functionality": "Bit 2 of the address selects register versus data read in bus_access and, combined with stb and rw, participates in the condition that enables fifo.re for FIFO reads.",
+      "role": [
+        "read-address selector",
+        "selects register vs data read",
+        "gates FIFO read when combined with stb and rw"
+      ],
+      "relationship": [
+        {
+          "type": "SELECTS",
+          "targets": [
+            "bus_rsp_o.data"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "fifo.re"
+          ]
+        }
+      ],
+      "evidence": "uses bus_req_i.addr(2) in bus_access if to choose status vs data and in fifo.re concurrent assignment."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "bus_req_i.data",
+      "dir": "in",
+      "type": "std_ulogic_vector(31 downto 0)",
+      "function": "write data vector input",
+      "functionality": "Supplies write-data bits; specific bits (ctrl_en_c, ctrl_fifo_clr_c) are read during write transactions to set internal enable and fifo_clr registers.",
+      "role": [
+        "write operand source",
+        "feeds control bits for enable and fifo_clr"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "enable",
+            "fifo_clr"
+          ]
+        }
+      ],
+      "evidence": "enable <= bus_req_i.data(ctrl_en_c) and fifo_clr <= bus_req_i.data(ctrl_fifo_clr_c) inside bus_access write branch."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "bus_req_i.ben",
+      "dir": "in",
+      "type": "std_ulogic_vector(3 downto 0)",
+      "function": "unused bus request byte-enable field",
+      "functionality": "Declared but not referenced anywhere in this source; not read or tested by the entity.",
+      "role": [
+        "input field, unused"
+      ],
+      "relationship": [
+        {
+          "type": "ISOLATED",
+          "targets": []
+        }
+      ],
+      "evidence": "no occurrences beyond the port declaration."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "bus_req_i.stb",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "bus strobe/valid input",
+      "functionality": "Gates handling of a bus transaction (if-statement) and is captured into bus_rsp_o.ack; it also contributes to the fifo.re enable expression used to pop the FIFO on reads.",
+      "role": [
+        "transaction strobe",
+        "enables bus handling",
+        "drives response ack and helps gate FIFO read"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "bus_rsp_o.ack"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "enable",
+            "fifo_clr",
+            "bus_rsp_o",
+            "fifo.re"
+          ]
+        }
+      ],
+      "evidence": "bus_rsp_o.ack <= bus_req_i.stb; used in if (bus_req_i.stb='1') then ...; part of fifo.re concurrent conditional."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "bus_req_i.rw",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "read/write indicator",
+      "functionality": "Selects the write versus read path in bus_access (writes set internal control bits; reads produce bus_rsp_o.data) and is part of the fifo.re expression enabling FIFO reads.",
+      "role": [
+        "selects read/write path",
+        "gates write captures and read responses"
+      ],
+      "relationship": [
+        {
+          "type": "GATES",
+          "targets": [
+            "enable",
+            "fifo_clr",
+            "bus_rsp_o",
+            "fifo.re"
+          ]
+        }
+      ],
+      "evidence": "if (bus_req_i.rw = '1') then ... else ... ; bus_req_i.rw used in fifo.re concurrent assignment."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "bus_req_i.src",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused bus request source field",
+      "functionality": "Declared but not referenced in this source; not read or tested.",
+      "role": [
+        "input field, unused"
+      ],
+      "relationship": [
+        {
+          "type": "ISOLATED",
+          "targets": []
+        }
+      ],
+      "evidence": "no occurrences beyond the port declaration."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "bus_req_i.priv",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused bus request privilege field",
+      "functionality": "Declared but unused in this source; not read or tested.",
+      "role": [
+        "input field, unused"
+      ],
+      "relationship": [
+        {
+          "type": "ISOLATED",
+          "targets": []
+        }
+      ],
+      "evidence": "no occurrences beyond the port declaration."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "bus_req_i.debug",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused bus request debug field",
+      "functionality": "Declared but not referenced in this source.",
+      "role": [
+        "input field, unused"
+      ],
+      "relationship": [
+        {
+          "type": "ISOLATED",
+          "targets": []
+        }
+      ],
+      "evidence": "no occurrences beyond the port declaration."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "bus_req_i.amo",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused bus request AMO field",
+      "functionality": "Declared but not referenced in this source.",
+      "role": [
+        "input field, unused"
+      ],
+      "relationship": [
+        {
+          "type": "ISOLATED",
+          "targets": []
+        }
+      ],
+      "evidence": "no occurrences beyond the port declaration."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "bus_req_i.amoop",
+      "dir": "in",
+      "type": "std_ulogic_vector(3 downto 0)",
+      "function": "unused AMO-op field",
+      "functionality": "Declared but not used in this source; no references found.",
+      "role": [
+        "input field, unused"
+      ],
+      "relationship": [
+        {
+          "type": "ISOLATED",
+          "targets": []
+        }
+      ],
+      "evidence": "no occurrences beyond the port declaration."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "bus_req_i.lock",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused bus request lock field",
+      "functionality": "Declared but not referenced in this source.",
+      "role": [
+        "input field, unused"
+      ],
+      "relationship": [
+        {
+          "type": "ISOLATED",
+          "targets": []
+        }
+      ],
+      "evidence": "no occurrences beyond the port declaration."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "bus_req_i.fence",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused bus request fence field",
+      "functionality": "Declared but not used in this source.",
+      "role": [
+        "input field, unused"
+      ],
+      "relationship": [
+        {
+          "type": "ISOLATED",
+          "targets": []
+        }
+      ],
+      "evidence": "no occurrences beyond the port declaration."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "bus_rsp_o",
+      "dir": "out",
+      "type": "bus_rsp_t",
+      "function": "bus response record output",
+      "functionality": "Constructs the response record from ack, err and data fields inside bus_access and exports that assembled response to the bus master.",
+      "role": [
+        "response aggregator",
+        "driven by sequential logic",
+        "exports response to bus master"
+      ],
+      "relationship": [
+        {
+          "type": "AGGREGATES",
+          "targets": [
+            "bus_rsp_o.ack",
+            "bus_rsp_o.err",
+            "bus_rsp_o.data"
+          ]
+        }
+      ],
+      "evidence": "bus_access process assigns bus_rsp_o fields (ack, err, data) including reset assignment bus_rsp_o <= rsp_terminate_c."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "bus_rsp_o.ack",
+      "dir": "out",
+      "type": "std_ulogic",
+      "function": "response acknowledge bit",
+      "functionality": "Captured on the clock edge from bus_req_i.stb and provided as the ack bit of the bus response.",
+      "role": [
+        "acknowledge output",
+        "captured from bus strobe"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "bus_req_i.stb"
+          ]
+        }
+      ],
+      "evidence": "bus_rsp_o.ack <= bus_req_i.stb inside rising_edge(clk_i) branch of bus_access."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "bus_rsp_o.err",
+      "dir": "out",
+      "type": "std_ulogic",
+      "function": "response error flag",
+      "functionality": "Captured each cycle as the constant '0' and supplied as the error bit of the bus response.",
+      "role": [
+        "error flag output"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": []
+        }
+      ],
+      "evidence": "bus_rsp_o.err <= '0' inside bus_access clocked process."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "bus_rsp_o.data",
+      "dir": "out",
+      "type": "std_ulogic_vector(31 downto 0)",
+      "function": "response data vector output",
+      "functionality": "Assembles the 32-bit response data from control bits (enable), FIFO size, sim flag, FIFO avail and the FIFO read data slice; selected by addr(2) during reads.",
+      "role": [
+        "carries status and data to bus master",
+        "assembled from internal signals and constants"
+      ],
+      "relationship": [
+        {
+          "type": "SLICES",
+          "targets": [
+            "enable"
+          ],
+          "bits": "ctrl_en_c"
+        },
+        {
+          "type": "SLICES",
+          "targets": [
+            "fifo.avail"
+          ],
+          "bits": "ctrl_avail_c"
+        },
+        {
+          "type": "SLICES",
+          "targets": [
+            "fifo.rdata"
+          ],
+          "bits": "ctrl_data_msb_c downto ctrl_data_lsb_c"
+        }
+      ],
+      "evidence": "bus_access assigns bus_rsp_o.data slices: ctrl_en_c<=enable; ctrl_avail_c<=fifo.avail; data bits ctrl_data_msb_c..ctrl_data_lsb_c<=fifo.rdata or zeros."
+    },
+    {
+      "entity": "neoTRNG",
+      "name": "clk_i",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "clock source for registers and cells",
+      "functionality": "Supplies the clock edge to internal processes and to instantiated neoTRNG_cell instances; it sequences debiasing and sampling registers (debias_sreg, debias_state, sample_en, sample_cnt, sample_sreg) and clocks each cell instance.",
+      "role": [
+        "clock input",
+        "sequences internal registers",
+        "drives instantiated cells"
+      ],
+      "relationship": [
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "debias_sreg",
+            "debias_state",
+            "sample_en",
+            "sample_cnt",
+            "sample_sreg"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "neoTRNG_cell_inst.clk_i"
+          ]
+        }
+      ],
+      "evidence": "rising_edge(clk_i) in debiasing and sampling_control processes; port map clk_i => neoTRNG_cell_inst.clk_i in generate."
+    },
+    {
+      "entity": "neoTRNG",
+      "name": "rstn_i",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "asynchronous reset input",
+      "functionality": "Provides asynchronous reset to clocked processes and is forwarded to each neoTRNG_cell; it forces registers to their reset values in reset branches and is passed to instances' rstn_i ports.",
+      "role": [
+        "async reset input",
+        "overrides registers on reset",
+        "propagates to instantiated cells"
+      ],
+      "relationship": [
+        {
+          "type": "OVERRIDES",
+          "targets": [
+            "debias_sreg",
+            "debias_state",
+            "sample_en",
+            "sample_cnt",
+            "sample_sreg"
+          ]
+        },
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "debias_sreg",
+            "debias_state",
+            "sample_en",
+            "sample_cnt",
+            "sample_sreg"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "neoTRNG_cell_inst.rstn_i"
+          ]
+        }
+      ],
+      "evidence": "if (rstn_i = '0') then ... assignments in debiasing and sampling_control; port map rstn_i => neoTRNG_cell_inst.rstn_i in generate."
+    },
+    {
+      "entity": "neoTRNG",
+      "name": "enable_i",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "sampling enable input",
+      "functionality": "Is sampled into internal sample_en on the clock edge and thereby enables or disables sampling; it sources sample_en which in turn controls cell enables and sampling counter behavior.",
+      "role": [
+        "input control",
+        "captured into sample_en",
+        "enables sampling"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "sample_en"
+          ]
+        }
+      ],
+      "evidence": "sample_en <= enable_i inside rising_edge(clk_i) in sampling_control process."
+    },
+    {
+      "entity": "neoTRNG",
+      "name": "valid_o",
+      "dir": "out",
+      "type": "std_ulogic",
+      "function": "byte-ready flag output",
+      "functionality": "Exports the MSB bit of the internal sample_cnt as a ready/valid indicator to the consumer by presenting sample_cnt(sample_cnt'left) at the port.",
+      "role": [
+        "output flag",
+        "exports sample_cnt MSB"
+      ],
+      "relationship": [
+        {
+          "type": "SLICES",
+          "targets": [
+            "sample_cnt"
+          ],
+          "bits": "6"
+        }
+      ],
+      "evidence": "valid_o <= sample_cnt(sample_cnt'left) concurrent assignment."
+    },
+    {
+      "entity": "neoTRNG",
+      "name": "data_o",
+      "dir": "out",
+      "type": "std_ulogic_vector(7 downto 0)",
+      "function": "sampled byte output",
+      "functionality": "Exports the 8-bit sampling shift register value sample_sreg unchanged to the consumer as the data output.",
+      "role": [
+        "byte output",
+        "exports sample_sreg"
+      ],
+      "relationship": [
+        {
+          "type": "CARRIES",
+          "targets": [
+            "sample_sreg"
+          ]
+        }
+      ],
+      "evidence": "data_o <= sample_sreg concurrent assignment."
+    },
+    {
+      "entity": "neoTRNG_cell",
+      "name": "clk_i",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "clock for sequential processes",
+      "functionality": "Provides rising-edge timing to sequential processes; it sequences the en_shift_reg and synchronizer registers and the simulator inverter process when present, driving register updates inside the entity.",
+      "role": [
+        "clock source",
+        "sequences internal registers"
+      ],
+      "relationship": [
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "sreg"
+          ]
+        },
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "sync"
+          ]
+        },
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "inv_out"
+          ]
+        }
+      ],
+      "evidence": "rising_edge(clk_i) in en_shift_reg, synchronizer and inverter_sim_ff processes"
+    },
+    {
+      "entity": "neoTRNG_cell",
+      "name": "rstn_i",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "active-low reset input",
+      "functionality": "When '0' it forces reset branches in sequential processes, clearing sreg and sync to zeros and preventing normal updates until released.",
+      "role": [
+        "reset input",
+        "gates register reset behavior"
+      ],
+      "relationship": [
+        {
+          "type": "GATES",
+          "targets": [
+            "sreg"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "sync"
+          ]
+        }
+      ],
+      "evidence": "if (rstn_i = '0') branches in en_shift_reg and synchronizer processes"
+    },
+    {
+      "entity": "neoTRNG_cell",
+      "name": "en_i",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "enable input for ring and shift register",
+      "functionality": "Is shifted into the en shift-register on clock edges and also controls latch behavior: when '0' latch(i) is forced '0', otherwise latch may hold or follow inv_out depending on sreg(i).",
+      "role": [
+        "input enable",
+        "feeds shift register",
+        "gates latch zeroing"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "sreg"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "latch"
+          ]
+        }
+      ],
+      "evidence": "en shifted in by sreg <= ... & en_i (en_shift_reg) and used in latch when (en_i = '0') condition"
+    },
+    {
+      "entity": "neoTRNG_cell",
+      "name": "en_o",
+      "dir": "out",
+      "type": "std_ulogic",
+      "function": "reports enable MSB",
+      "functionality": "Drives the external en_o port from the most-significant bit of the internal en shift-register sreg, exporting the shift-register's head bit.",
+      "role": [
+        "output",
+        "exports shift-register MSB"
+      ],
+      "relationship": [
+        {
+          "type": "SLICES",
+          "targets": [
+            "sreg"
+          ],
+          "bits": "NUM_INV-1"
+        }
+      ],
+      "evidence": "continuous assignment en_o <= sreg(sreg'left)"
+    },
+    {
+      "entity": "neoTRNG_cell",
+      "name": "rnd_o",
+      "dir": "out",
+      "type": "std_ulogic",
+      "function": "random-bit output",
+      "functionality": "Drives the external rnd_o port from synchronizer stage sync(1), exporting the sampled/synchronized ring-oscillator bit to the outside.",
+      "role": [
+        "output",
+        "exports synchronized random bit"
+      ],
+      "relationship": [
+        {
+          "type": "SLICES",
+          "targets": [
+            "sync"
+          ],
+          "bits": "1"
+        }
+      ],
+      "evidence": "continuous assignment rnd_o <= sync(1)"
+    }
+  ],
+  "signals": [
+    {
+      "entity": "neorv32_trng",
+      "name": "enable",
+      "type": "std_ulogic",
+      "kind": "register",
+      "function": "TRNG enable register",
+      "functionality": "Captured from bus_req_i.data(ctrl_en_c) in a write transaction and reset to '0'; it drives neoTRNG_inst.enable_i, is reported in bus_rsp_o.data, and participates in fifo.clear logic.",
+      "role": [
+        "holds TRNG enable across cycles",
+        "controls neoTRNG and FIFO-clear logic",
+        "reported in bus response"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "bus_req_i.data"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "neoTRNG_inst.enable_i",
+            "bus_rsp_o.data"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "fifo.clear"
+          ]
+        }
+      ],
+      "evidence": "enable <= bus_req_i.data(ctrl_en_c) in write branch; port mapped to neoTRNG_inst.enable_i; used in fifo.clear concurrent assignment."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "fifo_clr",
+      "type": "std_ulogic",
+      "kind": "register",
+      "function": "FIFO clear control register",
+      "functionality": "Captured from bus_req_i.data(ctrl_fifo_clr_c) on writes and reset to '0'; it contributes to fifo.clear (combined with enable) to clear the FIFO when asserted.",
+      "role": [
+        "holds FIFO-clear control",
+        "gates FIFO clear logic"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "bus_req_i.data"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "fifo.clear"
+          ]
+        }
+      ],
+      "evidence": "fifo_clr <= bus_req_i.data(ctrl_fifo_clr_c) in write branch; used in fifo.clear <= '1' when (enable = '0') or (fifo_clr = '1')."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "fifo",
+      "type": "fifo_t",
+      "kind": "signal",
+      "function": "FIFO interface record",
+      "functionality": "Aggregate record holding FIFO control, data and status fields; its fields are individually driven or derived and connected to the instantiated FIFO and TRNG.",
+      "role": [
+        "aggregate of FIFO signals",
+        "forwards fields to/from instantiated FIFO and TRNG"
+      ],
+      "relationship": [
+        {
+          "type": "AGGREGATES",
+          "targets": [
+            "fifo.we",
+            "fifo.re",
+            "fifo.clear",
+            "fifo.wdata",
+            "fifo.rdata",
+            "fifo.avail",
+            "fifo.half",
+            "fifo.free"
+          ]
+        }
+      ],
+      "evidence": "type fifo_t record declaration and field connections in port maps to neoTRNG_inst and rnd_pool_fifo_inst."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "fifo.we",
+      "type": "std_ulogic",
+      "kind": "signal",
+      "function": "FIFO write enable signal",
+      "functionality": "Driven by neoTRNG_inst.valid_o and forwarded to rnd_pool_fifo_inst.we_i to request writes into the FIFO when TRNG produces data.",
+      "role": [
+        "carries TRNG valid to FIFO write port",
+        "forwarded between instances"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "neoTRNG_inst.valid_o"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "rnd_pool_fifo_inst.we_i"
+          ]
+        }
+      ],
+      "evidence": "neoTRNG_inst port map valid_o => fifo.we; rnd_pool_fifo_inst port map we_i => fifo.we."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "fifo.re",
+      "type": "std_ulogic",
+      "kind": "signal",
+      "function": "FIFO read enable signal",
+      "functionality": "Derived combinationally from bus_req_i.stb, bus_req_i.rw and bus_req_i.addr(2) and forwarded to rnd_pool_fifo_inst.re_i to pop data on bus reads.",
+      "role": [
+        "combinational read enable",
+        "drives FIFO pop on bus read"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "bus_req_i.stb",
+            "bus_req_i.rw",
+            "bus_req_i.addr"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "rnd_pool_fifo_inst.re_i"
+          ]
+        }
+      ],
+      "evidence": "concurrent assignment fifo.re <= '1' when (bus_req_i.stb='1') and (bus_req_i.rw='0') and (bus_req_i.addr(2)='1') else '0'; port mapped to rnd_pool_fifo_inst.re_i."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "fifo.clear",
+      "type": "std_ulogic",
+      "kind": "signal",
+      "function": "FIFO clear input signal",
+      "functionality": "Derived from enable and fifo_clr (clear asserted when enable='0' or fifo_clr='1') and forwarded to rnd_pool_fifo_inst.clear_i to clear or reset FIFO state as required.",
+      "role": [
+        "combinational FIFO-clear control",
+        "forwards clear to FIFO instance"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "enable",
+            "fifo_clr"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "rnd_pool_fifo_inst.clear_i"
+          ]
+        }
+      ],
+      "evidence": "fifo.clear <= '1' when (enable = '0') or (fifo_clr = '1') else '0'; port mapped to rnd_pool_fifo_inst.clear_i."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "fifo.wdata",
+      "type": "std_ulogic_vector(7 downto 0)",
+      "kind": "signal",
+      "function": "FIFO write data bus",
+      "functionality": "Captured from neoTRNG_inst.data_o (TRNG output bytes) and forwarded to rnd_pool_fifo_inst.wdata_i for storage in the FIFO.",
+      "role": [
+        "carries TRNG output to FIFO",
+        "forwarded between instances"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "neoTRNG_inst.data_o"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "rnd_pool_fifo_inst.wdata_i"
+          ]
+        }
+      ],
+      "evidence": "neoTRNG_inst port map data_o => fifo.wdata; rnd_pool_fifo_inst port map wdata_i => fifo.wdata."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "fifo.rdata",
+      "type": "std_ulogic_vector(7 downto 0)",
+      "kind": "signal",
+      "function": "FIFO read data bus",
+      "functionality": "Captured from rnd_pool_fifo_inst.rdata_o and supplied into bus responses: its full 8-bit value is placed into a slice of bus_rsp_o.data during data reads.",
+      "role": [
+        "provides FIFO output data",
+        "supplies read data slice into bus response"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "rnd_pool_fifo_inst.rdata_o"
+          ]
+        },
+        {
+          "type": "SLICES",
+          "targets": [
+            "bus_rsp_o.data"
+          ],
+          "bits": "ctrl_data_msb_c downto ctrl_data_lsb_c"
+        }
+      ],
+      "evidence": "rnd_pool_fifo_inst port map rdata_o => fifo.rdata; bus_access assigns bus_rsp_o.data(ctrl_data_msb_c downto ctrl_data_lsb_c) <= fifo.rdata."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "fifo.avail",
+      "type": "std_ulogic",
+      "kind": "signal",
+      "function": "FIFO available flag",
+      "functionality": "Captured from rnd_pool_fifo_inst.avail_o; reported into bus_rsp_o.data at bit ctrl_avail_c and used to select zero vs fifo.rdata when the CPU reads the data register.",
+      "role": [
+        "reports FIFO availability",
+        "gates data-read response"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "rnd_pool_fifo_inst.avail_o"
+          ]
+        },
+        {
+          "type": "SLICES",
+          "targets": [
+            "bus_rsp_o.data"
+          ],
+          "bits": "ctrl_avail_c"
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "bus_rsp_o.data"
+          ]
+        }
+      ],
+      "evidence": "rnd_pool_fifo_inst port map avail_o => fifo.avail; bus_access tests fifo.avail to select bus_rsp_o.data <= (others=>'0') or fifo.rdata."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "fifo.half",
+      "type": "std_ulogic",
+      "kind": "signal",
+      "function": "FIFO half-full indicator",
+      "functionality": "Captured from rnd_pool_fifo_inst.half_o and made available internally; not used elsewhere in this source.",
+      "role": [
+        "status output from FIFO",
+        "captured and unused"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "rnd_pool_fifo_inst.half_o"
+          ]
+        }
+      ],
+      "evidence": "rnd_pool_fifo_inst port map half_o => fifo.half; no other references found."
+    },
+    {
+      "entity": "neorv32_trng",
+      "name": "fifo.free",
+      "type": "std_ulogic",
+      "kind": "signal",
+      "function": "FIFO free flag",
+      "functionality": "Captured from rnd_pool_fifo_inst.free_o and available internally; not read or acted on elsewhere in this source.",
+      "role": [
+        "status output from FIFO",
+        "captured and unused"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "rnd_pool_fifo_inst.free_o"
+          ]
+        }
+      ],
+      "evidence": "rnd_pool_fifo_inst port map free_o => fifo.free; no other references in the source."
+    },
+    {
+      "entity": "neoTRNG",
+      "name": "cell_en_in",
+      "type": "std_ulogic_vector(NUM_CELLS-1 downto 0)",
+      "kind": "signal",
+      "function": "shifted enable inputs to entropy cells",
+      "functionality": "Constructed from sample_en for element 0 and from a shifted slice of cell_en_out for higher bits; it forwards the cell enable vector into each neoTRNG_cell.en_i via instance port maps.",
+      "role": [
+        "combinational enable bus",
+        "forwards sample_en to first cell",
+        "cascades cell_en_out to next inputs"
+      ],
+      "relationship": [
+        {
+          "type": "AGGREGATES",
+          "targets": [
+            "sample_en",
+            "cell_en_out"
+          ],
+          "bits": "NUM_CELLS-2 downto 0"
+        }
+      ],
+      "evidence": "cell_en_in(0) <= sample_en and cell_en_in(NUM_CELLS-1 downto 1) <= cell_en_out(NUM_CELLS-2 downto 0) concurrent assignments."
+    },
+    {
+      "entity": "neoTRNG",
+      "name": "cell_en_out",
+      "type": "std_ulogic_vector(NUM_CELLS-1 downto 0)",
+      "kind": "signal",
+      "function": "cells' enable outputs",
+      "functionality": "Driven by each neoTRNG_cell en_o port and presented as a vector; its bits are read back to build cell_en_in and the MSB is used in debias_state update.",
+      "role": [
+        "enable outputs from cells",
+        "feeds back to cell_en_in",
+        "supplies debias gating"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "neoTRNG_cell_inst.en_o"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "cell_en_in"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "debias_state"
+          ]
+        }
+      ],
+      "evidence": "port map en_o => cell_en_out(i) in generate; cell_en_in assignment and debias_state <= ... cell_en_out(cell_en_out'left)."
+    },
+    {
+      "entity": "neoTRNG",
+      "name": "cell_rnd",
+      "type": "std_ulogic_vector(NUM_CELLS-1 downto 0)",
+      "kind": "signal",
+      "function": "raw random outputs from cells",
+      "functionality": "Collects rnd_o from every instantiated neoTRNG_cell and supplies those bits to the combine process which XORs them into cell_sum.",
+      "role": [
+        "entropy bits from cells",
+        "feeds combine XOR"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "neoTRNG_cell_inst.rnd_o"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "cell_sum"
+          ]
+        }
+      ],
+      "evidence": "port map rnd_o => cell_rnd(i) in generate; used in combine process loop tmp_v := tmp_v xor cell_rnd(i)."
+    },
+    {
+      "entity": "neoTRNG",
+      "name": "cell_sum",
+      "type": "std_ulogic",
+      "kind": "signal",
+      "function": "XOR of all cell_rnd bits",
+      "functionality": "Computed as the XOR (parity) of all bits in cell_rnd inside the combine process and provided as the single combined entropy bit to the debias shift register.",
+      "role": [
+        "combined entropy bit",
+        "feeds debias logic"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "cell_rnd"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "debias_sreg"
+          ]
+        }
+      ],
+      "evidence": "process combine computes tmp_v xor cell_rnd loop and assigns cell_sum <= tmp_v."
+    },
+    {
+      "entity": "neoTRNG",
+      "name": "debias_sreg",
+      "type": "std_ulogic_vector(1 downto 0)",
+      "kind": "register",
+      "function": "two-bit debias shift register",
+      "functionality": "Clocked two-bit shift register that captures the newest cell_sum and previous bit each rising edge; its bits produce debias_valid and supply debias_data for sampling.",
+      "role": [
+        "holds recent entropy samples",
+        "provides debias sample bit",
+        "register updated on clock"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "debias_sreg",
+            "cell_sum"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "debias_valid",
+            "debias_data"
+          ]
+        }
+      ],
+      "evidence": "debias_sreg <= debias_sreg(0) & cell_sum on rising_edge(clk_i); debias_valid and debias_data derived from debias_sreg."
+    },
+    {
+      "entity": "neoTRNG",
+      "name": "debias_state",
+      "type": "std_ulogic",
+      "kind": "register",
+      "function": "one-bit debias toggle state",
+      "functionality": "Captured on clock as (not debias_state) AND the MSB of cell_en_out; used with debias_sreg to form debias_valid. Reset clears this register.",
+      "role": [
+        "state register",
+        "gates debias_valid formation",
+        "captures cell_en_out condition"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "debias_state",
+            "cell_en_out"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "debias_valid"
+          ]
+        }
+      ],
+      "evidence": "debias_state <= (not debias_state) and cell_en_out(cell_en_out'left) on rising_edge(clk_i); reset branch sets debias_state <= '0'."
+    },
+    {
+      "entity": "neoTRNG",
+      "name": "debias_valid",
+      "type": "std_ulogic",
+      "kind": "signal",
+      "function": "debias acceptance condition",
+      "functionality": "Combinationally derived from debias_state AND the XOR of debias_sreg bits; it gates sampling counter increment and shift-register updates when asserted.",
+      "role": [
+        "debias accept signal",
+        "gates sampling updates",
+        "combines debias_sreg and debias_state"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "debias_state",
+            "debias_sreg"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "sample_cnt",
+            "sample_sreg"
+          ]
+        }
+      ],
+      "evidence": "debias_valid <= debias_state and (debias_sreg(1) xor debias_sreg(0)); used in sampling_control if (debias_valid = '1') then ..."
+    },
+    {
+      "entity": "neoTRNG",
+      "name": "debias_data",
+      "type": "std_ulogic",
+      "kind": "signal",
+      "function": "debias output bit",
+      "functionality": "Combinationally taken as debias_sreg(0); it is XORed into the sampling shift register to produce whitened sampled bits.",
+      "role": [
+        "debias output",
+        "feeds sample_sreg"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "debias_sreg"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "sample_sreg"
+          ]
+        }
+      ],
+      "evidence": "debias_data <= debias_sreg(0); used in sample_sreg update sample_sreg <= ... & (sample_sreg(7) xor debias_data)."
+    },
+    {
+      "entity": "neoTRNG",
+      "name": "sample_en",
+      "type": "std_ulogic",
+      "kind": "register",
+      "function": "synchronized enable sampled from enable_i",
+      "functionality": "Captured from external enable_i at clock edge; its registered value drives cell_en_in(0) combinationally and is tested in sampling_control to reset or allow sampling.",
+      "role": [
+        "synchronized enable",
+        "provides cell_en input",
+        "gates sampling logic"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "enable_i"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "cell_en_in"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "sample_cnt",
+            "sample_sreg"
+          ]
+        }
+      ],
+      "evidence": "sample_en <= enable_i on rising_edge(clk_i); cell_en_in(0) <= sample_en; sampling_control tests sample_en = '0'."
+    },
+    {
+      "entity": "neoTRNG",
+      "name": "sample_sreg",
+      "type": "std_ulogic_vector(7 downto 0)",
+      "kind": "register",
+      "function": "8-bit sampling shift register",
+      "functionality": "Shift-register of 8 bits that is cleared on reset, shifted and updated with debias_data on accepted sampling clocks, and whose full contents are exported on data_o.",
+      "role": [
+        "holds sampled byte",
+        "driven to data_o",
+        "updated from debias_data"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "sample_sreg",
+            "debias_data"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "data_o"
+          ]
+        }
+      ],
+      "evidence": "sample_sreg <= sample_sreg(6 downto 0) & (sample_sreg(7) xor debias_data) on rising_edge(clk_i); data_o <= sample_sreg."
+    },
+    {
+      "entity": "neoTRNG",
+      "name": "sample_cnt",
+      "type": "std_ulogic_vector(6 downto 0)",
+      "kind": "register",
+      "function": "7-bit sample counter",
+      "functionality": "Counts accepted debias_valid events by incrementing each clock when debias_valid='1'; it resets on disable or when its MSB becomes '1', and its MSB is exported as valid_o.",
+      "role": [
+        "samples counter",
+        "drives valid_o MSB",
+        "controls wrap/reset"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "sample_cnt"
+          ]
+        },
+        {
+          "type": "CONSTRAINS",
+          "targets": [
+            "sample_cnt",
+            "sample_sreg"
+          ],
+          "bits": "6"
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "valid_o"
+          ]
+        }
+      ],
+      "evidence": "sample_cnt incremented std_ulogic_vector(unsigned(sample_cnt)+1) on debias_valid; tested sample_cnt(sample_cnt'left) = '1' in sampling_control; valid_o <= sample_cnt(sample_cnt'left)."
+    },
+    {
+      "entity": "neoTRNG_cell",
+      "name": "sreg",
+      "type": "std_ulogic_vector(NUM_INV-1 downto 0)",
+      "kind": "register",
+      "function": "shift-register capturing en_i",
+      "functionality": "Holds NUM_INV bits and shifts in en_i on rising clk_i; it resets to zeros on rstn_i and its MSB is presented on en_o; individual bits gate latch updates.",
+      "role": [
+        "held enable history",
+        "gates latch updates",
+        "provides MSB to en_o"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "en_i",
+            "sreg"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "en_o"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "latch"
+          ]
+        }
+      ],
+      "evidence": "en_shift_reg process: reset branch sets sreg<= (others=>'0'); on rising_edge(clk_i) sreg <= sreg(sreg'left-1 downto 0) & en_i"
+    },
+    {
+      "entity": "neoTRNG_cell",
+      "name": "latch",
+      "type": "std_ulogic_vector(NUM_INV-1 downto 0)",
+      "kind": "signal",
+      "function": "per-inverter combinational latch selection",
+      "functionality": "Combinationally selects its value from '0', its own previous value, or inv_out(i) based on en_i and sreg(i); it then supplies the rotated latch vector inv_in.",
+      "role": [
+        "local latch per inverter",
+        "forwards inv_out when enabled",
+        "combinational control node"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "en_i",
+            "sreg",
+            "inv_out"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "inv_in"
+          ]
+        }
+      ],
+      "evidence": "concurrent assignment latch(i) <= '0' when (en_i='0') else latch(i) when (sreg(i)='0') else inv_out(i); inv_in <= rotated latch assignments"
+    },
+    {
+      "entity": "neoTRNG_cell",
+      "name": "inv_in",
+      "type": "std_ulogic_vector(NUM_INV-1 downto 0)",
+      "kind": "signal",
+      "function": "rotated latch inputs to inverters",
+      "functionality": "Constructs a rotated view of latch (inv_in(0)=latch(NUM_INV-1), others shifted) and supplies those bits to inv_out computation.",
+      "role": [
+        "feeds inverter inputs",
+        "conveys rotated latch state"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "latch"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "inv_out"
+          ]
+        }
+      ],
+      "evidence": "inv_in(0) <= latch(NUM_INV-1) and inv_in(NUM_INV-1 downto 1) <= latch(NUM_INV-2 downto 0)"
+    },
+    {
+      "entity": "neoTRNG_cell",
+      "name": "inv_out",
+      "type": "std_ulogic_vector(NUM_INV-1 downto 0)",
+      "kind": "signal",
+      "function": "inverter output vector",
+      "functionality": "Drives each bit as logical not of inv_in (combinationally in normal mode); those outputs are the values that latch may sample when enabled.",
+      "role": [
+        "inverter outputs",
+        "drives latch input when selected"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "inv_in"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "latch"
+          ]
+        }
+      ],
+      "evidence": "inverter_phy: inv_out(i) <= not inv_in(i); latch uses inv_out(i) as one assignment operand"
+    },
+    {
+      "entity": "neoTRNG_cell",
+      "name": "sync",
+      "type": "std_ulogic_vector(1 downto 0)",
+      "kind": "register",
+      "function": "two-stage synchronizer register",
+      "functionality": "Is reset to zeros on rstn_i and on rising clk_i shifts in latch(latch'left) via sync <= sync(0) & latch(latch'left); its stage sync(1) is exported as rnd_o.",
+      "role": [
+        "synchronizer stage",
+        "holds sampled bit across cycles",
+        "drives rnd_o"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "sync",
+            "latch"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "rnd_o"
+          ]
+        }
+      ],
+      "evidence": "synchronizer process: reset branch sets sync<= (others=>'0'); on rising_edge(clk_i) sync <= sync(0) & latch(latch'left); rnd_o <= sync(1)"
+    }
+  ],
+  "_issues": {
+    "banned_word": {
+      "availability": 1,
+      "may": 2
+    },
+    "_offenders": {
+      "neorv32_trng/neorv32_trng/fifo.avail": 1,
+      "neorv32_trng/neoTRNG_cell/en_i": 1,
+      "neorv32_trng/neoTRNG_cell/inv_out": 1
+    }
+  }
+}

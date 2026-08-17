@@ -1,0 +1,732 @@
+{
+  "module": "neorv32_imem",
+  "entities": [
+    "neorv32_imem"
+  ],
+  "ports": [
+    {
+      "entity": "neorv32_imem",
+      "name": "clk_i",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "clock for sequential processes",
+      "functionality": "Provides rising_edge timing to processes and sequences updates to registers such as rdata, addr_ff, mem_ram_b*, rden and bus_rsp_o.ack.",
+      "role": [
+        "clock",
+        "sequences registers"
+      ],
+      "relationship": [
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "rdata",
+            "addr_ff",
+            "mem_ram_b0",
+            "mem_ram_b1",
+            "mem_ram_b2",
+            "mem_ram_b3",
+            "rden",
+            "bus_rsp_o.ack"
+          ]
+        }
+      ],
+      "evidence": "rising_edge(clk_i) in mem_access and bus_feedback processes (process(clk_i) and process(rstn_i, clk_i))"
+    },
+    {
+      "entity": "neorv32_imem",
+      "name": "rstn_i",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "active-low reset input",
+      "functionality": "Active-low reset that forces registers to defined values in the reset branch; resets rden and bus_rsp_o.ack to '0' when asserted.",
+      "role": [
+        "reset",
+        "overrides ack and rden"
+      ],
+      "relationship": [
+        {
+          "type": "OVERRIDES",
+          "targets": [
+            "rden",
+            "bus_rsp_o.ack"
+          ]
+        },
+        {
+          "type": "SEQUENCES",
+          "targets": [
+            "rden",
+            "bus_rsp_o.ack"
+          ]
+        }
+      ],
+      "evidence": "process(rstn_i, clk_i) contains if (rstn_i = '0') then rden <= '0'; bus_rsp_o.ack <= '0';"
+    },
+    {
+      "entity": "neorv32_imem",
+      "name": "bus_req_i",
+      "dir": "in",
+      "type": "bus_req_t",
+      "function": "request bus input bundle",
+      "functionality": "Carries address, data and control fields used to derive internal addr, to write mem_ram_b* on writes, and to form rden and bus_rsp_o.ack responses.",
+      "role": [
+        "external input bundle",
+        "carries request fields",
+        "governs memory writes and responses"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "addr",
+            "mem_ram_b0",
+            "mem_ram_b1",
+            "mem_ram_b2",
+            "mem_ram_b3",
+            "rden",
+            "bus_rsp_o.ack"
+          ]
+        }
+      ],
+      "evidence": "bus_req_i fields used in addr <= unsigned(bus_req_i.addr(...)), write conditions and rden/bus_rsp_o.ack assignments"
+    },
+    {
+      "entity": "neorv32_imem",
+      "name": "bus_req_i.addr",
+      "dir": "in",
+      "type": "std_ulogic_vector(31 downto 0)",
+      "function": "request address vector",
+      "functionality": "Provides address bits whose slice (addr_hi_c downto 2) is converted to internal addr used to index memories.",
+      "role": [
+        "address source",
+        "provides sliced address"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "addr"
+          ],
+          "bits": "addr_hi_c downto 2"
+        }
+      ],
+      "evidence": "addr <= unsigned(bus_req_i.addr(addr_hi_c downto 2));"
+    },
+    {
+      "entity": "neorv32_imem",
+      "name": "bus_req_i.data",
+      "dir": "in",
+      "type": "std_ulogic_vector(31 downto 0)",
+      "function": "request write data vector",
+      "functionality": "Supplies write data; its byte slices are written into mem_ram_b0..mem_ram_b3 when writes are enabled.",
+      "role": [
+        "write data source"
+      ],
+      "relationship": [
+        {
+          "type": "SOURCES",
+          "targets": [
+            "mem_ram_b0"
+          ],
+          "bits": "7 downto 0"
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "mem_ram_b1"
+          ],
+          "bits": "15 downto 8"
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "mem_ram_b2"
+          ],
+          "bits": "23 downto 16"
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "mem_ram_b3"
+          ],
+          "bits": "31 downto 24"
+        }
+      ],
+      "evidence": "mem_ram_b0(to_integer(addr)) <= bus_req_i.data(7 downto 0); similar for other byte lanes"
+    },
+    {
+      "entity": "neorv32_imem",
+      "name": "bus_req_i.ben",
+      "dir": "in",
+      "type": "std_ulogic_vector(3 downto 0)",
+      "function": "byte-enable vector",
+      "functionality": "Each bit gates the corresponding byte write into mem_ram_b0..mem_ram_b3 when stb and rw are asserted.",
+      "role": [
+        "write enable control",
+        "gates byte writes"
+      ],
+      "relationship": [
+        {
+          "type": "GATES",
+          "targets": [
+            "mem_ram_b0",
+            "mem_ram_b1",
+            "mem_ram_b2",
+            "mem_ram_b3"
+          ]
+        }
+      ],
+      "evidence": "if (bus_req_i.ben(0) = '1') then mem_ram_b0(to_integer(addr)) <= ... (and similar for ben(1..3))"
+    },
+    {
+      "entity": "neorv32_imem",
+      "name": "bus_req_i.stb",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "request valid strobe",
+      "functionality": "Indicates a valid bus request; with rw it gates writes, and with not rw it contributes to rden and bus_rsp_o.ack generation.",
+      "role": [
+        "request valid control",
+        "gates writes and responses"
+      ],
+      "relationship": [
+        {
+          "type": "GATES",
+          "targets": [
+            "mem_ram_b0",
+            "mem_ram_b1",
+            "mem_ram_b2",
+            "mem_ram_b3"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "rden",
+            "bus_rsp_o.ack"
+          ]
+        }
+      ],
+      "evidence": "Used in conditions: if (bus_req_i.stb = '1') and (bus_req_i.rw = '1') then ...; rden <= bus_req_i.stb and (not bus_req_i.rw)"
+    },
+    {
+      "entity": "neorv32_imem",
+      "name": "bus_req_i.rw",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "read/write indicator",
+      "functionality": "High for write operations; combined with stb and ben to enable writes and inverted for read enable (rden) and ack generation.",
+      "role": [
+        "read/write control",
+        "gates writes",
+        "inverted to produce read enables"
+      ],
+      "relationship": [
+        {
+          "type": "GATES",
+          "targets": [
+            "mem_ram_b0",
+            "mem_ram_b1",
+            "mem_ram_b2",
+            "mem_ram_b3"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "rden",
+            "bus_rsp_o.ack"
+          ]
+        }
+      ],
+      "evidence": "Conditions combine bus_req_i.stb and bus_req_i.rw for writes; rden <= bus_req_i.stb and (not bus_req_i.rw)"
+    },
+    {
+      "entity": "neorv32_imem",
+      "name": "bus_req_i.src",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused request source field",
+      "functionality": "Declared as part of the request bundle but not referenced in this source file.",
+      "role": [
+        "external input field",
+        "unused"
+      ],
+      "relationship": [
+        {
+          "type": "ISOLATED",
+          "targets": []
+        }
+      ],
+      "evidence": "No occurrences beyond the port declaration"
+    },
+    {
+      "entity": "neorv32_imem",
+      "name": "bus_req_i.priv",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused privilege field",
+      "functionality": "Declared but not referenced anywhere in this entity's source.",
+      "role": [
+        "external input field",
+        "unused"
+      ],
+      "relationship": [
+        {
+          "type": "ISOLATED",
+          "targets": []
+        }
+      ],
+      "evidence": "No occurrences beyond the port declaration"
+    },
+    {
+      "entity": "neorv32_imem",
+      "name": "bus_req_i.debug",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused debug field",
+      "functionality": "Declared but not referenced anywhere in this source file.",
+      "role": [
+        "external input field",
+        "unused"
+      ],
+      "relationship": [
+        {
+          "type": "ISOLATED",
+          "targets": []
+        }
+      ],
+      "evidence": "No occurrences beyond the port declaration"
+    },
+    {
+      "entity": "neorv32_imem",
+      "name": "bus_req_i.amo",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused amo flag",
+      "functionality": "Declared in the request bundle but not used in this entity.",
+      "role": [
+        "external input field",
+        "unused"
+      ],
+      "relationship": [
+        {
+          "type": "ISOLATED",
+          "targets": []
+        }
+      ],
+      "evidence": "No occurrences beyond the port declaration"
+    },
+    {
+      "entity": "neorv32_imem",
+      "name": "bus_req_i.amoop",
+      "dir": "in",
+      "type": "std_ulogic_vector(3 downto 0)",
+      "function": "unused amo-op vector",
+      "functionality": "Declared but not referenced in the source of this entity.",
+      "role": [
+        "external input field",
+        "unused"
+      ],
+      "relationship": [
+        {
+          "type": "ISOLATED",
+          "targets": []
+        }
+      ],
+      "evidence": "No occurrences beyond the port declaration"
+    },
+    {
+      "entity": "neorv32_imem",
+      "name": "bus_req_i.lock",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused lock flag",
+      "functionality": "Declared in the request bundle and not used by this entity's logic.",
+      "role": [
+        "external input field",
+        "unused"
+      ],
+      "relationship": [
+        {
+          "type": "ISOLATED",
+          "targets": []
+        }
+      ],
+      "evidence": "No occurrences beyond the port declaration"
+    },
+    {
+      "entity": "neorv32_imem",
+      "name": "bus_req_i.fence",
+      "dir": "in",
+      "type": "std_ulogic",
+      "function": "unused fence flag",
+      "functionality": "Declared but not referenced inside this entity.",
+      "role": [
+        "external input field",
+        "unused"
+      ],
+      "relationship": [
+        {
+          "type": "ISOLATED",
+          "targets": []
+        }
+      ],
+      "evidence": "No occurrences beyond the port declaration"
+    },
+    {
+      "entity": "neorv32_imem",
+      "name": "bus_rsp_o",
+      "dir": "out",
+      "type": "bus_rsp_t",
+      "function": "response bus output bundle",
+      "functionality": "Exports response fields (ack, data, err); ack is registered in bus_feedback, data is driven from rdata gated by rden, err is tied low.",
+      "role": [
+        "external output bundle",
+        "exports response signals"
+      ],
+      "relationship": [
+        {
+          "type": "AGGREGATES",
+          "targets": [
+            "bus_rsp_o.ack",
+            "bus_rsp_o.err",
+            "bus_rsp_o.data"
+          ]
+        },
+        {
+          "type": "EXPORTS",
+          "targets": []
+        }
+      ],
+      "evidence": "bus_rsp_o.ack assigned in bus_feedback process; bus_rsp_o.data <= rdata when (rden='1') else (others=>'0'); bus_rsp_o.err <= '0'"
+    },
+    {
+      "entity": "neorv32_imem",
+      "name": "bus_rsp_o.ack",
+      "dir": "out",
+      "type": "std_ulogic",
+      "function": "response acknowledge",
+      "functionality": "Registered ack driven from bus_req_i.stb and bus_req_i.rw inside the clocked bus_feedback process; reset forces it to '0'.",
+      "role": [
+        "output ack",
+        "registered response",
+        "driven by request"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "bus_req_i.stb",
+            "bus_req_i.rw"
+          ]
+        },
+        {
+          "type": "OVERRIDES",
+          "targets": [
+            "rstn_i"
+          ]
+        },
+        {
+          "type": "EXPORTS",
+          "targets": []
+        }
+      ],
+      "evidence": "In bus_feedback process: reset branch sets bus_rsp_o.ack <= '0'; on rising_edge(clk_i) bus_rsp_o.ack <= bus_req_i.stb and (not bus_req_i.rw) (or bus_req_i.stb when IMEM_INIT=false)"
+    },
+    {
+      "entity": "neorv32_imem",
+      "name": "bus_rsp_o.err",
+      "dir": "out",
+      "type": "std_ulogic",
+      "function": "response error flag",
+      "functionality": "Held constant low; the err output is driven to '0' and exported.",
+      "role": [
+        "output error flag",
+        "exports constant zero"
+      ],
+      "relationship": [
+        {
+          "type": "EXPORTS",
+          "targets": []
+        }
+      ],
+      "evidence": "bus_rsp_o.err <= '0' concurrent assignment"
+    },
+    {
+      "entity": "neorv32_imem",
+      "name": "bus_rsp_o.data",
+      "dir": "out",
+      "type": "std_ulogic_vector(31 downto 0)",
+      "function": "response data output",
+      "functionality": "Presents rdata on the bus when rden is '1', otherwise drives zeros; derived from internal rdata register.",
+      "role": [
+        "output data",
+        "driven from read register",
+        "gated by rden"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "rdata"
+          ]
+        },
+        {
+          "type": "EXPORTS",
+          "targets": []
+        }
+      ],
+      "evidence": "bus_rsp_o.data <= rdata when (rden = '1') else (others => '0');"
+    }
+  ],
+  "signals": [
+    {
+      "entity": "neorv32_imem",
+      "name": "rdata",
+      "type": "std_ulogic_vector(31 downto 0)",
+      "kind": "register",
+      "function": "read data register",
+      "functionality": "Holds a 32-bit word read from memory arrays; updated from mem_ram_b* reads (and ROM in other generate branches) and supplies bus_rsp_o.data.",
+      "role": [
+        "registered read data",
+        "feeds bus_rsp_o.data",
+        "derived from memory arrays"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "mem_ram_b0",
+            "mem_ram_b1",
+            "mem_ram_b2",
+            "mem_ram_b3"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "bus_rsp_o.data"
+          ]
+        }
+      ],
+      "evidence": "rdata(7 downto 0) <= mem_ram_b0(to_integer(addr)); rdata used by bus_rsp_o.data <= rdata when (rden='1') else ..."
+    },
+    {
+      "entity": "neorv32_imem",
+      "name": "rden",
+      "type": "std_ulogic",
+      "kind": "register",
+      "function": "response-data enable register",
+      "functionality": "Captured each clock from bus_req_i.stb and bus_req_i.rw and indicates when bus_rsp_o.data should present rdata.",
+      "role": [
+        "registered enable",
+        "gates bus_rsp_o.data"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "bus_req_i.stb",
+            "bus_req_i.rw"
+          ]
+        },
+        {
+          "type": "GATES",
+          "targets": [
+            "bus_rsp_o.data"
+          ]
+        }
+      ],
+      "evidence": "In bus_feedback process: rden <= bus_req_i.stb and (not bus_req_i.rw); used in bus_rsp_o.data conditional"
+    },
+    {
+      "entity": "neorv32_imem",
+      "name": "addr",
+      "type": "unsigned(index_size_f(IMEM_SIZE/4)-1 downto 0)",
+      "kind": "signal",
+      "function": "word-aligned internal address",
+      "functionality": "Combinationally derived from bus_req_i.addr(addr_hi_c downto 2); used to index memory arrays and is captured into addr_ff.",
+      "role": [
+        "combinational address",
+        "selects memory word",
+        "sources addr_ff"
+      ],
+      "relationship": [
+        {
+          "type": "DERIVES_FROM",
+          "targets": [
+            "bus_req_i.addr"
+          ],
+          "bits": "addr_hi_c downto 2"
+        },
+        {
+          "type": "SELECTS",
+          "targets": [
+            "mem_ram_b0",
+            "mem_ram_b1",
+            "mem_ram_b2",
+            "mem_ram_b3"
+          ]
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "addr_ff"
+          ]
+        }
+      ],
+      "evidence": "addr <= unsigned(bus_req_i.addr(addr_hi_c downto 2)); to_integer(addr) used to index mem_ram_b* and to capture into addr_ff"
+    },
+    {
+      "entity": "neorv32_imem",
+      "name": "addr_ff",
+      "type": "unsigned(index_size_f(IMEM_SIZE/4)-1 downto 0)",
+      "kind": "register",
+      "function": "registered address for read timing",
+      "functionality": "Captures addr on clock in alternative/generate configurations and is used as the index for memory reads presented on rdata.",
+      "role": [
+        "registered address",
+        "selects memory reads"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "addr"
+          ]
+        },
+        {
+          "type": "SELECTS",
+          "targets": [
+            "mem_ram_b0",
+            "mem_ram_b1",
+            "mem_ram_b2",
+            "mem_ram_b3"
+          ]
+        }
+      ],
+      "evidence": "addr_ff <= addr inside rising_edge(clk_i) in mem_access generates; mem reads use to_integer(addr_ff) for rdata assignments"
+    },
+    {
+      "entity": "neorv32_imem",
+      "name": "mem_ram_b0",
+      "type": "mem8_t(0 to IMEM_SIZE/4-1)",
+      "kind": "register",
+      "function": "RAM byte lane 0 storage",
+      "functionality": "Stores the low byte written from bus_req_i.data(7 downto 0) when stb and rw and ben(0) are asserted; its addressed element supplies rdata(7 downto 0) on reads.",
+      "role": [
+        "byte storage",
+        "written on bus writes",
+        "source for rdata(7 downto 0)"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "bus_req_i.data"
+          ],
+          "bits": "7 downto 0"
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "rdata"
+          ],
+          "bits": "7 downto 0"
+        }
+      ],
+      "evidence": "mem_ram_b0(to_integer(addr)) <= bus_req_i.data(7 downto 0); rdata(7 downto 0) <= mem_ram_b0(to_integer(addr));"
+    },
+    {
+      "entity": "neorv32_imem",
+      "name": "mem_ram_b1",
+      "type": "mem8_t(0 to IMEM_SIZE/4-1)",
+      "kind": "register",
+      "function": "RAM byte lane 1 storage",
+      "functionality": "Stores the second byte written from bus_req_i.data(15 downto 8) when enabled; supplies rdata(15 downto 8) on reads.",
+      "role": [
+        "byte storage",
+        "written on bus writes",
+        "source for rdata(15 downto 8)"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "bus_req_i.data"
+          ],
+          "bits": "15 downto 8"
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "rdata"
+          ],
+          "bits": "15 downto 8"
+        }
+      ],
+      "evidence": "mem_ram_b1(to_integer(addr)) <= bus_req_i.data(15 downto 8); rdata(15 downto 8) <= mem_ram_b1(to_integer(addr));"
+    },
+    {
+      "entity": "neorv32_imem",
+      "name": "mem_ram_b2",
+      "type": "mem8_t(0 to IMEM_SIZE/4-1)",
+      "kind": "register",
+      "function": "RAM byte lane 2 storage",
+      "functionality": "Stores the third byte written from bus_req_i.data(23 downto 16) when enabled; supplies rdata(23 downto 16) on reads.",
+      "role": [
+        "byte storage",
+        "written on bus writes",
+        "source for rdata(23 downto 16)"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "bus_req_i.data"
+          ],
+          "bits": "23 downto 16"
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "rdata"
+          ],
+          "bits": "23 downto 16"
+        }
+      ],
+      "evidence": "mem_ram_b2(to_integer(addr)) <= bus_req_i.data(23 downto 16); rdata(23 downto 16) <= mem_ram_b2(to_integer(addr));"
+    },
+    {
+      "entity": "neorv32_imem",
+      "name": "mem_ram_b3",
+      "type": "mem8_t(0 to IMEM_SIZE/4-1)",
+      "kind": "register",
+      "function": "RAM byte lane 3 storage",
+      "functionality": "Stores the top byte written from bus_req_i.data(31 downto 24) when enabled; supplies rdata(31 downto 24) on reads.",
+      "role": [
+        "byte storage",
+        "written on bus writes",
+        "source for rdata(31 downto 24)"
+      ],
+      "relationship": [
+        {
+          "type": "CAPTURES",
+          "targets": [
+            "bus_req_i.data"
+          ],
+          "bits": "31 downto 24"
+        },
+        {
+          "type": "SOURCES",
+          "targets": [
+            "rdata"
+          ],
+          "bits": "31 downto 24"
+        }
+      ],
+      "evidence": "mem_ram_b3(to_integer(addr)) <= bus_req_i.data(31 downto 24); rdata(31 downto 24) <= mem_ram_b3(to_integer(addr));"
+    }
+  ],
+  "_issues": {}
+}

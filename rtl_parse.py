@@ -27,11 +27,19 @@ def strip_comments(text, vhdl=True):
     regex offsets stay valid for parsing. This one actually deletes them and closes
     up the blank lines, for the text handed to the asset-generation stage.
 
-    Do NOT use this on the input to the port/signal ANNOTATION stage:
+    Do NOT use this on the input to the V1/V2 port/signal ANNOTATION stage:
     PARSE_PORTS_ANNOTATE_SYSTEM asks the model to infer each port's function "from its
     name, in-source comments, and usage", so stripping there would remove a signal it
     is told to rely on. The asset stage has no such dependency -- it takes semantics
     from the technical summary and from the parsed elements' `function` fields.
+
+    THE V3 ANNOTATION STAGE IS THE EXCEPTION, AND STRIPS DELIBERATELY. `prompts_parse_v3`
+    never references comments: every field it asks for must be derived from an occurrence
+    profile, which is a list of syntactic sites. Comments are removed there on purpose --
+    a comment is the one place a designer can assert a conclusion the RTL does not show,
+    and an annotator told to read one reports that assertion as observed behaviour.
+    `parse_v3.annotate_module` calls this function; `prompts_parse_v3.audit()` asserts the
+    prompts contain no phrase making a comment a source.
 
     String-literal aware: a `--` or `//` inside a double-quoted literal is kept.
     """
