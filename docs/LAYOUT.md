@@ -26,8 +26,8 @@ own `data/`-like subfolders (for example `bahavioral_patterns_of_assets/data/RTL
    final-version and diagnosis cells of `notebooks/assetgen_meta.ipynb`, and the modules they import), string
    literals that name a moved item gained a `data/`, `runs/` or `src/` prefix. Six unpinned modules that put the repo
    root on `sys.path` now put `src/` there instead (`final/final_pipeline.py`, `assetgen_meta/traced_inputs.py`,
-   `cia_label.py`, `trace_digest.py`, `prompt_opt/read_final.py`, `hand_arms/score_hand_arm.py`). The two re-runnable notebooks move to the repo root when started
-   in `notebooks/`.
+   `cia_label.py`, `trace_digest.py`, `prompt_opt/read_final.py`, `hand_arms/score_hand_arm.py`). The two
+   re-runnable notebooks move to the repo root when started in `notebooks/`.
 3. **Records stay as they were.** Older notebooks and scripts whose inputs are not published were not edited. Their
    saved outputs, and the logs, keep the old names.
 
@@ -38,17 +38,43 @@ were edited in path strings only: `src/eval_assets.py`, `assetgen_meta/meta_tool
 `assetgen_meta/fp_diagnosis.py`, `assetgen_meta/fault_reporter.py`, `assetgen_meta/trace_check.py` and
 `step1/build_heldout_code_map.py`. Their hashes changed.
 
-- **The tag `prereg-layout-before`** marks the last commit in the old layout. There, all 40 pin rows of the three
-  pre-registrations verify with the repo's own checks: `lasset_layer.verify_pins()`, `heldout_readings.verify_prereg()`
-  and `prompt_opt/heldout_check.verify()`.
-- **`python src/verify_layout_move.py`** (run from the repo root) checks every one of the 40 rows against that tag.
-  A row passes if the item is unchanged, or moved with the same bytes, or is a Python file that differs from the
-  tagged bytes only in string literals, each rewritten by exactly one of the move's prefixes. Code, comments,
-  spacing and line endings must match byte for byte. It tests itself on planted failures before it reports.
+- **The tag `prereg-layout-before`** marks the last commit in the old layout, commit
+  `5ebdfa0693761861f7fa39b7980ef1eeae03ac33`. There, all 40 pin rows of the three pre-registrations verify with the
+  repo's own checks: `lasset_layer.verify_pins()`, `heldout_readings.verify_prereg()` and
+  `prompt_opt/heldout_check.verify()`.
+- **`python src/verify_layout_move.py`** (run from the repo root) checks the move against that commit.
+  - It first tests itself on 15 planted cases.
+  - It then checks that the tag points at that commit and that the commit is an ancestor of HEAD.
+  - It checks that `HELDOUT_PREREG.md` and `prompt_opt/HELDOUT_CHECK_PREREG.md` are unchanged. It checks that
+    `lasset_layer/PREREG.md` only gained the appended section 6, and that every row of section 6 matches its file.
+  - It refuses to run if a pinned item has uncommitted changes.
+  - It then checks each of the 40 rows. A row passes if the item is unchanged, or moved with the same bytes, or is
+    a Python file that differs from the tagged bytes only in string literals. Each such literal must be rewritten by
+    exactly one of the move's prefixes, for a name that moved. Outside string literals, everything must match byte
+    for byte: code, comments, spacing and line endings. Inside an f-string, the code between braces must be identical.
+  - It proves that nothing changed except the move's prefixes. It does not prove that every needed prefix was added;
+    that was measured by re-running the notebooks (next section).
 - **`assetgen_meta/lasset_layer/PREREG.md` has an appended section 6** with the twelve items at their new paths, so
   `verify_pins()` and `notebooks/lasset_evidence_layer.ipynb` still check pins at the latest commit. Section 5 is
-  unchanged. `HELDOUT_PREREG.md` and `prompt_opt/HELDOUT_CHECK_PREREG.md` are not edited. Their own verifiers name
-  the old paths, so run them at the tag (below), or use `src/verify_layout_move.py`.
+  unchanged. `HELDOUT_PREREG.md` and `prompt_opt/HELDOUT_CHECK_PREREG.md` are not edited. Their own verifiers import
+  modules that moved, so run them at the tag (below), or rely on `src/verify_layout_move.py`.
+
+## Measured after the move
+
+Each notebook ran in a fresh clone of the new layout and in a fresh clone of the tag, with no API key. Cell outputs
+were compared with timings masked.
+
+- `FINAL_NOTEBOOK.ipynb`: 26 of 26 code cells give the same text output in both layouts and as committed, and both
+  figures are identical. The run changes no tracked file.
+- `notebooks/lasset_evidence_layer.ipynb` (kernel started in `notebooks/`): 5 of 5 code cells give the same output in
+  both layouts and as committed. The pin check inside it passes.
+- `notebooks/assetgen_meta.ipynb` cells 1, 64, 65, 66 and 68: the same in both layouts, except one label in cell 68,
+  which now reads `runs/assets_opt_heldout_v1_r0`. The same label reaches two files under
+  `assetgen_meta/fault_reporter/tuning_Claude_final/`. Cell 62 needs variables from cell 58, which calls the API, in
+  both layouts.
+- `src/verify_layout_move.py`: 40 rows, 0 failures. In a throwaway clone it stopped on each planted forgery: the tag
+  moved, `HELDOUT_PREREG.md` edited, section 5 of `lasset_layer/PREREG.md` edited, and an uncommitted edit to a
+  pinned file.
 
 ## Running record code
 
@@ -58,9 +84,26 @@ Record notebooks and scripts expect the old layout. Run them from a worktree of 
 git worktree add ../prepoison-old prereg-layout-before
 ```
 
-Command-line runs of the pinned modules in the new layout need `src/` on the import path, because their own
-`sys.path` lines (not edited, to keep the edits to path strings) add the repo root, not `src/`:
+These do not run in the new layout:
+- the record notebooks in `notebooks/` (they do not move to the repo root);
+- `final/build_convergence.py` (it also needs the run folders that are not published);
+- `assetgen_meta/heldout_readings.py` and `assetgen_meta/prompt_opt/heldout_check.py`;
+- the `src/` modules that still default to old root paths, such as `src/diagnose_step1.py`.
+
+The pinned modules' command lines need `src/` on the import path in the new layout. Their own `sys.path` lines were
+not edited, to keep the edits to path strings only. In Git Bash:
 
 ```bash
 PYTHONPATH=src python assetgen_meta/lasset_layer.py --pins
 ```
+
+In PowerShell, run `$env:PYTHONPATH = "src"` first, then the same `python` command. `--pins` prints the current hashes
+for comparison with section 6 of `assetgen_meta/lasset_layer/PREREG.md`. The pass or fail check is
+`python src/verify_layout_move.py`.
+
+## Local copies
+
+Only tracked files moved. In a working folder that also holds unpublished run folders at the root (`assets_*`), the
+loaders now look in `runs/`. Move such folders into `runs/` to keep using them; `.gitignore` keeps them unpublished
+there. A `.py` file left in the repo root would be imported before the one in `src/`, because the pinned modules put
+the root first on `sys.path`. `final/final_pipeline.py` stops with an error if it finds one.

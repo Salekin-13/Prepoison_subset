@@ -49,8 +49,8 @@ marked. In short:
 | July | LAsset replication: specification retrieval, closed set by code, a first run and a root-cause pass over its 163 false positives; the RTL parser fixed | `notebooks/finetuning_assetgen.ipynb`, `docs/TUNING_GUIDE.md`, `src/gt_extract.py`, `src/rtl_parse.py` |
 | 2-8 Aug | v1 recall study: one change per arm, each pre-registered with a decision rule | `logs/ABLATION_LOG.md` |
 | 8-18 Aug | v2 precision study with a recall guard; leak checks enforced in code | `logs/ABLATION_LOG_V2.md`, `logs/V02_REGISTRATION_DRAFT.md`, `notebooks/finetuning_assetgen_v2.ipynb` |
-| 17 Aug - 6 Sep | parser and verifier work; edge definitions for relationships | `bahavioral_patterns_of_assets/PARSER_ABLATION_LOG.md`, `VERIFIER_ABLATION_LOG.md` |
-| 9-29 Sep | occurrence profiles: LLM versions measured, then the structure moved into code | `bahavioral_patterns_of_assets/notebooks/occurrence_profiles_v2/v3/v3b.ipynb`, `step1/` |
+| 17 Aug - 6 Sep | parser and verifier work; edge definitions for relationships | `bahavioral_patterns_of_assets/PARSER_ABLATION_LOG.md`, `bahavioral_patterns_of_assets/VERIFIER_ABLATION_LOG.md` |
+| 9-29 Sep | occurrence profiles: LLM versions measured, then the structure moved into code | `bahavioral_patterns_of_assets/notebooks/` (`occurrence_profiles_v2.ipynb`, `_v3.ipynb`, `_v3b.ipynb`), `step1/` |
 | 19-30 Sep | meta prompts and hand arms; the relationship map | `notebooks/assetgen_meta.ipynb`, `step1/lasset_step1/RELATION_EXPERIMENTS_LOG.md`, `notebooks/lasset_step1.ipynb` |
 | 1-2 Oct | held-out pre-registrations, traced arms with cited occurrence IDs, the prompt-optimization loop, gpt-5.4, the false-positive diagnosis, and the evidence layer on LAsset's lists | `assetgen_meta/HELDOUT_PREREG.md`, `assetgen_meta/prompt_opt/OPTIMIZATION_LOG.md`, `notebooks/lasset_evidence_layer.ipynb`, `FINAL_NOTEBOOK.ipynb` |
 

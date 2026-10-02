@@ -21,8 +21,9 @@ was judged, not only what was built.
   removed on 08-02, metric M-2 on 08-03) and in smaller ways later (LED lists the differences). The executor was
   gpt-5-mini, then Claude agents and gpt-5.4 in October. Numbers inside one study are comparable. Numbers across
   months are approximate.
-- Git: the last study commit is 9dc383d on 2026-08-18. September and October work was committed only on 2026-10-02,
-  in one commit that prepared this repository, so those dates come from dated log entries and file modification times.
+- Git: 9dc383d (2026-08-18) is the last commit of the August study. The September and October work was first
+  committed on 2026-10-02, in the commit that prepared this repository (0851cca), followed by the layout move
+  (`docs/LAYOUT.md`). So September and October dates come from dated log entries and file modification times.
 
 **Source keys.** AL1 `logs/ABLATION_LOG.md` · AL2 `logs/ABLATION_LOG_V2.md` · HO `logs/V02_HANDOFF.md` · REG `logs/V02_REGISTRATION_DRAFT.md`
 · VER `bahavioral_patterns_of_assets/VERIFIER_ABLATION_LOG.md` · PAR `bahavioral_patterns_of_assets/PARSER_ABLATION_LOG.md`
@@ -72,7 +73,7 @@ Different executors and scorer versions; read as a trajectory, not as like-for-l
   SpecRAG (retrieval of datasheet passages into a summary) at the paper's parameters: chunk 1000, overlap 200,
   top-k 20, ada-002 embeddings (AL1 C-02). Datasheet text added 2026-07-20 (GIT ca50c49); retrieval cache dated
   07-21, summaries dated 07-23 (file dates). An early report mapping LAsset's listed assets to RTL files and entities
-  is dated 2026-07-16 (`asset_traceability_report.json`).
+  is dated 2026-07-16 (`asset_traceability_report.json`, not published).
 - **The closed set is extracted by code, not by the LLM.** Why: "An asset that does not name a real element is
   unverifiable, so the closed set has to be ground truth rather than a model output" (AL1 C-03). The LLM only
   annotates what each element means. Settled before the study opened on 2026-08-02.
@@ -222,7 +223,7 @@ Different executors and scorer versions; read as a trajectory, not as like-for-l
   P 0.240 / R 0.847 with today's scorer; the log predates later scorer changes.*
 - **Correction to the A-03 story** (AL2 C1): of 49 bare-port reference assets exactly one is a record port; record
   interconnect ports are not assets at any granularity.
-- Committed 2026-08-18 (GIT 9dc383d). This is the last commit in the repository.
+- Committed 2026-08-18 (GIT 9dc383d). This is the last commit of the August study.
 
 ### RTL parsing and the parser/verifier work, 2026-08-17 to 08-22
 
@@ -231,9 +232,9 @@ Different executors and scorer versions; read as a trajectory, not as like-for-l
   218 → 215: read as a model limit, so no third revision. A gen3 rule backfired (prose claiming governance 245 → 288
   while governing edges fell 215 → 201) and was reverted. `src/parse_audit.py` was written to be blind to the reference
   "by design".
-- **2026-08-18, element dossier and a blind triage** (`back_test.md`, `ASSET_ELEMENT_DOSSIER.md`). A label-stripped
+- **2026-08-18, element dossier and a blind triage** (`back_test.md`, `ASSET_ELEMENT_DOSSIER.md`; neither is published). A label-stripped
   copy was triaged for C/I/A/U by local agents (Section A 110 headings; Section B 1,095 of 1,531 entries;
-  `bahavioral_patterns_of_assets/reference/PROCESS.md`, README). An API prompt-ablation notebook (P0-P8) was built
+  `bahavioral_patterns_of_assets/reference/PROCESS.md` and README, not published). An API prompt-ablation notebook (P0-P8) was built
   the same day. *Its results folders are empty: it was not run, and no outcome is claimed.*
 - **Verifier study: make the instrument trustworthy before acting on its counts** (2026-08-21 to 08-22; VER).
   - **KEY DECISION (measure the instrument first).** A pure replicate agreed with the earlier run on 85.1% of claims
@@ -494,5 +495,5 @@ tied to the occurrence where it happens.
   figures and today's re-runs (e.g. `ist` citations 0.944 on disk vs 0.812 with today's checker, after a rule change).
 - **Gold set for the relation map** was written by an LLM (gpt-6-astra), not a human, and covers tuning modules
   only; the held-out map has no accuracy measurement (LED §5).
-- **Dates for September and October** come from dated log entries and file modification times; none of that work is
-  committed to git.
+- **Dates for September and October** come from dated log entries and file modification times; that work was first
+  committed to git on 2026-10-02.

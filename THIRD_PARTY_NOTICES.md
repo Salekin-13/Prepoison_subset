@@ -14,8 +14,8 @@ This repository contains material that I did not write. Each item keeps its own 
 
 ## LAsset reference lists
 
-- **Where:** `data/ground_truth/` (`manual_gt_neorv32.json`, `lasset_initial.json`, `lasset_refined.json`), its copy in
-  `bahavioral_patterns_of_assets/ground_truth/`, and `data/LAsset_initial_results/`.
+- **Where:** `data/ground_truth/` (`manual_gt_neorv32.json`, `lasset_initial.json`, `lasset_refined.json`), a copy of
+  `manual_gt_neorv32.json` in `bahavioral_patterns_of_assets/ground_truth/`, and `data/LAsset_initial_results/`.
 - **Source:** [Ajoad/LAsset-Security-Assets](https://github.com/Ajoad/LAsset-Security-Assets), commit `dae43f1`.
   - The manual reference comes from the sheet "Assets (Manual)" of `SoC/Asset_Dataset_Statistics_NEORV32.xlsx`.
     `src/gt_extract.py` converts it.

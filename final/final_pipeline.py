@@ -66,6 +66,10 @@ def load_builders() -> list[str]:
 def setup():
     """Working directory = repo root; import paths; builders; tree-sitter VHDL grammar. Returns the modules."""
     os.chdir(ROOT)
+    stray = sorted(p.name for p in ROOT.glob("*.py"))    # the pinned modules put the root before src/ on sys.path
+    if stray:
+        raise RuntimeError(f"Python files in the repo root would be imported instead of src/: {stray}. "
+                           "The study code lives in src/ since 2026-10-02 (docs/LAYOUT.md); move these out of the root.")
     for p in ("src", "step1", "assetgen_meta"):
         if str(ROOT / p) not in sys.path:
             sys.path.insert(0, str(ROOT / p))

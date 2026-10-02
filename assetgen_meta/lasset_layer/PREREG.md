@@ -93,7 +93,8 @@ On 2026-10-02 the repo root was regrouped into data/, runs/, src/, notebooks/ an
 to amend the pins for a cleaner layout. Section 5 stays exactly as registered, and the readings were taken under it.
 The rows below are the same twelve items at their new paths. Items whose sha12 equals section 5 were moved byte for
 byte. Five were edited, in path string literals only (a data/, runs/ or src/ prefix). The git tag
-`prereg-layout-before` marks the last commit in the old layout, where all section 5 rows verify.
+`prereg-layout-before` (commit 5ebdfa0693761861f7fa39b7980ef1eeae03ac33) marks the last commit in the old layout, where
+all section 5 rows verify.
 `python src/verify_layout_move.py` checks every row of all three pre-registrations against that tag and allows no
 change except those prefixes. `verify_pins()` keeps the last row per path, so it reads these rows.
 
