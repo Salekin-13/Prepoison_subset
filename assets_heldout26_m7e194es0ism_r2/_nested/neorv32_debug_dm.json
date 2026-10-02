@@ -1,0 +1,160 @@
+{
+  "module name": "neorv32_debug_dm",
+  "conceptual assets": [
+    {
+      "concept": "Debug-active configuration (DMActive) that enables or disables the debug module",
+      "security objective": "Integrity",
+      "reasoning": "The DM-active bit is stored in dm_reg.dmcontrol_dmactive and written by DMI: in dmi_write_access `if (dmi_req_i.addr = addr_dmcontrol_c) ... if (dmi_wren = '1') then dm_reg.dmcontrol_dmactive <= dmi_req_i.data(0)`. The controller forces idle when this bit is '0' (`dm_controller`: `if (dm_reg.dmcontrol_dmactive = '0') then dm_ctrl.state <= CMD_IDLE`), and external debug effects (halt and ndm-reset outputs) are gated by it (halt_req_o and ndmrstn_o use dm_reg.dmcontrol_dmactive). Corruption of this stored bit would change whether debug operations and external halts/resets can occur, establishing an integrity requirement.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_reg.dmcontrol_dmactive",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "NDM reset control (ndmrstn_o) and the NDMin-reset configuration that drives it",
+      "security objective": "Integrity",
+      "reasoning": "The NDM-reset output is produced by `ndmrstn_o <= '0' when (dm_reg.dmcontrol_ndmreset = '1') and (dm_reg.dmcontrol_dmactive = '1') and ((not AUTHENTICATOR) or (auth.valid = '1')) else '1'`. The NDMin-reset configuration bit is written from DMI: in dmi_write_access `dm_reg.dmcontrol_ndmreset <= dmi_req_i.data(1)` when addr_dmcontrol_c and dmi_wren_auth='1'. Integrity of the stored NDMin-reset bit and the resulting output is required because they directly drive the external reset signal.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_reg.dmcontrol_ndmreset",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ndmrstn_o",
+          "entity": "neorv32_debug_dm",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Per-hart halt request value that the DM asserts to request a hart halt (values leaving halt_req_o)",
+      "security objective": "Integrity",
+      "reasoning": "Each halt request output is driven by `halt_req_o(i) <= dm_reg.halt_req and dm_reg.hartsel_dec(i) and dm_reg.dmcontrol_dmactive when ((not AUTHENTICATOR) or (auth.valid = '1')) else '0'`. The stored source dm_reg.halt_req is written from DMI (`dmi_write_access`: `dm_reg.halt_req <= dmi_req_i.data(31)` when addr_dmcontrol_c and dmi_wren_auth='1'). Corruption of the stored halt bit, the hart selection used to index it, or the gating DM-active bit would cause incorrect halting behavior, establishing integrity for the halt request outputs.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_reg.halt_req",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "dm_reg.hartsel_dec",
+          "entity": "neorv32_debug_dm",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "dm_reg.dmcontrol_dmactive",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "halt_req_o",
+          "entity": "neorv32_debug_dm",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Hart selection value (hartsel) and its decoded mask (hartsel_dec) that determine which hart is targeted",
+      "security objective": "Integrity",
+      "reasoning": "The hart selection field is stored in dm_reg.hartsel (written by DMI: `dm_reg.hartsel <= dmi_req_i.data(18 downto 16)` when addr_dmcontrol_c and dmi_wren_auth='1') and is decoded into dm_reg.hartsel_dec by the hartsel_decode generate (`dm_reg.hartsel_dec(i) <= '1' when (dm_reg.hartsel(2) = '0') and (dm_reg.hartsel(1 downto 0) = ... ) else '0'`). The decoded mask is used throughout (e.g. CMD_CHECK uses `or_reduce_f(dm_ctrl.hart_halted and dm_reg.hartsel_dec)`; hart_status updates per selected hart), so integrity of selection is required to target the intended hart.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_reg.hartsel",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "dm_reg.hartsel_dec",
+          "entity": "neorv32_debug_dm",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Data register used for data0 transfers between DMI and the bus/harts (dci.data_reg)",
+      "security objective": "Integrity",
+      "reasoning": "dci.data_reg holds the data returned and supplied via the data0 register: bus_access assigns `if (dci.data_reg_we = '1') then dci.data_reg <= dmi_req_i.data elsif (wren = '1') and (bus_req_i.addr(8 downto 7) = dm_data_base_c(8 downto 7)) then dci.data_reg <= bus_req_i.data; end if;` and dmi_read_access returns it on data0 reads (`when addr_data0_c => dmi_rsp_o.data <= dci.data_reg`). Integrity of this stored data is required to ensure correct data movement between DMI and the bus/harts.",
+      "related structural assets": [
+        {
+          "asset rtl": "dci.data_reg",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Command register (command) that the DM controller validates and executes",
+      "security objective": "Integrity",
+      "reasoning": "The command word is stored in dm_reg.command when written by DMI under conditions (`dmi_write_access`: `if (dmi_req_i.addr = addr_command_c) and (dmi_wren_auth = '1') and (dm_ctrl.busy = '0') and (dm_ctrl.cmderr = \"000\") then dm_reg.command <= dmi_req_i.data;`). The DM controller reads dm_reg.command in CMD_CHECK and CMD_PREPARE to validate fields and to form progbuf load/trigger behavior, so corruption of the stored command would alter controller behavior. Integrity of the stored command is therefore required.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_reg.command",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Program-buffer instruction contents that the DM presents to the CPU (progbuf and cpu_progbuf)",
+      "security objective": "Integrity",
+      "reasoning": "Program-buffer words are stored in dm_reg.progbuf (written by DMI: `dm_reg.progbuf(0) <= dmi_req_i.data` for addr_progbuf0_c, and similarly for progbuf1 when dmi_wren_auth='1' and dm_ctrl.busy='0`). The module forms cpu_progbuf from dm_ctrl.ldsw_progbuf and dm_reg.progbuf and returns those words to bus reads (`cpu_progbuf(...)` used in bus_access). Integrity of stored progbuf words and the computed cpu_progbuf is required because they determine instructions/data presented to the CPU via the debug interface.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_reg.progbuf",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cpu_progbuf",
+          "entity": "neorv32_debug_dm",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Authenticator validity indicator (auth.valid) that gates privileged DMI operations",
+      "security objective": "Integrity",
+      "reasoning": "The auth.valid signal gates authenticated accesses and outputs: `dmi_wren_auth <= dmi_wren when (not AUTHENTICATOR) or (auth.valid = '1') else '0'`, `dmi_rden_auth <= dmi_rden when (not AUTHENTICATOR) or (auth.valid = '1') else '0'`, and many read/write paths and external outputs (e.g. parts of dmi_read_access reads and ndmrstn_o/halt_req_o) are conditioned on `(not AUTHENTICATOR) or (auth.valid = '1')`. Integrity of auth.valid is therefore required because it directly enables or blocks protected operations.",
+      "related structural assets": [
+        {
+          "asset rtl": "auth.valid",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "DM controller state (dm_ctrl.state) and derived busy flag (dm_ctrl.busy) that govern command acceptance and progress",
+      "security objective": "Integrity",
+      "reasoning": "The controller FSM is kept in dm_ctrl.state (assigned in dm_controller process through CMD_IDLE/CMD_CHECK/...). The module derives `dm_ctrl.busy <= '0' when (dm_ctrl.state = CMD_IDLE) else '1'` and many accesses are conditional on busy being '0' (e.g. writes to command/progbuf, dci.data_reg_we). Because state/busy determine when operations are accepted or cause transitions (including triggering/execution flows), integrity of the stored state and the derived busy decision is required.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_ctrl.state",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "dm_ctrl.busy",
+          "entity": "neorv32_debug_dm",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Controller command-error code (cmderr) that records and gates error conditions",
+      "security objective": "Integrity",
+      "reasoning": "dm_ctrl.cmderr is updated by the controller for illegal_state/illegal_cmd/ack_exc/acc_err conditions (dm_controller sets cmderr to \"100\",\"011\",\"010\",\"001\" accordingly) and is tested before accepting new commands (`dmi_write_access` requires `dm_ctrl.cmderr = \"000\"` to write dm_reg.command). The error code is also reported in abstractcs readback (`dmi_read_access` places dm_ctrl.cmderr into dmi_rsp_o.data(10 downto 8)). Corruption of the stored cmderr would affect acceptance/diagnosis of commands, establishing an integrity requirement.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_ctrl.cmderr",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        }
+      ]
+    }
+  ]
+}

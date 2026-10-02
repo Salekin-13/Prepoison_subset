@@ -1,0 +1,373 @@
+{
+  "module name": "neorv32_cpu_pmp",
+  "module purpose": "neorv32_cpu_pmp stores per-region configuration and address state from CSR writes, returns that state on csr_o, selects an instruction or load/store access address and privilege context, compares the access against the stored regions, and registers fault_o when the computed access is not permitted.",
+  "use-case flows": [
+    {
+      "flow": "start",
+      "value": "CSR write-target selection for PMP configuration words and PMP address registers",
+      "lines": [
+        110,
+        112,
+        113,
+        114,
+        154,
+        156,
+        157,
+        158
+      ]
+    },
+    {
+      "flow": "configure",
+      "value": "per-region PMP configuration bytes written from ctrl_i.csr_wdata, including R/W/X bits, address-matching mode, reserved-zero bits, and lock bit",
+      "lines": [
+        121,
+        124,
+        125,
+        126,
+        127,
+        129,
+        130,
+        131,
+        133,
+        134,
+        135,
+        136,
+        137,
+        138,
+        140,
+        143,
+        145
+      ]
+    },
+    {
+      "flow": "lock",
+      "value": "the stored lock bit blocks later pmpcfg and pmpaddr writes and changes M-mode permission handling",
+      "lines": [
+        127,
+        145,
+        170,
+        172,
+        323,
+        330,
+        337
+      ]
+    },
+    {
+      "flow": "configure",
+      "value": "per-region PMP address or threshold values written from ctrl_i.csr_wdata when unlocked",
+      "lines": [
+        165,
+        167,
+        168,
+        169,
+        170,
+        171,
+        172,
+        173,
+        176
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "stored PMP configuration and address state returned on csr_o according to ctrl_i.csr_addr",
+      "lines": [
+        186,
+        188,
+        189,
+        190,
+        192,
+        203,
+        205,
+        208,
+        209,
+        210,
+        211,
+        213,
+        214,
+        215,
+        217,
+        218,
+        219,
+        236
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "selected access address and privilege are compared against the stored regions to compute region matches, allowed access, and the fail chain",
+      "lines": [
+        244,
+        245,
+        265,
+        266,
+        267,
+        269,
+        285,
+        289,
+        295,
+        296,
+        301,
+        303,
+        305,
+        307,
+        309,
+        310,
+        318,
+        321,
+        322,
+        323,
+        325,
+        328,
+        329,
+        330,
+        332,
+        335,
+        336,
+        337,
+        339,
+        351,
+        354
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "registered access-fault result, suppressed when ctrl_i.cpu_debug is asserted",
+      "lines": [
+        358,
+        360,
+        362,
+        363
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "pmpcfg, pmpaddr, addr_mask, and fault_o cleared to zero when rstn_i = '0'",
+      "lines": [
+        124,
+        125,
+        167,
+        168,
+        263,
+        264,
+        360,
+        361
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "CSR write-target selection for PMP state",
+      "security objective": "Integrity",
+      "reasoning": "The configure and lock flows depend on decoding ctrl_i.csr_addr together with ctrl_i.csr_we into one-hot write enables: pmpcfg_we is created at lines 113-114 and pmpaddr_we at lines 157-158, then those decisions gate the actual state updates at lines 127 and 170. If this targeting decision is corrupted, a CSR write can update the wrong PMP register or fail to honor the intended addressed register; availability is also established because the decode produces a write strobe whenever the addressed PMP CSR range is written.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATES",
+            "partner": "pmpcfg_we"
+          }
+        },
+        {
+          "asset rtl": "pmpcfg_we",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "SELECTED_BY",
+            "partner": "ctrl_i.csr_addr"
+          }
+        },
+        {
+          "asset rtl": "pmpaddr_we",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "SELECTED_BY",
+            "partner": "ctrl_i.csr_addr"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Stored PMP region configuration state: permissions, address-matching mode, and lock status",
+      "security objective": "Integrity",
+      "reasoning": "Each region's configuration byte is stored in pmpcfg on CSR writes when its write-enable is asserted and its lock bit is clear (lines 127-145). The written state is sanitized by forcing unsupported modes to mode_off_c (lines 134-140), stores the lock bit at line 145, is read back through cfg_rd/cfg_rd32 to csr_o at lines 203, 236, and 190, and is later used to control address writes (line 170), address-mask generation (lines 266-269), address matching (lines 303-312), and permission evaluation (lines 323-339). Corrupting this state makes the module enforce or report the wrong policy; availability is established because the state is held across cycles, reset to a known value at lines 124-125, and returned on csr_o.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "sets",
+          "occurrence": 10,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "pmpcfg"
+          }
+        },
+        {
+          "asset rtl": "pmpcfg",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "stores",
+          "occurrence": 10,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "csr_o",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "cfg_rd32"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Stored PMP region address state: per-region address and threshold values",
+      "security objective": "Integrity",
+      "reasoning": "Each region's pmpaddr entry is stored from ctrl_i.csr_wdata at lines 170-176 when its write-enable is asserted and the region is unlocked; for non-last regions, line 172 also blocks the write when the following region is a locked TOR entry. The stored address state is read back through addr_rd to csr_o at lines 208 and 192, and is used in the address comparisons at lines 285, 295, and 296. Corrupting this state changes the implemented region boundaries and readback contents; availability is established because the values are held until rewritten, reset to zero at lines 167-168, and can be returned on csr_o.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "sets",
+          "occurrence": 15,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "pmpaddr"
+          }
+        },
+        {
+          "asset rtl": "pmpaddr",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "csr_o",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "addr_rd"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Region-match decision for the selected access",
+      "security objective": "Integrity",
+      "reasoning": "The module first selects the checked address with `acc_addr <= ctrl_i.pc_nxt when (ctrl_i.lsu_mo_we = '0') else addr_ls_i;` at line 244, then compares that address against the stored regions using NAPOT matching at line 285 and TOR comparisons at lines 295-296. The final per-region match decision is computed at lines 303-312 from the stored mode bits and comparison results, and line 354 uses `match(r)` to decide whether region r controls the fail chain. If this decision is corrupted, the wrong region can be treated as matching or no region can match when one should; availability is established because the decision is combinationally produced from the current access and stored region state.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "sets",
+          "occurrence": 22,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "acc_addr"
+          }
+        },
+        {
+          "asset rtl": "addr_ls_i",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "acc_addr"
+          }
+        },
+        {
+          "asset rtl": "acc_addr",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "addr_ls_i"
+          }
+        },
+        {
+          "asset rtl": "match",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "computes",
+          "occurrence": 4,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "cmp_na"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Access-permission and fault decision for the selected access",
+      "security objective": "Integrity",
+      "reasoning": "Permission is computed per region in allow from access kind, privilege, and stored permission/lock bits at lines 321-341; the implemented default for the highest-priority fall-through case is set at line 351, and the fail chain is computed at line 354 from `match(r)` and `allow(r)`. The reported result is then registered as `fault_o <= (not ctrl_i.cpu_debug) and fail(0);` at line 363. Corrupting this decision changes whether the module reports a PMP fault for the current access; availability is established because the combinational decision is formed from the current inputs and stored state and fault_o updates on rising clk_i when rstn_i is not asserting reset.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "sets",
+          "occurrence": 28,
+          "edge": {
+            "type": "GATES",
+            "partner": "allow"
+          }
+        },
+        {
+          "asset rtl": "acc_priv",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "ctrl_i.cpu_priv"
+          }
+        },
+        {
+          "asset rtl": "allow",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "computes",
+          "occurrence": 4,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "ctrl_i.lsu_rw"
+          }
+        },
+        {
+          "asset rtl": "fail",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "allow"
+          }
+        },
+        {
+          "asset rtl": "fault_o",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "fail"
+          }
+        }
+      ]
+    }
+  ]
+}

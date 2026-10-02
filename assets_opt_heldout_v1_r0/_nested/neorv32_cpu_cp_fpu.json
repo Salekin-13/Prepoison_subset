@@ -1,0 +1,224 @@
+{
+ "module name": "neorv32_cpu_cp_fpu",
+ "module purpose": "neorv32_cpu_cp_fpu is a single-precision floating-point co-processor: it holds the frm and fflags CSRs (written through csr_we_i/csr_addr_i/csr_wdata_i, read on csr_rdata_o), decodes the instruction fields carried by ctrl_i, latches rs1_i/rs2_i with their number classes when the CPU dispatches a valid FPU instruction, executes classify, compare, min/max, sign injection, int-to-float, multiply and add/sub (the last three through the neorv32_cpu_cp_fpu_normalizer entity) or float-to-int (neorv32_cpu_cp_fpu_f2i entity), and returns the result on res_o with a valid_o pulse while accumulating exception flags into fflags.",
+ "use-case flows": [
+  {
+   "flow": "configure",
+   "value": "dynamic rounding mode written into csr_frm from csr_wdata_i when csr_we_i and the frm or fcsr address match",
+   "lines": [280, 286, 287, 290, 291]
+  },
+  {
+   "flow": "configure",
+   "value": "exception flag field written into csr_fflags from csr_wdata_i when csr_we_i and the fflags or fcsr address match",
+   "lines": [280, 282, 283, 290, 292]
+  },
+  {
+   "flow": "read out",
+   "value": "csr_fflags, csr_frm or both returned on csr_rdata_o, selected by csr_addr_i",
+   "lines": [301, 303, 304, 305, 306, 307]
+  },
+  {
+   "flow": "start",
+   "value": "acceptance of a valid FPU instruction: decode of ir_funct12/ir_funct3, latch of operation code, rounding mode, operands and classes in S_IDLE, start pulse and per-unit start",
+   "lines": [316, 317, 318, 319, 320, 321, 322, 323, 326, 333, 425, 426, 429, 430, 432, 435, 437, 438, 439, 440, 442, 443, 467, 468, 469, 470, 471, 472, 473, 474]
+  },
+  {
+   "flow": "operate",
+   "value": "operand preparation (subnormal mantissa flush) and per-operand number classification",
+   "lines": [347, 348, 349, 351, 352, 353, 364, 365, 366, 369, 370, 374, 377, 383, 386, 387, 388, 389, 390, 391, 392, 393, 394, 395]
+  },
+  {
+   "flow": "operate",
+   "value": "classify, compare, min/max and sign-injection results computed from the latched operands, classes and cmp_i",
+   "lines": [485, 486, 503, 513, 514, 516, 533, 543, 545, 547, 549, 552, 577, 578, 590, 591, 600, 606, 612, 647, 660, 661, 672, 673, 674, 675, 676, 677, 716, 717, 718, 724, 726, 732]
+  },
+  {
+   "flow": "operate",
+   "value": "int-to-float, multiply and add/sub datapaths whose unnormalized results are normalized, rounded and special-cased in neorv32_cpu_cp_fpu_normalizer",
+   "lines": [746, 747, 748, 750, 753, 785, 786, 788, 789, 790, 792, 846, 851, 855, 1052, 1065, 1070, 1097, 1120, 1124, 1129, 1137, 1139, 1145, 1233, 1234, 1235, 1236, 1239, 1240, 1244, 1248, 1419, 1422, 1423, 1424, 1434, 1435, 1436, 1442, 1447, 1463, 1471, 1475, 1665, 1666, 1667, 1680, 1689, 1709, 1710, 1761, 1768, 1779, 1781, 1782, 1823, 1854, 1855, 1861, 1884, 1885, 1886, 1904, 1956]
+  },
+  {
+   "flow": "operate",
+   "value": "float-to-int conversion of the latched rs1 operand in neorv32_cpu_cp_fpu_f2i, with signed or unsigned saturation and rounding",
+   "lines": [695, 697, 700, 701, 702, 703, 705, 706, 707, 2085, 2091, 2092, 2093, 2094, 2122, 2163, 2175, 2191, 2220, 2271, 2273, 2277, 2294, 2312, 2363]
+  },
+  {
+   "flow": "report",
+   "value": "completion pulse valid_o with the selected unit result on res_o and its exception flags on fflags",
+   "lines": [448, 449, 450, 462, 1495, 1496, 1498, 1499, 1501, 1502, 1504, 1505, 1507, 1508, 1510, 1511, 1513, 1514, 1521]
+  },
+  {
+   "flow": "report",
+   "value": "per-operation exception flags raised by the units, the normalizer and f2i, accumulated into csr_fflags",
+   "lines": [295, 603, 668, 808, 1214, 1679, 1794, 1858, 1889, 2196, 2298]
+  },
+  {
+   "flow": "reset",
+   "value": "rstn_i low clears the CSRs, control state, operand registers, unit registers and res_o/fflags",
+   "lines": [276, 277, 278, 404, 405, 406, 407, 408, 409, 410, 411, 412, 413, 414, 494, 741, 762, 1035, 1489, 1490, 1491, 1620, 1621, 2054, 2055]
+  },
+  {
+   "flow": "reset",
+   "value": "ctrl_i.cpu_trap ends the busy state and forces the normalizer and f2i state machines to S_IDLE through abort_i",
+   "lines": [448, 450, 696, 1464, 1871, 1872, 2287, 2288]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Rounding-mode setting -- the dynamic rounding mode held in the frm CSR and the effective rounding mode latched for each operation",
+   "security objective": "Integrity",
+   "reasoning": "Configure flow: `csr_frm <= csr_wdata_i(2 downto 0);` (line 287, fcsr form at line 291) under csr_we_i and the address compare; read back on csr_rdata_o (lines 306-307); reset to zero (line 277). On acceptance the effective mode is latched: `fpu_operands.frm <= csr_frm(2 downto 0);` when ctrl_i.ir_funct3 is 111 (line 430), otherwise the static instruction field (line 432). It is delivered to both rounding units (rmode_i, lines 697 and 1465) and decides the sign of an exact-zero sum (lines 1156, 1175). In neorv32_cpu_cp_fpu_normalizer rmode_i selects the rounding increment (case at line 1904) and overflow saturation (lines 1830-1838); in neorv32_cpu_cp_fpu_f2i it selects round.en (line 2312). Integrity: the rounding applied must equal the configured or instruction-encoded mode. Availability also holds: csr_frm keeps its value between writes. No line restricts reads, so confidentiality is not established. csr_frm stores (CLOCKED_BY clk_i, CARRIES csr_rdata_o); fpu_operands.frm stores the effective mode and is not a copy (DERIVES_FROM both csr_frm and ctrl_i.ir_funct3; GATES addsub.res_sign; connections into both rmode_i); csr_wdata_i (SOURCES csr_frm) and ctrl_i (field ir_funct3 SOURCES fpu_operands.frm at line 432; ctrl_i is a CPU control word, not a transaction record) set it; csr_rdata_o is the exit (COPIES csr_frm); each rmode_i is read by its entity to decide rounding. The map has no records for rmode_i at lines 1830-1838 because the ctrl.res_exp/res_man fields assigned there are missing from the map.",
+   "related structural assets": [
+    {"asset rtl": "csr_frm", "entity": "neorv32_cpu_cp_fpu", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "csr_wdata_i", "entity": "neorv32_cpu_cp_fpu", "realization": "sets", "occurrence": 3, "edge": {"type": "SOURCES", "partner": "csr_frm"}},
+    {"asset rtl": "csr_rdata_o", "entity": "neorv32_cpu_cp_fpu", "realization": "exit port", "occurrence": 4, "edge": {"type": "COPIES", "partner": "csr_frm"}},
+    {"asset rtl": "fpu_operands.frm", "entity": "neorv32_cpu_cp_fpu", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_cp_fpu", "realization": "sets", "occurrence": 18, "edge": {"type": "SOURCES", "partner": "fpu_operands.frm"}},
+    {"asset rtl": "rmode_i", "entity": "neorv32_cpu_cp_fpu_normalizer", "realization": "sets", "occurrence": 6, "edge": {"type": "SELECTS", "partner": "round.en"}},
+    {"asset rtl": "rmode_i", "entity": "neorv32_cpu_cp_fpu_f2i", "realization": "sets", "occurrence": 3, "edge": {"type": "SELECTS", "partner": "round.en"}}
+   ]
+  },
+  {
+   "concept": "Accrued exception flags -- the sticky fflags CSR value",
+   "security objective": "Integrity",
+   "reasoning": "Software writes it (`csr_fflags <= csr_wdata_i(4 downto 0);` lines 283, 292); without a CSR write the hardware accumulates `csr_fflags <= csr_fflags or fflags;` (line 295, self-updating in the flow graph); it is read back on csr_rdata_o (lines 305, 307) and reset to zero (line 278). Integrity: the CSR must equal the last written value OR every flag reported since. Availability also holds: the flags persist until overwritten. No line restricts reads, so confidentiality is not established. csr_fflags stores (CLOCKED_BY clk_i at line 295, CARRIES csr_rdata_o); csr_wdata_i sets it (SOURCES csr_fflags, line 283); csr_rdata_o is the exit (COPIES csr_fflags, line 305). fflags is not listed: its only record is SOURCES csr_fflags (line 295), so it holds one step of the selected unit flags (lines 1499-1514) and is secondary under section 6.",
+   "related structural assets": [
+    {"asset rtl": "csr_fflags", "entity": "neorv32_cpu_cp_fpu", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "csr_wdata_i", "entity": "neorv32_cpu_cp_fpu", "realization": "sets", "occurrence": 2, "edge": {"type": "SOURCES", "partner": "csr_fflags"}},
+    {"asset rtl": "csr_rdata_o", "entity": "neorv32_cpu_cp_fpu", "realization": "exit port", "occurrence": 3, "edge": {"type": "COPIES", "partner": "csr_fflags"}}
+   ]
+  },
+  {
+   "concept": "CSR write access -- whether a CSR write lands in fflags, frm or both",
+   "security objective": "Integrity",
+   "reasoning": "`if (csr_we_i = '1')` (line 280) with the address compares (lines 282, 286, 290) decides which CSR takes csr_wdata_i; when csr_we_i is '0' hardware accumulation runs instead (line 295). csr_addr_i also selects the readback word (line 304, SELECTS csr_rdata_o). Integrity: a write must update exactly the addressed CSR and nothing else. The decision is inline in the process, so the input ports this entity reads to decide are its realization points: csr_we_i (GATES csr_frm, line 280) and csr_addr_i (GATES csr_frm, line 286). Whether the requester may write is context-dependent and not claimed.",
+   "related structural assets": [
+    {"asset rtl": "csr_we_i", "entity": "neorv32_cpu_cp_fpu", "realization": "sets", "occurrence": 2, "edge": {"type": "GATES", "partner": "csr_frm"}},
+    {"asset rtl": "csr_addr_i", "entity": "neorv32_cpu_cp_fpu", "realization": "sets", "occurrence": 3, "edge": {"type": "GATES", "partner": "csr_frm"}}
+   ]
+  },
+  {
+   "concept": "Operation acceptance -- the decision that a dispatched instruction is a valid FPU instruction and starts a unit",
+   "security objective": "Integrity",
+   "reasoning": "In S_IDLE, `if (ctrl_i.alu_cp_fpu = '1') and (cmd.valid = '1')` (line 435) latches operands and classes (lines 437-440), sets `ctrl_engine.start <= '1'` (line 442) and enters S_BUSY (line 443). cmd.valid (lines 326-330) requires ir_funct12(6 downto 5) = 00 and one recognised instruction type. The start pulse is cleared every cycle (line 418) and starts only the decoded unit (lines 467-474). Integrity: only a valid FPU instruction dispatched to this co-processor may overwrite the operand registers and start a unit. ctrl_i sets the decision (field alu_cp_fpu GATES ctrl_engine.start, line 435); cmd.valid computes it (GATED_BY ctrl_i.ir_funct12, line 326); ctrl_engine.start stores it (CLOCKED_BY clk_i, GATES fu_classify.start and the other unit starts). cmd.instr_* are decode terms of cmd.valid and cmd.funct, and the fu_*.start fields only split the stored pulse per unit, so neither is listed.",
+   "related structural assets": [
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_cp_fpu", "realization": "sets", "occurrence": 19, "edge": {"type": "GATES", "partner": "ctrl_engine.start"}},
+    {"asset rtl": "cmd.valid", "entity": "neorv32_cpu_cp_fpu", "realization": "computes", "occurrence": 2, "edge": {"type": "GATED_BY", "partner": "ctrl_i.ir_funct12"}},
+    {"asset rtl": "ctrl_engine.start", "entity": "neorv32_cpu_cp_fpu", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Selected operation code -- which operation's result path and normalizer source are used",
+   "security objective": "Integrity",
+   "reasoning": "`funct_ff <= cmd.funct;` (line 425) holds the operation code decoded from ctrl_i.ir_funct12 and ir_funct3 (lines 316-340); it selects the normalizer source (case funct_ff at line 1419) and which unit's result and flags are registered on res_o and fflags (case funct_ff at line 1496). Integrity: res_o must carry the result of the unit that executed the accepted instruction. funct_ff stores (CLOCKED_BY clk_i; SELECTS res_o and fflags). cmd.funct is combinational and drives only funct_ff (CARRIES funct_ff, line 425), so under the copy rule funct_ff is kept and cmd.funct is not listed. ctrl_i sets the code through its ir_funct12 field (GATES cmd.instr_class, line 316).",
+   "related structural assets": [
+    {"asset rtl": "funct_ff", "entity": "neorv32_cpu_cp_fpu", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_cp_fpu", "realization": "sets", "occurrence": 2, "edge": {"type": "GATES", "partner": "cmd.instr_class"}}
+   ]
+  },
+  {
+   "concept": "Operation sequencing state -- the idle/busy state of the co-processor and the state machines of the normalizer and float-to-int units",
+   "security objective": "Integrity",
+   "reasoning": "ctrl_engine.state (lines 421-455): operands, mode and operation code are captured only in S_IDLE; in S_BUSY `if (fu_core_done = '1') or (ctrl_i.cpu_trap = '1')` (line 448) returns to S_IDLE. neorv32_cpu_cp_fpu_normalizer and neorv32_cpu_cp_fpu_f2i each sequence ctrl.state (lines 1655-1873, 2078-2289): start_i leaves S_IDLE (lines 1664, 2090), the normalizer's funct_i chooses the int-to-float or normalize path (line 1680), and abort_i forces S_IDLE (lines 1871, 2287); abort_i is wired from ctrl_i.cpu_trap (lines 696, 1464). Integrity: results and done pulses must be produced only in the defined order. Availability: the co-processor returns to S_IDLE when a unit reports done or a trap occurs (line 448); a state held in S_BUSY would block every later FPU instruction. The state registers store (CLOCKED_BY clk_i; SELECTS records on other elements, including done_o); ctrl_i (field cpu_trap GATES ctrl_engine.state, line 448), start_i, funct_i and abort_i set the state in their entities.",
+   "related structural assets": [
+    {"asset rtl": "ctrl_engine.state", "entity": "neorv32_cpu_cp_fpu", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_cp_fpu", "realization": "sets", "occurrence": 20, "edge": {"type": "GATES", "partner": "ctrl_engine.state"}},
+    {"asset rtl": "ctrl.state", "entity": "neorv32_cpu_cp_fpu_normalizer", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "start_i", "entity": "neorv32_cpu_cp_fpu_normalizer", "realization": "sets", "occurrence": 2, "edge": {"type": "GATES", "partner": "ctrl.state"}},
+    {"asset rtl": "funct_i", "entity": "neorv32_cpu_cp_fpu_normalizer", "realization": "sets", "occurrence": 2, "edge": {"type": "GATES", "partner": "ctrl.state"}},
+    {"asset rtl": "abort_i", "entity": "neorv32_cpu_cp_fpu_normalizer", "realization": "sets", "occurrence": 2, "edge": {"type": "GATES", "partner": "ctrl.state"}},
+    {"asset rtl": "ctrl.state", "entity": "neorv32_cpu_cp_fpu_f2i", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "start_i", "entity": "neorv32_cpu_cp_fpu_f2i", "realization": "sets", "occurrence": 2, "edge": {"type": "GATES", "partner": "ctrl.state"}},
+    {"asset rtl": "abort_i", "entity": "neorv32_cpu_cp_fpu_f2i", "realization": "sets", "occurrence": 2, "edge": {"type": "GATES", "partner": "ctrl.state"}}
+   ]
+  },
+  {
+   "concept": "Operation completion event -- the done/valid pulse that ends an operation and qualifies the result",
+   "security objective": "Integrity",
+   "reasoning": "`ctrl_engine.valid <= '1';` in S_BUSY when fu_core_done or ctrl_i.cpu_trap is set (line 449), otherwise '0' (line 417); it is exported by `valid_o <= ctrl_engine.valid;` (line 462) and gates registration of res_o and fflags (line 1495). fu_core_done (line 1521) is the completion decision over the unit done signals, including the normalizer and f2i done_o pulses issued only in S_FINALIZE (lines 1861, 2277). Integrity: valid_o must pulse once per completed or aborted operation, in the cycle res_o carries its result. Availability: valid_o is produced when a unit reports done or a trap occurs (line 448). ctrl_engine.valid stores (CLOCKED_BY clk_i; CARRIES valid_o, GATES res_o); fu_core_done computes (GATED_BY the done fields); valid_o and both done_o ports are exits (done_o SELECTED_BY ctrl.state). fu_compare.done and fu_min_max.done (lines 577-578) are one-cycle copies of their start pulses feeding fu_core_done and are not listed.",
+   "related structural assets": [
+    {"asset rtl": "ctrl_engine.valid", "entity": "neorv32_cpu_cp_fpu", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "valid_o", "entity": "neorv32_cpu_cp_fpu", "realization": "exit port", "occurrence": 2, "edge": {"type": "COPIES", "partner": "ctrl_engine.valid"}},
+    {"asset rtl": "fu_core_done", "entity": "neorv32_cpu_cp_fpu", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "fu_compare.done"}},
+    {"asset rtl": "done_o", "entity": "neorv32_cpu_cp_fpu_normalizer", "realization": "exit port", "occurrence": 4, "edge": {"type": "SELECTED_BY", "partner": "ctrl.state"}},
+    {"asset rtl": "done_o", "entity": "neorv32_cpu_cp_fpu_f2i", "realization": "exit port", "occurrence": 4, "edge": {"type": "SELECTED_BY", "partner": "ctrl.state"}}
+   ]
+  },
+  {
+   "concept": "Operation operands -- the source operand values captured for the accepted instruction",
+   "security objective": "Integrity",
+   "reasoning": "rs1_i and rs2_i are read to form op_data, with the mantissa flushed when the exponent is zero (lines 347-353), and latched as `fpu_operands.rs1 <= op_data(0);` and `fpu_operands.rs2 <= op_data(1);` on acceptance (lines 437, 439). The latched operands feed min/max (lines 673-676), sign injection (716-726), the multiplier (785-792, 851), the adder (1065-1236) and the float-to-int entity through sign_i, exponent_i and mantissa_i (lines 700-702), which that entity stores at start (lines 2091-2094). Integrity: every unit must compute on exactly the operand values captured at acceptance; a change between capture and completion is excluded by the S_IDLE condition (line 421). rs1_i and rs2_i set them (SOURCES op_data); fpu_operands.rs1 stores (CLOCKED_BY clk_i; connections into the f2i instance, CONSTRAINS addsub.exp_comp) and fpu_operands.rs2 stores (CONSTRAINS addsub.exp_comp); the f2i ports set it in their entity (CARRIES ctrl.sign, ctrl.cnt, sreg.mant). op_data is a combinational step that also feeds op_class and is not listed. rs3_i has no local use.",
+   "related structural assets": [
+    {"asset rtl": "rs1_i", "entity": "neorv32_cpu_cp_fpu", "realization": "sets", "occurrence": 2, "edge": {"type": "SOURCES", "partner": "op_data"}},
+    {"asset rtl": "rs2_i", "entity": "neorv32_cpu_cp_fpu", "realization": "sets", "occurrence": 2, "edge": {"type": "SOURCES", "partner": "op_data"}},
+    {"asset rtl": "fpu_operands.rs1", "entity": "neorv32_cpu_cp_fpu", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "fpu_operands.rs2", "entity": "neorv32_cpu_cp_fpu", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "sign_i", "entity": "neorv32_cpu_cp_fpu_f2i", "realization": "sets", "occurrence": 2, "edge": {"type": "CARRIES", "partner": "ctrl.sign"}},
+    {"asset rtl": "exponent_i", "entity": "neorv32_cpu_cp_fpu_f2i", "realization": "sets", "occurrence": 2, "edge": {"type": "CARRIES", "partner": "ctrl.cnt"}},
+    {"asset rtl": "mantissa_i", "entity": "neorv32_cpu_cp_fpu_f2i", "realization": "sets", "occurrence": 2, "edge": {"type": "CARRIES", "partner": "sreg.mant"}}
+   ]
+  },
+  {
+   "concept": "Operand classification -- the per-operand class decision (infinity, normal, subnormal, zero, signalling or quiet NaN)",
+   "security objective": "Integrity",
+   "reasoning": "number_classifier (lines 358-397) decides a 10-bit class per operand from op_data and rs1_i/rs2_i (lines 374, 377); it is latched in fpu_operands.rs1_class and fpu_operands.rs2_class (lines 438, 440). The classes decide the special cases of compare (lines 503-542), min/max (636-668), the multiplier (774-839, 871-1022) and the adder (1080-1091, 1212-1219, 1263-1402); FCLASS returns `fu_classify.result(9 downto 0) <= fpu_operands.rs1_class;` (line 485) on res_o (line 1498); and the f2i entity selects its saturated or zero results from class_i/ctrl.class (lines 703, 2093, 2125-2131, 2192-2253). Integrity: each special-case result and the FCLASS result must follow the class the RTL defines. FPU_SUBNORMAL_SUPPORT changes which class bits are consulted (configuration records on comp_equal_ff, comp_less_ff and others). The class registers store (CLOCKED_BY clk_i; GATES comp_equal_ff); rs1_i and rs2_i set them (SOURCES op_class); class_i sets and ctrl.class stores the class in f2i (ctrl.class GATES ctrl.over; it copies a port, so the copy rule does not remove it); res_o is the FCLASS exit (COPIES fu_classify.result). op_class is combinational and drives only the two class registers, which are kept; fu_classify.result is a copy of fpu_operands.rs1_class.",
+   "related structural assets": [
+    {"asset rtl": "fpu_operands.rs1_class", "entity": "neorv32_cpu_cp_fpu", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "fpu_operands.rs2_class", "entity": "neorv32_cpu_cp_fpu", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "rs1_i", "entity": "neorv32_cpu_cp_fpu", "realization": "sets", "occurrence": 7, "edge": {"type": "SOURCES", "partner": "op_class"}},
+    {"asset rtl": "rs2_i", "entity": "neorv32_cpu_cp_fpu", "realization": "sets", "occurrence": 7, "edge": {"type": "SOURCES", "partner": "op_class"}},
+    {"asset rtl": "res_o", "entity": "neorv32_cpu_cp_fpu", "realization": "exit port", "occurrence": 4, "edge": {"type": "COPIES", "partner": "fu_classify.result"}},
+    {"asset rtl": "class_i", "entity": "neorv32_cpu_cp_fpu_f2i", "realization": "sets", "occurrence": 2, "edge": {"type": "CARRIES", "partner": "ctrl.class"}},
+    {"asset rtl": "ctrl.class", "entity": "neorv32_cpu_cp_fpu_f2i", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Floating-point ordering decision -- the equal and less-than outcomes behind FEQ/FLT/FLE and min/max",
+   "security objective": "Integrity",
+   "reasoning": "cmp_i, the integer comparator outcome, is captured by `cmp_ff <= cmp_i;` (line 426). float_comparator decides equality (lines 503-526) and less-than (lines 533-571) from the latched classes, signs and cmp_ff and stores them in comp_equal_ff and comp_less_ff; the compare result is formed with NaN masking (lines 600, 606, 612) and returned on res_o (line 1501), and comp_less_ff also picks the min/max operand (lines 647, 655). Integrity: the returned ordering must match the comparison the RTL defines. Which branch is built depends on FPU_SUBNORMAL_SUPPORT (configuration records on comp_equal_ff and comp_less_ff). cmp_i sets (CARRIES cmp_ff); cmp_ff stores the captured input (GATES comp_less_ff; it copies a port, so the copy rule does not remove it); comp_equal_ff and comp_less_ff store the decisions (GATES fu_compare.result); res_o is the exit (COPIES fu_compare.result). fu_compare.result is the combinational step that leaves at res_o and is not listed.",
+   "related structural assets": [
+    {"asset rtl": "cmp_i", "entity": "neorv32_cpu_cp_fpu", "realization": "sets", "occurrence": 2, "edge": {"type": "CARRIES", "partner": "cmp_ff"}},
+    {"asset rtl": "cmp_ff", "entity": "neorv32_cpu_cp_fpu", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "comp_equal_ff", "entity": "neorv32_cpu_cp_fpu", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "comp_less_ff", "entity": "neorv32_cpu_cp_fpu", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "res_o", "entity": "neorv32_cpu_cp_fpu", "realization": "exit port", "occurrence": 5, "edge": {"type": "COPIES", "partner": "fu_compare.result"}}
+   ]
+  },
+  {
+   "concept": "Operation result -- the floating-point or integer value returned to the CPU",
+   "security objective": "Integrity",
+   "reasoning": "res_o is registered with the selected unit result while ctrl_engine.valid is '1' (lines 1493-1514). Add/sub, multiply and int-to-float results pass through neorv32_cpu_cp_fpu_normalizer: sign_i, exponent_i, mantissa_i, integer_i and class_i are loaded at start or in S_PREPARE_* (lines 1665-1667, 1689, 1709-1712); ctrl.cnt holds the exponent while normalizing (lines 1761, 1768) and becomes the result exponent (line 1854); ctrl.class selects canonical NaN, infinity or zero results (lines 1823-1852); the result leaves on result_o (lines 1884-1886). The float-to-int result is decided in neorv32_cpu_cp_fpu_f2i, stored in ctrl.result (lines 2191-2273) with funct_i choosing unsigned or signed saturation (lines 2085, 2191), and leaves on result_o (line 2294). fu_conv_i2f.result holds the integer magnitude (lines 747, 750) wired into integer_i (line 1471). Integrity: the consumer of res_o must receive exactly the value the executed operation defines. Map gaps: integer_i is listed under no local use although line 1689 `sreg.upper <= integer_i;` reads it, and the normalizer result_o is marked tied with constant drivers ctrl.res_sgn/res_exp/res_man, fields absent from the map while lines 1884-1886 drive it from them; both are cited with a null edge. Not listed: the multiplier.* and addsub.* datapath registers, whose records only pass data to internal normalizer.* fields, the normalizer.* carriers into the instance, and normalizer.result and fu_conv_f2i.result, which only receive sub-unit outputs.",
+   "related structural assets": [
+    {"asset rtl": "res_o", "entity": "neorv32_cpu_cp_fpu", "realization": "exit port", "occurrence": 9, "edge": {"type": "COPIES", "partner": "normalizer.result"}},
+    {"asset rtl": "fu_conv_i2f.result", "entity": "neorv32_cpu_cp_fpu", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "sign_i", "entity": "neorv32_cpu_cp_fpu_normalizer", "realization": "sets", "occurrence": 6, "edge": {"type": "GATES", "partner": "round.en"}},
+    {"asset rtl": "exponent_i", "entity": "neorv32_cpu_cp_fpu_normalizer", "realization": "sets", "occurrence": 2, "edge": {"type": "CARRIES", "partner": "ctrl.cnt"}},
+    {"asset rtl": "mantissa_i", "entity": "neorv32_cpu_cp_fpu_normalizer", "realization": "sets", "occurrence": 4, "edge": {"type": "SOURCES", "partner": "sreg.ext_g"}},
+    {"asset rtl": "integer_i", "entity": "neorv32_cpu_cp_fpu_normalizer", "realization": "sets", "occurrence": 2, "edge": null},
+    {"asset rtl": "class_i", "entity": "neorv32_cpu_cp_fpu_normalizer", "realization": "sets", "occurrence": 2, "edge": {"type": "CARRIES", "partner": "ctrl.class"}},
+    {"asset rtl": "ctrl.cnt", "entity": "neorv32_cpu_cp_fpu_normalizer", "realization": "stores", "occurrence": 6, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.class", "entity": "neorv32_cpu_cp_fpu_normalizer", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "result_o", "entity": "neorv32_cpu_cp_fpu_normalizer", "realization": "exit port", "occurrence": 2, "edge": null},
+    {"asset rtl": "funct_i", "entity": "neorv32_cpu_cp_fpu_f2i", "realization": "sets", "occurrence": 2, "edge": {"type": "CARRIES", "partner": "ctrl.unsign"}},
+    {"asset rtl": "ctrl.result", "entity": "neorv32_cpu_cp_fpu_f2i", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "result_o", "entity": "neorv32_cpu_cp_fpu_f2i", "realization": "exit port", "occurrence": 2, "edge": {"type": "COPIES", "partner": "ctrl.result"}}
+   ]
+  },
+  {
+   "concept": "Per-operation exception flags -- invalid, overflow, underflow and inexact raised by the executed operation",
+   "security objective": "Integrity",
+   "reasoning": "Compare raises invalid on NaN operands (lines 602-616), min/max on a signalling NaN (lines 667-668), the multiplier decides overflow, underflow, inexact and invalid (lines 802-843), the adder invalid for opposite infinities (lines 1210-1221); the normalizer takes the incoming flags at start (line 1679) and adds inexact, underflow, overflow and invalid (lines 1785, 1794-1816, 1858-1859), exported on flags_o (lines 1889-1893); f2i decides invalid and inexact (lines 2179-2269), exported on flags_o (lines 2298, 2302). The selected flags reach fflags and accumulate in csr_fflags (lines 1499-1514, 295). Integrity: the reported flags must match the exception conditions of the executed operation. fu_compare.flags computes (SELECTED_BY ctrl_i.ir_funct3), fu_min_max.flags, multiplier.flags and addsub.flags compute (GATED_BY the class or exponent conditions); flags_i sets and ctrl.flags stores in the normalizer (SOURCES flags_o); ctrl.flags stores in f2i (SOURCES flags_o); both flags_o ports are exits (DERIVES_FROM ctrl.flags). The MAP CHECK reports flags_i CARRIES ctrl.flags without its partner record; the RTL line 1679 `ctrl.flags <= flags_i;` confirms it. Not listed: fflags (one-step holding, see the accrued-flags entry), the normalizer.flags_in/flags_out and fu_conv_f2i.flags carriers, and the fu_classify, fu_sign_inject, fu_addsub and fu_mul flags fields, which are constant zero.",
+   "related structural assets": [
+    {"asset rtl": "fu_compare.flags", "entity": "neorv32_cpu_cp_fpu", "realization": "computes", "occurrence": 3, "edge": {"type": "SELECTED_BY", "partner": "ctrl_i.ir_funct3"}},
+    {"asset rtl": "fu_min_max.flags", "entity": "neorv32_cpu_cp_fpu", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "fpu_operands.rs1_class"}},
+    {"asset rtl": "multiplier.flags", "entity": "neorv32_cpu_cp_fpu", "realization": "computes", "occurrence": 7, "edge": {"type": "GATED_BY", "partner": "multiplier.exp_res"}},
+    {"asset rtl": "addsub.flags", "entity": "neorv32_cpu_cp_fpu", "realization": "computes", "occurrence": 4, "edge": {"type": "GATED_BY", "partner": "fpu_operands.rs1_class"}},
+    {"asset rtl": "flags_i", "entity": "neorv32_cpu_cp_fpu_normalizer", "realization": "sets", "occurrence": 2, "edge": {"type": "CARRIES", "partner": "ctrl.flags"}},
+    {"asset rtl": "ctrl.flags", "entity": "neorv32_cpu_cp_fpu_normalizer", "realization": "stores", "occurrence": 8, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "flags_o", "entity": "neorv32_cpu_cp_fpu_normalizer", "realization": "exit port", "occurrence": 2, "edge": {"type": "DERIVES_FROM", "partner": "ctrl.flags"}},
+    {"asset rtl": "ctrl.flags", "entity": "neorv32_cpu_cp_fpu_f2i", "realization": "stores", "occurrence": 6, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "flags_o", "entity": "neorv32_cpu_cp_fpu_f2i", "realization": "exit port", "occurrence": 2, "edge": {"type": "DERIVES_FROM", "partner": "ctrl.flags"}}
+   ]
+  }
+ ]
+}

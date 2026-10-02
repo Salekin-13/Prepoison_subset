@@ -1,0 +1,154 @@
+{
+  "module name": "neorv32_cpu_cp_crypto",
+  "conceptual assets": [
+    {
+      "concept": "Decoded command vector selecting which cryptographic operation to perform",
+      "security objective": "Integrity",
+      "reasoning": "The architecture explicitly computes a cmd bit-vector from ctrl_i fields for each operation (examples: cmd(cmd_xperm_c) <= '1' when EN_ZBKX and (ctrl_i.ir_opcode(5) = '1') and (ctrl_i.ir_funct12(11 downto 5) = \"0010100\") ... else '0'; similar concurrent assignments exist for SHA/AES/SM3/SM4). or_reduce_f(cmd) is used to qualify cmd_valid and the control process tests cmd(...) to decide S_BUSY. Thus the operation executed is defined by cmd; corrupting cmd changes which crypto flow runs, establishing an Integrity property.",
+      "related structural assets": [
+        {
+          "asset rtl": "cmd",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Command acceptance decision (cmd_valid) that gates input capture and operation start",
+      "security objective": "Integrity",
+      "reasoning": "cmd_valid is computed by \"cmd_valid <= '1' when (ctrl_i.alu_cp_alu = '1') and (or_reduce_f(cmd) = '1') else '0';\" and the control process uses it to capture operands and function fields (\"if (cmd_valid = '1') then rs1 <= rs1_i; rs2 <= rs2_i; funct3 <= ctrl_i.ir_funct3; funct12 <= ctrl_i.ir_funct12;\"). The decision therefore opens the crypto flow; incorrect cmd_valid would allow or suppress operations unexpectedly, establishing Integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "cmd_valid",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "cmd",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Captured operand values that the crypto flows use (rs1, rs2)",
+      "security objective": "Integrity",
+      "reasoning": "The control process captures inputs on a qualifying command: \"if (cmd_valid = '1') then rs1 <= rs1_i; rs2 <= rs2_i;\". These stored rs1/rs2 signals are then consumed by the implemented computations (examples: xperm8_gen uses xperm8_f(rs1, rs2(...)); sha_core and sm3_res use rs1 in ror_f/lsl_f expressions; block ciphers compute blk_res <= rs1 xor rol_res). Corrupting these stored operands would produce incorrect crypto outputs, establishing Integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "rs1",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rs2",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rs1_i",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "rs2_i",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Output-selection decision (out_sel) that determines which internal result is exported",
+      "security objective": "Integrity",
+      "reasoning": "out_sel is computed as \"out_sel <= funct12(9 downto 8) & funct12(5);\" and the result process uses a case on out_sel to pick which internal result drives res_o (e.g. when \"100\" => res_o <= xperm_res; when \"101\" | \"110\" => res_o <= blk_res; otherwise sha_res/sm3_res). Thus out_sel fixes which computation is reported externally; incorrect selection violates result integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "out_sel",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "funct12",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Computed cryptographic result exported through res_o (xperm_res, blk_res, sha_res, sm3_res)",
+      "security objective": "Integrity",
+      "reasoning": "The result process assigns res_o only when done='1' and selects the source by out_sel: e.g. \"when \\\"100\\\" => res_o <= xperm_res; when \\\"101\\\" | \\\"110\\\" => res_o <= blk_res; ... else res_o <= sha_res or sm3_res\". res_o is thus the externally-observable crypto result; the internal stored signals xperm_res, blk_res, sha_res and sm3_res realize that value inside the module. Unauthorized modification of these internal stores or of res_o would change the exported result, establishing Integrity (Availability for producing the result is also implemented by gating on done).",
+      "related structural assets": [
+        {
+          "asset rtl": "res_o",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "xperm_res",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "blk_res",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "sha_res",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "sm3_res",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Completion/valid indication that marks result availability (done -> valid_o)",
+      "security objective": "Integrity",
+      "reasoning": "The control process sets done in its state handling (S_IDLE/S_BUSY/S_DONE branches) and the module exposes it: \"valid_o <= done;\". The result process only updates res_o when \"if (done = '1') then ...\". The done/valid_o signals therefore indicate completion and enable external observation of res_o; incorrect setting or suppression of done/valid_o would produce or withhold results incorrectly, establishing Integrity (and an Availability dependency on done for result delivery).",
+      "related structural assets": [
+        {
+          "asset rtl": "done",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "valid_o",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Internal operation state controlling crypto flow progress (state)",
+      "security objective": "Integrity",
+      "reasoning": "The control process implements a state machine over signal state (type state_t) and uses it to sequence capture, execution and completion: \"case state is when S_IDLE => ... when S_BUSY => state <= S_DONE; when others => done <= '1'; state <= S_IDLE;\". The module's progression and done generation depend on state; corrupting state would alter control flow and outputs, establishing Integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "state",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "stores"
+        }
+      ]
+    }
+  ]
+}

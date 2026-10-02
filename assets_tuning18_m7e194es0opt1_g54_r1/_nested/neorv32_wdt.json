@@ -1,0 +1,317 @@
+{
+  "module name": "neorv32_wdt",
+  "module purpose": "This block stores bus-written enable, lock, strict, and timeout control state, counts prescaled ticks while enabled, accepts a matching service write to clear the count, asserts rstn_o low on timeout or strict access faults, drives clkgen_en_o from the enable bit, and records a reset-cause code for readback.",
+  "use-case flows": [
+    {
+      "flow": "configure",
+      "value": "control-register update of enable, lock, strict, and timeout when a write targets the control address and the block is not locked",
+      "lines": [
+        90,
+        91,
+        92,
+        93,
+        94,
+        95,
+        96,
+        97
+      ]
+    },
+    {
+      "flow": "lock",
+      "value": "stored lock state blocks later control-register writes and turns a blocked write into reset_force",
+      "lines": [
+        93,
+        98,
+        99,
+        100
+      ]
+    },
+    {
+      "flow": "start",
+      "value": "the enable state turns on clkgen_en_o and allows counting to start on prescaler ticks",
+      "lines": [
+        94,
+        130,
+        140
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "prescaled count progression and timeout comparison while enabled",
+      "lines": [
+        129,
+        130,
+        131,
+        132,
+        133,
+        134,
+        141,
+        144
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "a matching service-register write produces reset_wdt and clears the counter",
+      "lines": [
+        101,
+        102,
+        103,
+        131,
+        132
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "timeout or strict access fault latches internal reset requests and drives rstn_o low",
+      "lines": [
+        155,
+        156,
+        161
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "reset-cause code captured from external reset, debug reset, timeout reset, or access reset",
+      "lines": [
+        168,
+        169,
+        171,
+        172,
+        173,
+        174,
+        175,
+        176
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "stored enable, lock, reset cause, strict, and timeout values returned on bus reads",
+      "lines": [
+        108,
+        109,
+        110,
+        111,
+        112,
+        113
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "system and external resets clear stored control, counter, reset-request, and cause state",
+      "lines": [
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        124,
+        125,
+        126,
+        127,
+        151,
+        152,
+        153,
+        168,
+        169
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Watchdog enable state \u2014 whether counting and reset generation are active",
+      "security objective": "Integrity",
+      "reasoning": "The configure and start flows store ctrl.enable from the control write at line 94, use it to start counting at line 130, force the counter idle/reset path at line 131 when disabled, drive clkgen_en_o at line 140, and qualify both reset-request generators at lines 155-156. Corrupting this stored bit makes the implemented start, counting, and reset behavior incorrect; availability is also established because the bit is retained until overwritten or rstn_sys_i clears it at line 75.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.enable",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "clkgen_en_o",
+          "entity": "neorv32_wdt",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "ctrl.enable"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Configuration lock state \u2014 whether the control register can still be rewritten",
+      "security objective": "Integrity",
+      "reasoning": "The lock flow stores ctrl.lock at line 95, tests it before permitting later control writes at line 93, and routes a blocked write to reset_force at line 99. Corrupting this state breaks the implemented protection relation between the lock setting and later writes; availability is also established because the stored bit persists until rstn_sys_i clears it at line 76. Its readback at line 110 is on the bus transport port, so the stored field is the eligible structural reference here.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.lock",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Strict access-reset mode \u2014 whether a forbidden access escalates to hardware reset",
+      "security objective": "Integrity",
+      "reasoning": "The strict setting is stored at line 96 and then consumed in `hw_rst_access <= ctrl.enable and ctrl.strict and reset_force` at line 156. Corrupting ctrl.strict changes whether the implemented access-fault path can assert a reset request; availability is also established because the setting is retained until rstn_sys_i clears it at line 77. Its readback at line 112 is on the excluded bus transport port.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.strict",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Timeout threshold configuration \u2014 the stored count value that defines expiration",
+      "security objective": "Integrity",
+      "reasoning": "The timeout field is stored from the control write at line 97, compared against the running count at line 144, and thereby influences timeout reset generation at line 155. Corrupting this stored value changes the implemented expiration point of the timer; availability is also established because the threshold is retained until rstn_sys_i clears it at line 78. Its readback at line 113 is on the excluded bus transport port.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.timeout",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Watchdog progress state \u2014 whether timing has started and the current count value",
+      "security objective": "Integrity",
+      "reasoning": "The operate flow stores cnt_started at line 130 and cnt at lines 132-134. Those stored states are the basis of the timeout test at line 144, so corrupting either changes when timeout is or is not recognized. Availability is also established because, with ctrl.enable set and no service reset, cnt_started advances from prsc_tick at line 130 and cnt increments at line 134; rstn_sys_i clears them at lines 126-127.",
+      "related structural assets": [
+        {
+          "asset rtl": "cnt_started",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "cnt",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Watchdog service-accept decision \u2014 one-cycle authorization to clear the count",
+      "security objective": "Integrity",
+      "reasoning": "The reset flow only sets reset_wdt when a write targets the service address and the written 32-bit value matches the required constant at lines 101-103; line 131 then uses `reset_wdt = '1'` to clear cnt at line 132. Corrupting this decision would accept an incorrect service write or reject a correct one, breaking the implemented counter-clear rule; availability is also established because the pulse is produced for the matching write and otherwise cleared at lines 79 and 87.",
+      "related structural assets": [
+        {
+          "asset rtl": "reset_wdt",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Timeout reset request \u2014 the latched timeout-driven reset decision sent on rstn_o",
+      "security objective": "Integrity",
+      "reasoning": "The operate/reset flow computes timeout at line 144 and then latches `hw_rst_timeout <= ctrl.enable and cnt_timeout and prsc_tick` at line 155; rstn_o is driven low from that request or hw_rst_access at line 161, and line 174 records the timeout cause. Corrupting this decision changes whether the implemented timeout event resets the system; availability is also established because, when the enabled counter reaches the stored threshold and a prescaler tick occurs, the request is produced and delivered on rstn_o.",
+      "related structural assets": [
+        {
+          "asset rtl": "hw_rst_timeout",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "rstn_o",
+          "entity": "neorv32_wdt",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "hw_rst_timeout"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Strict-access reset request \u2014 the latched reset decision after a forbidden access",
+      "security objective": "Integrity",
+      "reasoning": "Forbidden writes set reset_force at lines 99 or 105, and line 156 latches `hw_rst_access <= ctrl.enable and ctrl.strict and reset_force`; rstn_o is then driven low at line 161 and line 176 records the access-reset cause. Corrupting this decision changes whether the implemented strict access-fault path resets the system; availability is also established because, when those conditions hold, the request is produced and delivered on rstn_o.",
+      "related structural assets": [
+        {
+          "asset rtl": "hw_rst_access",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "rstn_o",
+          "entity": "neorv32_wdt",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "hw_rst_access"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Recorded reset-cause code \u2014 stored classification of the last reset source",
+      "security objective": "Integrity",
+      "reasoning": "The report flow stores 00 on rstn_ext_i low at line 169, 01 on rstn_dbg_i low at line 172, 10 on hw_rst_timeout at line 174, and 11 on hw_rst_access at line 176, and line 111 returns that code on bus reads. Corrupting reset_cause misreports which implemented event last caused reset; availability is also established because the code is retained until external reset or a later qualifying event overwrites it.",
+      "related structural assets": [
+        {
+          "asset rtl": "reset_cause",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    }
+  ]
+}

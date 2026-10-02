@@ -1797,3 +1797,51 @@ Delete a line when it stops being true.
   over-production statement. Verify before they go in a write-up.
 - **Cost per arm not yet estimated.** Rates are input $0.25/1M, cached $0.025/1M, output
   $2.00/1M, but token counts for the `v2` prompt are unmeasured. First run settles it.
+
+
+---
+
+## 10. The assetgen_meta hand arms (`m7e194e*`), 2026-09-30 to 2026-10-02 — consolidated
+
+Logged in full, with every reading, in `step1/lasset_step1/RELATION_EXPERIMENTS_LOG.md`; this section is the index the
+v2 log was missing (0 hits for "m7e194" before it). Tuning set = the 15 reference modules, 111 entries, strict scorer,
+mean of 3 runs, gpt-5-mini executor, unless marked. "(log)" = re-derived in the session that wrote that log entry;
+"(here)" = re-derived 2026-10-01/02.
+
+**Lineage.** A meta-prompt (`gpt-6-astra`) wrote the seed executor prompt `e8df164fddb3`; the winner `m7e194es0ism`
+(`0d0def4c6fe3`) = that seed + two worked examples (omsp_gpio, tiny_aes). Every arm below is a hand arm on the winner.
+
+| arm | change | P | R | emitted/run | verdict / mechanism |
+|---|---|---|---|---|---|
+| `v2x3r8` | the v2 baseline used as reference row | 0.296 | 0.853 | 319.7 | (here) |
+| `m7e194es0ism` | seed + worked examples | 0.344 | 0.847 | 273.3 | winner (here) |
+| `ismr` | + relationship map (LLM-written E3 maps) in the input | 0.353 | 0.778 | 244.7 | recall cost, mostly `cpu` sub-block-wired signals (here; trace in log) |
+| `ismc` | + code-written map | about `ismr` | | | (log) |
+| `ismcap` | + one captured-input bullet | 0.355 | 0.829 | | ineffective: target inputs 4/12 (log) |
+| `ismq` | + four CIA questions per value | 0.352 | 0.754 | 237.7 | harmful: questions answered but uniform; recall cost (here) |
+| `ismrq` | map + four questions | 0.360 | 0.697 | 215.0 | harmful (log) |
+| `ismd` | ASSET_DEFINITION rules: deciders primary, transit registers secondary | 0.340 | 0.877 | 286.3 | not adopted: transit rule ignored (0/378 concepts use it) (here) |
+| `ist` | eight-part restructure, map with occurrence IDs + code flow graph, occurrence + edge citation per element, questions + influence / hypotheses / exclusions lists | 0.359 | 0.691 | 213.7 | traceable (94% of citations verify; 276/276 concepts cite map facts) but recall FAIL; same as `ismrq` (here) |
+| `ist2` | `ist` without questions and side lists, established-value criteria restored, transport and sub-unit citation fixes; separate SoC-engineer CIA labelling call (P3164 3.1.1) | | | | built 2026-10-02, not run; readings `assetgen_meta/hand_arms/read_ist2.py` |
+
+**Held-out (26 modules, 189 entries; pre-registered, read once, `assetgen_meta/HELDOUT_PREREG.md`):** winner base
+0.352 / 0.852 (458 emitted/run); MV + NONE + BF 0.399 / 0.884, adopted (precision gain over MV +0.049, 95% interval
+[0.025, 0.080]); GUARD 0.446 / 0.801, beats equal-strength random thinning (0.393 / 0.707) but stays a secondary row
+for lack of a basis. LAsset initial on the same modules: spec + RTL 0.734 / 0.862; RTL-only 0.730 / 0.757 (the
+like-for-like row; `LAsset_initial_results/`). The open threat "No held-out set exists" in section 9 no longer holds.
+
+**Blind-agent study (Claude executor, RTL + map, prompts written blind; `blind_agent/REPORT.md`):** winner D1 0.359 /
+0.577 tuning, 0.362 / 0.619 held-out; the gap to the reference is its conventions (port fields never, strobes and
+decisions listed), not reasoning.
+
+**Lessons this adds to sections 4-8.**
+- A sentence that tells the model to leave something out changed nothing in five arms (`ismd`, `ismcap`, `ismq`,
+  `ismrq`, blind prompts); only code levers moved precision (`ist_levers.py`, `post_levers.py`).
+- Per-value questions inside the generation call cost recall (`ismq` about -0.09, `ismrq`, `ist`), whatever their
+  form; answers stayed uniform (integrity yes 274/276, confidentiality no 276/276 in `ist`). The confidentiality
+  criterion inherited from the seed ("require an RTL restriction on disclosure") is not P3164's question: P3164 Q1
+  assumes the integrator may need protection and answers "yes" for stored, generated or readable data in 4 of its 5
+  worked designs (p.9-23).
+- A second output list in the same call is a destination (as SEC): `ist` parked 19 reference run-slots in its
+  influence list.
+- A rule that opens a citation route for record ports reopened the transport class (`ist`: about 40 FP run-slots).

@@ -1,0 +1,124 @@
+{
+ "module name": "neorv32_hwspinlock",
+ "module purpose": "Implements a 32-entry hardware spinlock array: it samples bus_req_i, decodes an index, updates the corresponding lock bit lock_q(i) on a clock edge when the request and index select match, and returns lock state and handshake fields on bus_rsp_o. Registers are cleared on rstn_i.",
+ "use-case flows": [
+   {
+     "flow": "start",
+     "value": "bus request strobe that begins an access and is reflected as the response ACK",
+     "lines": [44,63,66]
+   },
+   {
+     "flow": "operate",
+     "value": "update of a selected lock bit: conditional clocked assignment of lock_q(i) <= not bus_req_i.rw when the request, address decode and sel(i) match",
+     "lines": [44,45,46,51]
+   },
+   {
+     "flow": "read out",
+     "value": "return of lock state (masked by selection or full vector) on bus_rsp_o.data for read accesses",
+     "lines": [65,66,67,68,70]
+   },
+   {
+     "flow": "report",
+     "value": "response fields ack and err driven each cycle (ack mirrors request strobe; err tied '0') and data defaulted to zero before conditional read assignment",
+     "lines": [63,64,65]
+   },
+   {
+     "flow": "reset",
+     "value": "lock_q entries cleared to '0' on rstn_i='0' and bus_rsp_o set to rsp_terminate_c while reset holds",
+     "lines": [41,42,43,60,61]
+   }
+ ],
+ "conceptual assets": [
+   {
+     "concept": "Per-index lock state (the 32-bit lock_q vector) held across cycles",
+     "security objective": "Integrity",
+     "reasoning": "The RTL implements lock state storage, reset and readout: reset forces each bit to '0' (lines 41-43; map: lock_q RESET_BY at occurrence 2, line 42, targets rstn_i), updates occur on the rising clock when the request decode and selection hold and set the bit to not bus_req_i.rw (lines 44-46; map: lock_q CLOCKED_BY at occurrence 3, line 45, targets clk_i, and GATED_BY on the same occurrence referencing bus_req_i.stb, bus_req_i.addr and sel), and the stored bits are returned on bus_rsp_o.data (lines 66-70; map: bus_rsp_o.data DERIVES_FROM at bus_rsp_o occurrence 6, line 68, targets lock_q). Thus the integrity of lock_q is established by these RTL assignments and the response path.",
+     "related structural assets": [
+       {
+         "asset rtl": "lock_q",
+         "entity": "neorv32_hwspinlock",
+         "realization": "stores",
+         "occurrence": 3,
+         "edge": {"type":"CLOCKED_BY","partner":"clk_i"}
+       },
+       {
+         "asset rtl": "bus_rsp_o",
+         "entity": "neorv32_hwspinlock",
+         "realization": "exit port",
+         "occurrence": 6,
+         "edge": {"type":"DERIVES_FROM","partner":"lock_q"}
+       },
+       {
+         "asset rtl": "bus_req_i",
+         "entity": "neorv32_hwspinlock",
+         "realization": "sets",
+         "occurrence": 4,
+         "edge": {"type":"SOURCES","partner":"lock_q"}
+       }
+     ]
+   },
+   {
+     "concept": "Selected lock index (the one-hot sel vector computed from bus_req_i.addr(6 downto 2)) used to pick which lock bit an access targets",
+     "security objective": "Integrity",
+     "reasoning": "The index decode is computed combinationally and directly gates both writes and masked reads: sel(i) is assigned from bus_req_i.addr(6 downto 2) (line 51; map: sel GATED_BY at occurrence 3, line 51, targets bus_req_i.addr), sel(i) is tested in the write condition (line 44; map: sel GATES at sel occurrence 2, line 44, targets lock_q), and sel participates in the masked read `lock_q and sel` (line 68; map: bus_rsp_o.data DERIVES_FROM lists sel). The module's behavior depends on this computed selection, establishing its integrity requirement.",
+     "related structural assets": [
+       {
+         "asset rtl": "sel",
+         "entity": "neorv32_hwspinlock",
+         "realization": "computes",
+         "occurrence": 3,
+         "edge": {"type":"GATED_BY","partner":"bus_req_i.addr"}
+       },
+       {
+         "asset rtl": "bus_req_i",
+         "entity": "neorv32_hwspinlock",
+         "realization": "sets",
+         "occurrence": 5,
+         "edge": {"type":"GATES","partner":"sel"}
+       }
+     ]
+   },
+   {
+     "concept": "Bus request handshake (request strobe and response ACK) — the start event of an access and the ACK the module delivers",
+     "security objective": "Integrity",
+     "reasoning": "The module echoes the request strobe into the response ACK and uses the strobe to qualify operations: bus_rsp_o.ack <= bus_req_i.stb (line 63; map: bus_rsp_o.ack COPIES at bus_rsp_o occurrence 3, line 63, targets bus_req_i.stb), and the strobe appears in the write and read gating conditions (lines 44, 66; map: bus_req_i.stb CARRIES at bus_req_i occurrence 6, line 63, targets bus_rsp_o.ack). Integrity of the request/ACK handshake is therefore established by the RTL assignments.",
+     "related structural assets": [
+       {
+         "asset rtl": "bus_req_i",
+         "entity": "neorv32_hwspinlock",
+         "realization": "sets",
+         "occurrence": 6,
+         "edge": {"type":"CARRIES","partner":"bus_rsp_o.ack"}
+       },
+       {
+         "asset rtl": "bus_rsp_o",
+         "entity": "neorv32_hwspinlock",
+         "realization": "exit port",
+         "occurrence": 3,
+         "edge": {"type":"COPIES","partner":"bus_req_i.stb"}
+       }
+     ]
+   },
+   {
+     "concept": "Bus operation type (the rw bit) — the request's read/write indicator that determines the stored lock value and read behavior",
+     "security objective": "Integrity",
+     "reasoning": "The rw field is consumed to form stored values and to choose the read path: `lock_q(i) <= not bus_req_i.rw;` (line 45; map: bus_req_i.rw SOURCES at bus_req_i occurrence 4, line 45, targets lock_q), and the response chooses the read branch when `(bus_req_i.rw = '0')` (line 66; map: bus_rsp_o.data GATED_BY at bus_rsp_o occurrence 6, line 68, targets bus_req_i.rw). The correctness of this rw-driven decision is required for the module's implemented update and read semantics.",
+     "related structural assets": [
+       {
+         "asset rtl": "bus_req_i",
+         "entity": "neorv32_hwspinlock",
+         "realization": "sets",
+         "occurrence": 4,
+         "edge": {"type":"SOURCES","partner":"lock_q"}
+       },
+       {
+         "asset rtl": "bus_rsp_o",
+         "entity": "neorv32_hwspinlock",
+         "realization": "exit port",
+         "occurrence": 6,
+         "edge": {"type":"GATED_BY","partner":"bus_req_i.rw"}
+       }
+     ]
+   }
+ ]
+}

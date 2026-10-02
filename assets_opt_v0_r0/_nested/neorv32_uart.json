@@ -1,0 +1,208 @@
+{
+ "module name": "neorv32_uart",
+ "module purpose": "neorv32_uart is a bus-attached UART: a control word written over bus_req_i is held in ctrl (enable, simulation mode, flow-control enable, prescaler select, baud divisor, interrupt enables, FIFO clear commands); bytes written to the data address are pushed into a TX FIFO sub-unit and serialized by a transmitter state machine onto uart_txd_o; bits sampled from uart_rxd_i are assembled by a receiver state machine and pushed into an RX FIFO sub-unit that the bus reads. It returns settings, status and the overrun flag on bus_rsp_o, honours CTS from uart_ctsn_i, drives RTS on uart_rtsn_o, raises irq_rx_o and irq_tx_o, and exports the enable on clkgen_en_o.",
+ "use-case flows": [
+  {
+   "flow": "configure",
+   "value": "control settings (enable, simulation mode, flow-control enable, prescaler select, baud divisor, interrupt enables) written from the bus into ctrl on a qualified write with addr(2)='0'",
+   "lines": [176, 177, 178, 179, 180, 181, 182, 183, 185, 186, 187, 188, 189]
+  },
+  {
+   "flow": "start",
+   "value": "a transmit byte pushed into the TX FIFO on a qualified bus write to the data address, and the transmitter leaving idle when the FIFO has data and CTS permits",
+   "lines": [251, 260, 261, 262, 351, 352, 353, 358, 359, 360]
+  },
+  {
+   "flow": "start",
+   "value": "one-cycle FIFO clear commands written from the bus and turned into FIFO clear requests to the FIFO sub-units",
+   "lines": [173, 174, 190, 191, 246, 259, 291, 304]
+  },
+  {
+   "flow": "operate",
+   "value": "bit-period timing: a tick selected from clkgen_i by the prescaler setting, and the baud divisor reloaded into the transmit and receive bit-period counters",
+   "lines": [229, 349, 368, 422, 432]
+  },
+  {
+   "flow": "operate",
+   "value": "transmit framing: the FIFO byte loaded with a start bit into the shift register, shifted out bit by bit under the bit-period and bit counters, and driven on uart_txd_o",
+   "lines": [344, 345, 349, 350, 351, 365, 366, 367, 368, 369, 370, 372, 375, 376, 377, 382, 389, 392]
+  },
+  {
+   "flow": "operate",
+   "value": "receive framing: uart_rxd_i synchronized, start bit detected, bits shifted into the receive shift register, and the completed byte pushed into the RX FIFO",
+   "lines": [295, 296, 305, 306, 408, 409, 410, 417, 418, 422, 423, 424, 425, 430, 431, 432, 433, 434, 436, 439, 440, 441, 446]
+  },
+  {
+   "flow": "operate",
+   "value": "hardware flow control: CTS sampled and honoured before a frame starts; RTS driven from the enable and the RX FIFO fill level",
+   "lines": [337, 358, 359, 360, 472, 473, 474, 475, 477, 480]
+  },
+  {
+   "flow": "report",
+   "value": "interrupt requests from enabled FIFO conditions, the receive overrun flag, and FIFO and transmitter status bits returned in the control word",
+   "lines": [201, 202, 203, 204, 205, 206, 214, 215, 270, 271, 272, 315, 316, 317, 318, 389, 458, 459, 460, 461]
+  },
+  {
+   "flow": "read out",
+   "value": "stored control settings and the received byte returned on a qualified bus read; the read of the data address pops the RX FIFO",
+   "lines": [195, 196, 197, 198, 199, 208, 209, 210, 211, 212, 217, 299, 307]
+  },
+  {
+   "flow": "reset",
+   "value": "control, engine, interrupt, overrun and RTS registers cleared while rstn_i is '0'; both FIFOs cleared while enable is '0', simulation mode is '1' or a clear command is set",
+   "lines": [154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 259, 267, 268, 304, 312, 313, 327, 328, 329, 330, 331, 332, 333, 334, 399, 400, 401, 402, 403, 404, 405, 455, 456, 458, 459, 469, 470]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "UART enable -- whether the UART operates (FIFOs held clear, engines idle, interrupts suppressed when off), also exported to the clock generator",
+   "security objective": "Integrity",
+   "reasoning": "Configure flow: `ctrl.enable <= bus_req_i.data(ctrl_en_c);` (line 179, CLOCKED_BY clk_i at occurrence 3) under stb, rw and addr(2)='0' (lines 176-178). Its own value is a decision the module depends on: '0' holds both FIFOs in clear (GATES tx_fifo.clear line 259, rx_fifo.clear line 304), it is copied into the engines' state MSB so they idle (COPIES at lines 344, 417), it clears the overrun flag (lines 458-459), gates both interrupt requests (lines 270, 315) and forces RTS (lines 473-475). Integrity is Established: these effects must follow the written value. `clkgen_en_o <= ctrl.enable;` (line 228, COPIES ctrl.enable at occurrence 2) delivers it to a clock generator outside this file, so the consumer must receive exactly ctrl.enable; clkgen_en_o is an exit port (an output that exports an enable is not excluded). Availability is also Established: held between writes, reset to '0' at line 156. Confidentiality is not established: line 195 returns it on any qualified read.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.enable", "entity": "neorv32_uart", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "clkgen_en_o", "entity": "neorv32_uart", "realization": "exit port", "occurrence": 2, "edge": {"type": "COPIES", "partner": "ctrl.enable"}}
+   ]
+  },
+  {
+   "concept": "Simulation-mode setting -- holds both FIFOs in clear and routes transmit-data writes to a simulation log, in builds where sim_mode_en_c holds",
+   "security objective": "Integrity",
+   "reasoning": "`ctrl.sim_mode <= bus_req_i.data(ctrl_sim_en_c) and bool_to_ulogic_f(sim_mode_en_c);` (line 180, CLOCKED_BY clk_i at occurrence 3). Condition: sim_mode_en_c is SIM_MODE_EN and is_simulation_c (line 50); when it is false the register can only take '0', and the sim_tx process exists only under `if sim_mode_en_c generate` (lines 490-491). Where the condition holds, '1' holds both FIFOs in clear (GATES tx_fifo.clear line 259, rx_fifo.clear line 304) and, with ctrl.enable, sends bus data writes to the simulation output (lines 499-511) instead of the transmitter. Integrity is Established for those builds: whether written bytes are transmitted and whether buffered bytes survive depends on this stored setting. The map carries no configuration record for it; the condition is read from lines 50 and 180.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.sim_mode", "entity": "neorv32_uart", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Bit-timing configuration -- prescaler select and baud divisor that set the bit period for transmit and receive",
+   "security objective": "Integrity",
+   "reasoning": "`ctrl.prsc <= bus_req_i.data(ctrl_prsc2_c downto ctrl_prsc0_c);` (line 182) and `ctrl.baud <= bus_req_i.data(ctrl_baud9_c downto ctrl_baud0_c);` (line 183) store the setting (CLOCKED_BY clk_i at occurrence 3 each). ctrl.prsc selects the tick `uart_clk <= clkgen_i(to_integer(unsigned(ctrl.prsc)));` (line 229, SELECTS uart_clk); ctrl.baud reloads the transmit and receive bit-period counters (CARRIES at lines 349, 368, 432; SOURCES at line 422). Integrity is Established: the timing of every transmitted and sampled bit follows these values (lines 366-372, 430-436). Availability: held between writes, reset at lines 159-160. Not reported: clkgen_i only feeds the tick that enables counter updates (a clock-enable input), and uart_clk only routes the selected clkgen_i bit.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.prsc", "entity": "neorv32_uart", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.baud", "entity": "neorv32_uart", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Clear-to-send transmit permission -- whether the transmitter may start a frame, from the CTS input when hardware flow control is enabled",
+   "security objective": "Integrity",
+   "reasoning": "uart_ctsn_i is read by this entity to store it: `tx_engine.cts <= tx_engine.cts(0) & uart_ctsn_i;` (line 337, SOURCES tx_engine.cts at occurrence 2), so it sets the permission; tx_engine.cts stores the synchronized value (CLOCKED_BY clk_i at occurrence 3). The permission is applied at lines 358-360: the transmitter leaves its wait state only when uart_clk='1' and `(tx_engine.cts(1) = '0') or (ctrl.hwfc_en = '0')`. ctrl.hwfc_en stores the setting that decides whether CTS is honoured (line 181, CLOCKED_BY clk_i at occurrence 3; GATES tx_engine.state line 359) and whether RTS is driven (line 472). Integrity is Established: frame start must follow this predicate. Availability: the setting is held between writes and reset at line 158.",
+   "related structural assets": [
+    {"asset rtl": "uart_ctsn_i", "entity": "neorv32_uart", "realization": "sets", "occurrence": 2, "edge": {"type": "SOURCES", "partner": "tx_engine.cts"}},
+    {"asset rtl": "tx_engine.cts", "entity": "neorv32_uart", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.hwfc_en", "entity": "neorv32_uart", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Ready-to-receive indication (RTS) driven to the remote sender",
+   "security objective": "Integrity",
+   "reasoning": "rtr_control decides it: with ctrl.hwfc_en='1', uart_rtsn_o is '1' when ctrl.enable='0' or rx_fifo.half='1' and '0' otherwise; with ctrl.hwfc_en='0' it is '0' (lines 472-480). uart_rtsn_o is a registered output (CLOCKED_BY clk_i at occurrences 3-5) and the exit port (GATED_BY ctrl.hwfc_en at occurrence 3, line 475): the decision is delivered to a device outside this file, so it must equal the value lines 472-480 define. Availability: produced on every clock edge, reset to '0' at line 470. rx_fifo.half is an operand delivered by the RX FIFO sub-unit (connection half_o, line 292), not the decision, and is not reported; ctrl.hwfc_en is listed under the clear-to-send concept.",
+   "related structural assets": [
+    {"asset rtl": "uart_rtsn_o", "entity": "neorv32_uart", "realization": "exit port", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "ctrl.hwfc_en"}}
+   ]
+  },
+  {
+   "concept": "Interrupt-source enables -- which FIFO conditions may raise the RX and TX interrupt requests",
+   "security objective": "Integrity",
+   "reasoning": "Five settings are stored from the control word (lines 185-189, CLOCKED_BY clk_i at occurrence 3 each) and each is ANDed with its FIFO condition in the interrupt generators: ctrl.irq_tx_empty and ctrl.irq_tx_nhalf at lines 271-272, ctrl.irq_rx_nempty, ctrl.irq_rx_half and ctrl.irq_rx_full at lines 316-318 (SOURCES irq_tx_o / irq_rx_o). Integrity is Established: which events reach the interrupt outputs follows these values. Availability: held between writes, reset at lines 161-165. Confidentiality is not established: lines 208-212 return them on any qualified read.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.irq_rx_nempty", "entity": "neorv32_uart", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.irq_rx_half", "entity": "neorv32_uart", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.irq_rx_full", "entity": "neorv32_uart", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.irq_tx_empty", "entity": "neorv32_uart", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.irq_tx_nhalf", "entity": "neorv32_uart", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Interrupt requests (RX and TX) delivered to the interrupt consumer",
+   "security objective": "Integrity",
+   "reasoning": "`irq_tx_o <= ctrl.enable and ((ctrl.irq_tx_empty and (not tx_fifo.avail)) or (ctrl.irq_tx_nhalf and (not tx_fifo.half)));` (lines 270-272) and the matching irq_rx_o expression (lines 315-318) are computed and registered here (CLOCKED_BY clk_i) and leave through these ports to a consumer not supplied, so the consumer must receive exactly the event these lines define. Availability: the request is produced on each clock edge while its enabled condition holds, reset to '0' at lines 268 and 313. Exit port takes precedence over their storage role: irq_rx_o DERIVES_FROM ctrl.irq_rx_nempty at occurrence 3 (line 315), irq_tx_o DERIVES_FROM ctrl.irq_tx_empty at occurrence 3 (line 270).",
+   "related structural assets": [
+    {"asset rtl": "irq_rx_o", "entity": "neorv32_uart", "realization": "exit port", "occurrence": 3, "edge": {"type": "DERIVES_FROM", "partner": "ctrl.irq_rx_nempty"}},
+    {"asset rtl": "irq_tx_o", "entity": "neorv32_uart", "realization": "exit port", "occurrence": 3, "edge": {"type": "DERIVES_FROM", "partner": "ctrl.irq_tx_empty"}}
+   ]
+  },
+  {
+   "concept": "Transmit data -- the byte written by the bus and shifted out as a serial frame",
+   "security objective": "Integrity",
+   "reasoning": "A qualified write to the data address pushes `tx_fifo.wdata <= bus_req_i.data(data_rtx_msb_c downto data_rtx_lsb_c);` (line 260) into tx_engine_fifo_inst (line 250). The FIFO output is loaded with a start bit by `tx_engine.sreg <= tx_fifo.rdata & '0';` (line 351, CLOCKED_BY clk_i at occurrence 3) and shifted with stop-bit fill (line 370); the line bit is registered by `tx_engine.txd <= tx_engine.sreg(0);` (line 365, CLOCKED_BY clk_i at occurrence 4) and leaves through `uart_txd_o <= tx_engine.txd;` (line 392, COPIES at occurrence 2). Integrity is Established: the serial frame must carry exactly the written byte, in bit order, framed by lines 351 and 370. Availability: the byte is held in tx_engine.sreg while the frame is shifted. Not reported: bus_req_i.data is a field of the transport record; tx_fifo.wdata and tx_fifo.rdata only pass the byte unchanged to and from the FIFO sub-unit (carriers).",
+   "related structural assets": [
+    {"asset rtl": "tx_engine.sreg", "entity": "neorv32_uart", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "tx_engine.txd", "entity": "neorv32_uart", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "uart_txd_o", "entity": "neorv32_uart", "realization": "exit port", "occurrence": 2, "edge": {"type": "COPIES", "partner": "tx_engine.txd"}}
+   ]
+  },
+  {
+   "concept": "Transmit-data write decision -- whether a bus access pushes a byte into the TX FIFO",
+   "security objective": "Integrity",
+   "reasoning": "`tx_fifo.we <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '1') else '0';` (line 261, GATED_BY bus_req_i.stb at occurrence 3) is computed here from a decision and wired to we_i of tx_engine_fifo_inst (line 251), so the sub-unit wiring exception is met. Integrity is Established: a byte is pushed exactly on a qualified write to the data address. The predicate operands are transport fields and are not reported.",
+   "related structural assets": [
+    {"asset rtl": "tx_fifo.we", "entity": "neorv32_uart", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "bus_req_i.stb"}}
+   ]
+  },
+  {
+   "concept": "Receive-data read decision -- whether a bus access pops a byte from the RX FIFO",
+   "security objective": "Integrity",
+   "reasoning": "`rx_fifo.re <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(2) = '1') else '0';` (line 307, GATED_BY bus_req_i.stb at occurrence 3) is computed here from a decision and wired to re_i of rx_engine_fifo_inst (line 299). Integrity is Established: a received byte is consumed exactly on a qualified read of the data address, the read that returns rx_fifo.rdata (line 217); availability of buffered bytes also depends on it, since a spurious pop discards one.",
+   "related structural assets": [
+    {"asset rtl": "rx_fifo.re", "entity": "neorv32_uart", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "bus_req_i.stb"}}
+   ]
+  },
+  {
+   "concept": "Transmitter frame sequencing state -- idle/wait/shift state, bit count and bit-period count, and the FIFO fetch decision",
+   "security objective": "Integrity",
+   "reasoning": "tx_engine.state is the transmitter state register (line 344 MSB from ctrl.enable, case at line 345, transitions at lines 353, 360, 377, 382; CLOCKED_BY clk_i at occurrence 4). tx_engine.bitcnt is loaded with 1011 (line 350, CLOCKED_BY at occurrence 3), decremented (line 369) and ends the frame at line 375; tx_engine.baudcnt is loaded from ctrl.baud (line 349, CLOCKED_BY at occurrence 3) and counts the bit period (lines 367-372). Both counters are self-updating. `tx_fifo.re <= '1' when (tx_engine.state = \"100\") else '0';` (line 262, GATED_BY tx_engine.state at occurrence 3) computes the fetch decision here and drives re_i (line 254). Integrity is Established: the frame's start, bit count, bit period and byte fetch follow these values. tx_engine.done is assigned (line 376) but never read, so no flow depends on it.",
+   "related structural assets": [
+    {"asset rtl": "tx_engine.state", "entity": "neorv32_uart", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "tx_engine.bitcnt", "entity": "neorv32_uart", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "tx_engine.baudcnt", "entity": "neorv32_uart", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "tx_fifo.re", "entity": "neorv32_uart", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "tx_engine.state"}}
+   ]
+  },
+  {
+   "concept": "Transmitter busy status reported to the requester",
+   "security objective": "Integrity",
+   "reasoning": "`tx_engine.busy <= '0' when (tx_engine.state(1 downto 0) = \"00\") else '1';` (line 389, GATED_BY tx_engine.state at occurrence 3) computes the busy decision, which the report flow returns at line 215 together with tx_fifo.avail. Integrity is Established: the reported status must reflect whether a frame is in progress. The value leaves only through bus_rsp_o, a transport record, so no exit port is listed.",
+   "related structural assets": [
+    {"asset rtl": "tx_engine.busy", "entity": "neorv32_uart", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "tx_engine.state"}}
+   ]
+  },
+  {
+   "concept": "Receive data -- the serial bits sampled from uart_rxd_i and assembled into the byte pushed into the RX FIFO",
+   "security objective": "Integrity",
+   "reasoning": "uart_rxd_i is read by this entity to store it: `rx_engine.sync(2) <= uart_rxd_i;` (line 408, CARRIES rx_engine.sync at occurrence 2), so it sets the received data. rx_engine.sync stores the synchronized samples (CLOCKED_BY clk_i at occurrence 3; shifted at line 410), and rx_engine.sreg stores the assembled bits: `rx_engine.sreg <= rx_engine.sync(2) & rx_engine.sreg(rx_engine.sreg'left downto 1);` (line 434, CLOCKED_BY at occurrence 4). `rx_fifo.wdata <= rx_engine.sreg(7 downto 0);` (line 305) passes the byte to the FIFO and rx_fifo.rdata returns it on the bus (line 217); both are carriers and bus_rsp_o is a transport record, so neither is listed. Integrity is Established: the byte pushed and read back must equal the sampled bits.",
+   "related structural assets": [
+    {"asset rtl": "uart_rxd_i", "entity": "neorv32_uart", "realization": "sets", "occurrence": 2, "edge": {"type": "CARRIES", "partner": "rx_engine.sync"}},
+    {"asset rtl": "rx_engine.sync", "entity": "neorv32_uart", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "rx_engine.sreg", "entity": "neorv32_uart", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Receiver frame sequencing state and byte-complete event",
+   "security objective": "Integrity",
+   "reasoning": "rx_engine.state is the receiver state register (line 417 MSB from ctrl.enable, case at line 418, start-bit transition at lines 424-425, end at line 441; CLOCKED_BY clk_i at occurrence 3). rx_engine.bitcnt is loaded with 1010 (line 423, CLOCKED_BY at occurrence 3), decremented (line 433) and ends the frame at line 439; rx_engine.baudcnt is loaded with half the divisor (line 422, CLOCKED_BY at occurrence 3) and then the full divisor (lines 431-436), fixing the sampling instants. rx_engine.done stores the byte-complete event (line 440, CLOCKED_BY at occurrence 5), which writes the RX FIFO through `rx_fifo.we <= rx_engine.done;` (line 306) and feeds the overrun check (line 460). Integrity is Established: start detection, sampling instants and the push event follow these values. rx_fifo.we only copies rx_engine.done and is not listed.",
+   "related structural assets": [
+    {"asset rtl": "rx_engine.state", "entity": "neorv32_uart", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "rx_engine.bitcnt", "entity": "neorv32_uart", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "rx_engine.baudcnt", "entity": "neorv32_uart", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "rx_engine.done", "entity": "neorv32_uart", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Receive overrun error flag",
+   "security objective": "Integrity",
+   "reasoning": "fifo_overrun sets the flag when a received byte is pushed into a full FIFO, `elsif (rx_fifo.we = '1') and (rx_fifo.free = '0') then rx_engine.over <= '1';` (lines 460-461, CLOCKED_BY clk_i at occurrence 5), clears it when ctrl.enable='0' (lines 458-459), and the report flow returns it at line 214. Integrity is Established: the reported error must reflect a lost byte. Availability: the flag is held until the UART is disabled or reset (line 456). rx_fifo.free and rx_fifo.we are operands of the condition, not the flag.",
+   "related structural assets": [
+    {"asset rtl": "rx_engine.over", "entity": "neorv32_uart", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "FIFO flush commands and decisions -- when buffered transmit or receive data is discarded",
+   "security objective": "Integrity",
+   "reasoning": "ctrl.clr_tx and ctrl.clr_rx store one-cycle clear commands written from the control word (lines 190-191, CLOCKED_BY clk_i at occurrence 4) and cleared every cycle (lines 173-174). `tx_fifo.clear <= '1' when (ctrl.enable = '0') or (ctrl.sim_mode = '1') or (ctrl.clr_tx = '1') else '0';` (line 259, GATED_BY ctrl.clr_tx at occurrence 3) and the matching rx_fifo.clear (line 304, GATED_BY ctrl.clr_rx at occurrence 3) compute the flush decision here and drive clear_i of the FIFO sub-units (lines 246, 291), so the sub-unit wiring exception is met. Integrity is Established: buffered bytes are discarded only under these conditions; availability of buffered data depends on the same decision.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.clr_tx", "entity": "neorv32_uart", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.clr_rx", "entity": "neorv32_uart", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "tx_fifo.clear", "entity": "neorv32_uart", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "ctrl.clr_tx"}},
+    {"asset rtl": "rx_fifo.clear", "entity": "neorv32_uart", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "ctrl.clr_rx"}}
+   ]
+  }
+ ]
+}

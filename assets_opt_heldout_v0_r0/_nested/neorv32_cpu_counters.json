@@ -1,0 +1,183 @@
+{
+ "module name": "neorv32_cpu_counters",
+ "module purpose": "neorv32_cpu_counters decodes CSR requests carried on ctrl_i (csr_addr, csr_we, csr_re, csr_wdata) into write and read strobes for counter words and event-selection registers, computes a registered increment enable per counter each clock from ctrl_i event, debug and halt fields and the stored event masks, instantiates neorv32_cpu_counters_cnt counters (cycle, instret and HPM counters, by generic), and returns the selected counter word or event mask on rdata_o. neorv32_cpu_counters_cnt holds a low word and an optional high word with a registered carry, writable through we_i/sel_i/wdata_i, advanced by inc_i, and read through re_i/sel_i on its rdata_o.",
+ "use-case flows": [
+  {
+   "flow": "start",
+   "value": "CSR access decode: whether a request selects a counter word or an event-selection register, for write or for read",
+   "lines": [82, 83, 84, 85, 86, 90, 91, 92, 93, 94]
+  },
+  {
+   "flow": "configure",
+   "value": "event-selection mask taken from ctrl_i.csr_wdata(11 downto 0) into hpmevent(i) on cfg_we(i), with bit cnt_event_tm_c forced to 0",
+   "lines": [199, 200, 202]
+  },
+  {
+   "flow": "configure",
+   "value": "counter word written from wdata_i (ctrl_i.csr_wdata) into lo_q or hi_q, the word chosen by sel_i, on we_i (cnt_we)",
+   "lines": [133, 135, 152, 154, 187, 189, 302, 303, 325, 326]
+  },
+  {
+   "flow": "operate",
+   "value": "per-counter increment enable computed each clock from ctrl_i.cnt_event, ctrl_i.cpu_debug, ctrl_i.cnt_halt and the event mask, delivered to each counter's inc_i",
+   "lines": [108, 109, 110, 112, 131, 150, 185]
+  },
+  {
+   "flow": "operate",
+   "value": "counting: low word advanced by inc_i, carry registered in cy_q and added to the high word",
+   "lines": [305, 311, 312, 324, 328]
+  },
+  {
+   "flow": "read out",
+   "value": "counter words and event masks returned on a qualified read",
+   "lines": [84, 86, 97, 136, 155, 190, 222, 223, 224, 227, 345, 346, 347, 349]
+  },
+  {
+   "flow": "reset",
+   "value": "increment enables, event masks and counter registers cleared while rstn_i is '0'",
+   "lines": [104, 105, 196, 197, 299, 300, 320, 321, 322]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Counter values -- the cycle, instret and HPM counts held in each counter instance and returned on read",
+   "security objective": "Integrity",
+   "reasoning": "The counting flow keeps the count in lo_q and hi_q: `nxt <= std_ulogic_vector(unsigned('0' & lo_q) + unsigned(inc));` (line 312), `lo_q <= nxt(lo_width_c-1 downto 0);` (line 305), `cy_q <= (others => nxt(lo_width_c));` (line 324) and `hi_q <= std_ulogic_vector(unsigned(hi_q) + unsigned(cy_q));` (line 328); a write replaces a word with `lo_q <= wdata_i(lo_width_c-1 downto 0);` (line 303) or `hi_q <= wdata_i(hi_width_c-1 downto 0);` (line 326). Integrity is Established: a stored word that departs from these update rules makes every later count and every readback wrong. The value is delivered across boundaries: `rdata_o <= std_ulogic_vector(resize(unsigned(lo_q), XLEN));` (line 347, hi_q at line 349) leaves the counter entity, and the top entity drives it out on `rdata_o <= cycle_rd or time_rd or instret_rd or hpm_rd;` (line 97). Availability is also Established under the RTL conditions: lo_q is reassigned on every rising edge after reset (line 305) and returned when re_i = '1' (line 345). lo_q and hi_q store (CLOCKED_BY clk_i at occurrence 4, lines 305 and 328); hi_q exists only when CNT_WIDTH > 32 (line 317) and is tied to zero otherwise (line 337); cycle_inst and instret_inst use CNT_WIDTH => 2*XLEN (lines 126, 145) and exist only when ZICNTR_EN (line 121); HPM instances exist only when ZIHPM_EN and HPM_NUM > 0 (line 172), with CNT_WIDTH => HPM_WIDTH (line 180). wdata_i sets (SOURCES lo_q, occurrence 2, line 303). Both rdata_o ports are exit ports (DERIVES_FROM lo_q, occurrence 3, line 347; DERIVES_FROM cycle_rd, occurrence 2, line 97). Not realizing it: nxt and inc are terms of the increment (lines 311-312); cy_q is an intermediate carry register whose result is stored in hi_q (line 328); cycle_rd, instret_rd and hpmcnt only receive the sub-units' rdata_o (connections at lines 136, 155, 190) and pass it to rdata_o or hpm_rd; hpm_rd only ORs readback terms (line 227). ctrl_i.csr_wdata reaches the counters only through unchanged connections to wdata_i (lines 135, 154, 189), so ctrl_i is not a setting point here. Confidentiality is not established: no line restricts who reads a counter, and ctrl_i.cpu_priv has no local use.",
+   "related structural assets": [
+    {
+     "asset rtl": "lo_q",
+     "entity": "neorv32_cpu_counters_cnt",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "hi_q",
+     "entity": "neorv32_cpu_counters_cnt",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "wdata_i",
+     "entity": "neorv32_cpu_counters_cnt",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "SOURCES", "partner": "lo_q"}
+    },
+    {
+     "asset rtl": "rdata_o",
+     "entity": "neorv32_cpu_counters_cnt",
+     "realization": "exit port",
+     "occurrence": 3,
+     "edge": {"type": "DERIVES_FROM", "partner": "lo_q"}
+    },
+    {
+     "asset rtl": "rdata_o",
+     "entity": "neorv32_cpu_counters",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "DERIVES_FROM", "partner": "cycle_rd"}
+    }
+   ]
+  },
+  {
+   "concept": "Counter increment enable -- the per-counter decision, taken each clock, whether the cycle, instret or an HPM counter advances",
+   "security objective": "Integrity",
+   "reasoning": "The operate flow computes `cnt_en(0) <= ctrl_i.cnt_event(cnt_event_cy_c) and (not ctrl_i.cpu_debug) and (not ctrl_i.cnt_halt(0));` (line 108), the same for index 2 (line 110), `cnt_en(i) <= or_reduce_f(ctrl_i.cnt_event and hpmevent(i)) and (not ctrl_i.cpu_debug) and (not ctrl_i.cnt_halt(i));` (line 112), and `cnt_en(1) <= '0';` (line 109). The decision is delivered to each counter's inc_i (connections at lines 131, 150, 185), which the counter entity reads through `inc <= (others => inc_i);` (line 311) into the addition at line 312. Integrity is Established: a counter must advance only when its event is present, ctrl_i.cpu_debug is '0' and its ctrl_i.cnt_halt bit is '0'; a corrupted decision changes the count. Availability is Established under the RTL conditions: the decision is recomputed on every rising edge while rstn_i is '1' (lines 106-112). cnt_en stores the decision (CLOCKED_BY clk_i, occurrence 3, line 108). ctrl_i sets it: this entity reads its fields cnt_event, cpu_debug and cnt_halt to decide (GATES cnt_en on line 108, occurrence 12). ctrl_i is the core's control record: beside the CSR request fields it carries event, debug and halt indications, and it has no acknowledge or read-data field (read data leaves on the separate vector rdata_o), so it is not a complete-transaction transport record. inc_i sets the decision in the counter entity (SOURCES inc, occurrence 2, line 311); inc only replicates it. Indices 0 and 2 drive counters only when ZICNTR_EN (line 121); indices 3 and up only when ZIHPM_EN and HPM_NUM > 0 (line 172). The event mask that also decides line 112 is its own concept.",
+   "related structural assets": [
+    {
+     "asset rtl": "cnt_en",
+     "entity": "neorv32_cpu_counters",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "ctrl_i",
+     "entity": "neorv32_cpu_counters",
+     "realization": "sets",
+     "occurrence": 12,
+     "edge": {"type": "GATES", "partner": "cnt_en"}
+    },
+    {
+     "asset rtl": "inc_i",
+     "entity": "neorv32_cpu_counters_cnt",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "SOURCES", "partner": "inc"}
+    }
+   ]
+  },
+  {
+   "concept": "HPM event-selection configuration -- the held mask that decides which events advance each HPM counter",
+   "security objective": "Integrity",
+   "reasoning": "The configure flow writes `if (cfg_we(i) = '1') then hpmevent(i) <= ctrl_i.csr_wdata(11 downto 0);` (lines 199-200) and forces `hpmevent(i)(cnt_event_tm_c) <= '0';` (line 202); the mask then selects events in `or_reduce_f(ctrl_i.cnt_event and hpmevent(i))` (line 112) and is returned by `cfg_v := cfg_v or std_ulogic_vector(resize(unsigned(hpmevent(i)), XLEN));` (line 224) through hpm_rd (line 227) and rdata_o (line 97). Integrity is Established: the held mask must follow the write rule, and a wrong mask makes counter i advance on the wrong events (line 112). Availability is Established: the mask is held between writes and read back when cfg_re(i) = '1' (line 223). hpmevent stores it (CLOCKED_BY clk_i, occurrence 4, line 200); it is driven this way only when ZIHPM_EN and HPM_NUM > 0 (line 172) for i in 3 to HPM_NUM+2 (line 175), and is tied to zero for higher indices (line 212) and in the disabled build (line 236). ctrl_i sets it: this entity reads its csr_wdata field to store the mask (SOURCES hpmevent on line 200, occurrence 27). rdata_o is the exit port (DERIVES_FROM hpm_rd, occurrence 2, line 97). Not realizing it: hpm_rd only ORs readback terms (line 227) and cfg_re only gates the readback (line 223). No line restricts reading the mask, so confidentiality is not established.",
+   "related structural assets": [
+    {
+     "asset rtl": "hpmevent",
+     "entity": "neorv32_cpu_counters",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "ctrl_i",
+     "entity": "neorv32_cpu_counters",
+     "realization": "sets",
+     "occurrence": 27,
+     "edge": {"type": "SOURCES", "partner": "hpmevent"}
+    },
+    {
+     "asset rtl": "rdata_o",
+     "entity": "neorv32_cpu_counters",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "DERIVES_FROM", "partner": "hpm_rd"}
+    }
+   ]
+  },
+  {
+   "concept": "CSR write access to counters and event registers -- whether a CSR write lands in a counter word or an event-selection register",
+   "security objective": "Integrity",
+   "reasoning": "The start flow decides write eligibility with `cnt_we(i) <= cnt_acc and sel(i) and ctrl_i.csr_we;` (line 83) and `cfg_we(i) <= cfg_acc and sel(i) and ctrl_i.csr_we;` (line 85), where sel compares ctrl_i.csr_addr(3 downto 0) with the index (line 82) and cnt_acc and cfg_acc compare ctrl_i.csr_addr(11 downto 5) with named constants under ZICNTR_EN and ZIHPM_EN (lines 90-94). cnt_we drives each counter's we_i (connections at lines 133, 152, 187), where `if (we_i = '1') and (sel_i = '0') then lo_q <= wdata_i(lo_width_c-1 downto 0);` (lines 302-303) and the high word at lines 325-326 apply it, sel_i (ctrl_i.csr_addr(7), lines 132, 151, 186) choosing the word; cfg_we gates the event mask (line 199). Integrity is Established: a counter word or event mask may change by write only when these predicates hold. Availability is Established under the RTL conditions: a qualified write takes effect at the next rising edge with rstn_i at '1' (lines 301-303, 198-200). ctrl_i sets the decision (GATES cnt_we on line 83 through its csr_we field, occurrence 3); cnt_we and cfg_we compute it (GATED_BY ctrl_i.csr_we, occurrence 2, lines 83 and 85); in the counter entity we_i and sel_i set it (GATES lo_q, occurrence 2, line 302). Not realizing it: cnt_acc, cfg_acc and sel also qualify reads (GATES cnt_re and cfg_re, lines 84 and 86), so they are operands of the decision, not the decision. Whether the requester is entitled to write needs privilege context: ctrl_i.cpu_priv has no local use, so that question is context-dependent and not reported.",
+   "related structural assets": [
+    {
+     "asset rtl": "ctrl_i",
+     "entity": "neorv32_cpu_counters",
+     "realization": "sets",
+     "occurrence": 3,
+     "edge": {"type": "GATES", "partner": "cnt_we"}
+    },
+    {
+     "asset rtl": "cnt_we",
+     "entity": "neorv32_cpu_counters",
+     "realization": "computes",
+     "occurrence": 2,
+     "edge": {"type": "GATED_BY", "partner": "ctrl_i.csr_we"}
+    },
+    {
+     "asset rtl": "cfg_we",
+     "entity": "neorv32_cpu_counters",
+     "realization": "computes",
+     "occurrence": 2,
+     "edge": {"type": "GATED_BY", "partner": "ctrl_i.csr_we"}
+    },
+    {
+     "asset rtl": "we_i",
+     "entity": "neorv32_cpu_counters_cnt",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "GATES", "partner": "lo_q"}
+    },
+    {
+     "asset rtl": "sel_i",
+     "entity": "neorv32_cpu_counters_cnt",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "GATES", "partner": "lo_q"}
+    }
+   ]
+  }
+ ]
+}

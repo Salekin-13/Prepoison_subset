@@ -1,0 +1,61 @@
+{"module name":"neorv32_wdt",
+ "module purpose":"neorv32_wdt is a bus-accessible watchdog that stores enable, lock, strict, and timeout control fields, counts prescaled ticks from clkgen_i while enabled, accepts a password-qualified service write to clear the counter, asserts rstn_o low on timeout or strict illegal access, and records a 2-bit reset cause for later readout.",
+ "use-case flows":[
+   {"flow":"configure","value":"control register fields enable, lock, strict, and timeout written on a bus write to the control address while unlocked","lines":[90,91,92,93,94,95,96,97]},
+   {"flow":"start","value":"watchdog enable state starts operation, requests clock generation, and allows the counter to start on prescaled ticks","lines":[94,130,140]},
+   {"flow":"lock","value":"lock state freezes later control writes and turns a locked control-register write into reset_force","lines":[93,95,99]},
+   {"flow":"operate","value":"watchdog timing state starts, increments on prescaled ticks, and is compared against the programmed timeout","lines":[129,130,131,132,133,134,141,144]},
+   {"flow":"reset","value":"password-qualified service write raises reset_wdt and clears the watchdog counter","lines":[102,103,131,132]},
+   {"flow":"reset","value":"timeout or strict illegal access generates an active-low reset request on rstn_o","lines":[155,156,161]},
+   {"flow":"report","value":"reset cause code stored as external, debug, timeout, or access-reset cause","lines":[168,169,171,172,173,174,175,176]},
+   {"flow":"read out","value":"stored control fields and reset cause returned on a bus read","lines":[109,110,111,112,113]}],
+ "conceptual assets":[
+   {"concept":"Watchdog enable configuration",
+    "security objective":"Integrity",
+    "reasoning":"The enable bit is stored at line 94, drives clock-generator enable at line 140, starts the watchdog timing state at line 130, and gates both reset paths at lines 155-156. Integrity matters because a wrong enable value changes whether the watchdog runs and whether timeout or access-reset generation is active; availability is also established because the stored value is continuously exported on clkgen_en_o and read back at line 109, although the bus transport port is excluded from structural reporting.",
+    "related structural assets":[
+      {"asset rtl":"ctrl.enable","entity":"neorv32_wdt","realization":"stores","occurrence":3,"edge":{"type":"CLOCKED_BY","partner":"clk_i"}},
+      {"asset rtl":"clkgen_en_o","entity":"neorv32_wdt","realization":"exit port","occurrence":2,"edge":{"type":"COPIES","partner":"ctrl.enable"}}]},
+   {"concept":"Watchdog lock configuration",
+    "security objective":"Integrity",
+    "reasoning":"The lock bit is stored at line 95 and tested at line 93: when it is 0, control writes update enable, lock, strict, and timeout; otherwise a control-register write raises reset_force at line 99. Integrity matters because corruption changes whether later watchdog configuration can be modified; availability is established because the lock state is held until reset and returned on reads at line 110, though the bus transport port is excluded from structural reporting.",
+    "related structural assets":[
+      {"asset rtl":"ctrl.lock","entity":"neorv32_wdt","realization":"stores","occurrence":4,"edge":{"type":"CLOCKED_BY","partner":"clk_i"}}]},
+   {"concept":"Strict access-reset configuration",
+    "security objective":"Integrity",
+    "reasoning":"The strict bit is stored at line 96 and is combined with ctrl.enable and reset_force to generate hw_rst_access at line 156. Integrity matters because a wrong strict setting changes whether an illegal watchdog access produces a reset; availability is established because the stored value remains usable for reset generation and is returned on reads at line 112, with the bus transport port excluded from structural reporting.",
+    "related structural assets":[
+      {"asset rtl":"ctrl.strict","entity":"neorv32_wdt","realization":"stores","occurrence":3,"edge":{"type":"CLOCKED_BY","partner":"clk_i"}}]},
+   {"concept":"Watchdog timeout threshold",
+    "security objective":"Integrity",
+    "reasoning":"The timeout field is stored at line 97, compared with the running count at line 144, and thereby controls timeout-reset generation at line 155. Integrity matters because a wrong threshold changes when timeout detection occurs; availability is established because the threshold is held until changed or reset and is read back at line 113, though the bus transport port is excluded from structural reporting.",
+    "related structural assets":[
+      {"asset rtl":"ctrl.timeout","entity":"neorv32_wdt","realization":"stores","occurrence":3,"edge":{"type":"CLOCKED_BY","partner":"clk_i"}}]},
+   {"concept":"Watchdog timing state",
+    "security objective":"Integrity",
+    "reasoning":"The watchdog timing state is held in cnt_started and cnt: cnt_started is updated at line 130, cnt is cleared at line 132 and incremented at line 134, and timeout qualification uses both at line 144. Integrity matters because corrupted timing state changes whether timeout is detected correctly; availability is established because, when enabled and prescaled ticks arrive, the state starts and advances, and it is explicitly cleared on disable or service at lines 131-132.",
+    "related structural assets":[
+      {"asset rtl":"cnt_started","entity":"neorv32_wdt","realization":"stores","occurrence":4,"edge":{"type":"CLOCKED_BY","partner":"clk_i"}},
+      {"asset rtl":"cnt","entity":"neorv32_wdt","realization":"stores","occurrence":4,"edge":{"type":"CLOCKED_BY","partner":"clk_i"}}]},
+   {"concept":"Password-qualified watchdog service event",
+    "security objective":"Integrity",
+    "reasoning":"A write to the service address produces reset_wdt only when bus_req_i.data matches the constant password at lines 102-103, and reset_wdt then clears the counter through line 131. Integrity matters because a false service event clears the watchdog incorrectly and a missed service event prevents the intended counter clear; availability is established because a correct password write generates the one-cycle event needed by the reset flow.",
+    "related structural assets":[
+      {"asset rtl":"reset_wdt","entity":"neorv32_wdt","realization":"stores","occurrence":4,"edge":{"type":"CLOCKED_BY","partner":"clk_i"}}]},
+   {"concept":"Timeout-triggered reset request",
+    "security objective":"Integrity",
+    "reasoning":"The module registers a timeout reset request with hw_rst_timeout <= ctrl.enable and cnt_timeout and prsc_tick at line 155, drives rstn_o low from that request at line 161, and records timeout cause 10 at line 174. Integrity matters because the reset output must assert only for the qualified timeout condition; availability is established because, once the enabled timeout condition occurs, the reset request is produced and exported.",
+    "related structural assets":[
+      {"asset rtl":"hw_rst_timeout","entity":"neorv32_wdt","realization":"stores","occurrence":3,"edge":{"type":"CLOCKED_BY","partner":"clk_i"}},
+      {"asset rtl":"rstn_o","entity":"neorv32_wdt","realization":"exit port","occurrence":2,"edge":{"type":"DERIVES_FROM","partner":"hw_rst_timeout"}}]},
+   {"concept":"Illegal-access-triggered reset request",
+    "security objective":"Integrity",
+    "reasoning":"The module registers an access reset request with hw_rst_access <= ctrl.enable and ctrl.strict and reset_force at line 156, drives rstn_o low from that request at line 161, and records access-reset cause 11 at line 176. Integrity matters because the reset output must assert only for the qualified strict illegal-access condition; availability is established because, when that condition occurs, the reset request is produced and exported.",
+    "related structural assets":[
+      {"asset rtl":"hw_rst_access","entity":"neorv32_wdt","realization":"stores","occurrence":3,"edge":{"type":"CLOCKED_BY","partner":"clk_i"}},
+      {"asset rtl":"rstn_o","entity":"neorv32_wdt","realization":"exit port","occurrence":2,"edge":{"type":"DERIVES_FROM","partner":"hw_rst_access"}}]},
+   {"concept":"Stored reset-cause status",
+    "security objective":"Integrity",
+    "reasoning":"reset_cause is set to 00 on external reset at line 169, to 01 on debug reset at line 172, to 10 on timeout reset at line 174, and to 11 on access reset at line 176; the stored code is returned on reads at line 111. Integrity matters because software-visible status must match the reset source selected by the RTL; availability is established because the code is stored until a later cause update or external reset. The readout path exists in the transport bus response, which is excluded from structural reporting.",
+    "related structural assets":[
+      {"asset rtl":"reset_cause","entity":"neorv32_wdt","realization":"stores","occurrence":4,"edge":{"type":"CLOCKED_BY","partner":"clk_i"}}]}]}

@@ -1,0 +1,50 @@
+{
+ "module name": "neorv32_hwspinlock",
+ "module purpose": "neorv32_hwspinlock holds 32 one-bit lock flags in the register lock_q. A strobed read with address bit 7 low returns the addressed flag's previous value (masked by the one-hot index decode sel) and sets that flag. A strobed write to the same address clears it. A read with address bit 7 high returns all 32 flags, and every strobe is acknowledged on bus_rsp_o.",
+ "use-case flows": [
+  {
+   "flow": "start",
+   "value": "a strobed bus access that addresses one lock flag (address bits 6..2 decoded into the one-hot sel, address bit 7 low) or the whole flag word (address bit 7 high)",
+   "lines": [44, 51, 66, 67]
+  },
+  {
+   "flow": "operate",
+   "value": "acquire or release of the addressed lock flag: lock_q(i) takes not rw on a qualified access, so a read sets the flag and a write clears it",
+   "lines": [44, 45, 51]
+  },
+  {
+   "flow": "read out",
+   "value": "previous state of the addressed lock flag (lock_q and sel), or all 32 flags (lock_q), returned on a strobed read; zero otherwise",
+   "lines": [65, 66, 67, 68, 70]
+  },
+  {
+   "flow": "report",
+   "value": "acknowledge that echoes the strobe; error fixed to '0'",
+   "lines": [63, 64]
+  },
+  {
+   "flow": "reset",
+   "value": "all lock flags cleared to '0' and the response set to rsp_terminate_c while rstn_i is '0'",
+   "lines": [41, 42, 60, 61]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Hardware lock state -- which of the 32 spinlocks are currently held",
+   "security objective": "Integrity",
+   "reasoning": "The acquire/release flow writes each flag with `lock_q(i) <= not bus_req_i.rw;` (line 45) only under `(bus_req_i.stb = '1') and (bus_req_i.addr(7) = '0') and (sel(i) = '1')` (line 44): a read sets the addressed flag, a write clears it. The read-out flow returns `lock_q and sel` (line 68) or `lock_q` (line 70) from the same clocked process edge, so by VHDL signal semantics the requester receives the flag value from before the update: a test-and-set whose returned bit says whether the lock was free. Integrity is Established: if a flag changes other than by a qualified access to its own index (lines 44, 51) or by reset (lines 41-42), the returned acquire result no longer matches the acquire/release history, so two requesters can both read a free lock or a released lock can stay held. Availability is also Established under the implemented conditions: each flag is held between accesses (storage edge, CLOCKED_BY clk_i at line 45), is cleared only by a qualified write or rstn_i = '0', and is returned on every strobed read (lines 66-70). Confidentiality is not established: lines 68 and 70 return the flags to any strobed read with no restricting condition. lock_q stores the state (occurrence 3, CLOCKED_BY clk_i, line 45). Mapping limitation: the setting input bus_req_i.rw (SOURCES lock_q, line 45) and the readback exit bus_rsp_o.data (COPIES lock_q, line 70; DERIVES_FROM lock_q and sel, line 68) are fields of bus_req_i and bus_rsp_o, records that carry complete transactions (addr, data, ben, stb, rw; ack, err, data), so the transport rule excludes them whole and by field. sel (line 51) is the decoded lock index: an operand of the update condition (GATES lock_q, line 44) and a mask on the readback (SOURCES bus_rsp_o.data, line 68); it does not hold the lock state and is not the update decision itself, so it is not listed. clk_i and rstn_i drive SEQUENCES and RESETS and are excluded.",
+   "related structural assets": [
+    {
+     "asset rtl": "lock_q",
+     "entity": "neorv32_hwspinlock",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {
+      "type": "CLOCKED_BY",
+      "partner": "clk_i"
+     }
+    }
+   ]
+  }
+ ]
+}

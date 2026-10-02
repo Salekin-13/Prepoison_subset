@@ -1,0 +1,75 @@
+{"module name": "neorv32_fifo",
+ "conceptual assets": [
+  {
+   "concept": "Data stored in the FIFO (words written into internal storage and produced on read)",
+   "security objective": "Integrity",
+   "reasoning": "Writes store wdata_i into the block's storage and reads drive rdata_o: for fifo_depth>1 the write processes perform \"if (we = '1') then fifo_mem(to_integer(unsigned(w_pnt(w_pnt'left-1 downto 0)))) <= wdata_i;\" (reset and no-reset variants) and for fifo_depth=1 the processes perform \"fifo_reg <= wdata_i;\". Read paths assign rdata_o from storage (async: \"rdata_o <= fifo_mem(to_integer(unsigned(r_pnt_ff(r_pnt_ff'left-1 downto 0))));\", sync: \"rdata_o <= fifo_mem(to_integer(unsigned(r_pnt(...))));\", small: \"rdata_o <= fifo_reg;\"). The RTL shows the write and read flows and indexing; corrupting stored words or their selection changes readback, so integrity of the stored FIFO contents is established. Structural realizations map the input that sets written data and the registers/array that store and export it.",
+   "related structural assets": [
+    {"asset rtl": "wdata_i", "entity": "neorv32_fifo", "realization": "sets"},
+    {"asset rtl": "fifo_mem", "entity": "neorv32_fifo", "realization": "stores"},
+    {"asset rtl": "fifo_reg", "entity": "neorv32_fifo", "realization": "stores"},
+    {"asset rtl": "rdata_o", "entity": "neorv32_fifo", "realization": "exit port"}
+   ]
+  },
+  {
+   "concept": "Write-enable decision that controls when write operations update FIFO storage and advance the write pointer",
+   "security objective": "Integrity",
+   "reasoning": "The entity computes an internal write decision 'we' from the input and status and uses it to perform writes: \"we <= we_i when (FIFO_SAFE = false) else (we_i and free);\" and write processes condition on \"if (we = '1') then ...\" to update fifo_mem/fifo_reg and w_pnt (via w_nxt). Incorrect setting of this decision would allow or prevent writes, violating the write/update flow implemented in the RTL. The input that supplies the request and the internal computed decision realize the concept.",
+   "related structural assets": [
+    {"asset rtl": "we_i", "entity": "neorv32_fifo", "realization": "sets"},
+    {"asset rtl": "we", "entity": "neorv32_fifo", "realization": "computes"}
+   ]
+  },
+  {
+   "concept": "Read-enable decision that controls when reads advance the read pointer and allow data to be consumed",
+   "security objective": "Integrity",
+   "reasoning": "The entity computes an internal read decision 're' from the input and availability and uses it to advance r_pnt via r_nxt and thereby to consume data: \"re <= re_i when (FIFO_SAFE = false) else (re_i and avail);\" and r_nxt is incremented when \"re = '1'\". The computed read decision gates pointer advancement and the read-side data flow; corruption of this decision would alter dequeuing behavior, establishing Integrity. The input request and the internal decision are the realizations.",
+   "related structural assets": [
+    {"asset rtl": "re_i", "entity": "neorv32_fifo", "realization": "sets"},
+    {"asset rtl": "re", "entity": "neorv32_fifo", "realization": "computes"}
+   ]
+  },
+  {
+   "concept": "FIFO pointer state (write and read pointers) that select memory indices and determine occupancy/status",
+   "security objective": "Integrity",
+   "reasoning": "Pointer registers hold the FIFO indices used for indexing storage and computing status: pointer_reg process updates w_pnt and r_pnt on rising_edge(clk_i) or resets them when rstn_i='0' (\"w_pnt <= w_nxt; r_pnt <= r_nxt\"). Writes index fifo_mem by to_integer(unsigned(w_pnt(...))) and reads index by r_pnt or r_pnt_ff; full/empty/level are computed from comparisons of w_pnt and r_pnt. The RTL demonstrates these pointers are the authoritative stored indices; corrupting them changes addresses, status and read/write behavior, so their integrity is established.",
+   "related structural assets": [
+    {"asset rtl": "w_pnt", "entity": "neorv32_fifo", "realization": "stores"},
+    {"asset rtl": "r_pnt", "entity": "neorv32_fifo", "realization": "stores"},
+    {"asset rtl": "r_pnt_ff", "entity": "neorv32_fifo", "realization": "stores"}
+   ]
+  },
+  {
+   "concept": "FIFO occupancy count (level) reported to level_o",
+   "security objective": "Integrity",
+   "reasoning": "For fifo_depth>1 the RTL computes occupancy as a numeric difference: \"level <= std_ulogic_vector(unsigned(w_pnt) - unsigned(r_pnt));\" and a process copies that vector into the 32-bit output: level_extend assigns level_o(level'left downto 0) <= level(...). The occupancy value is therefore produced by the block and exported; corrupting this computed count would misreport occupancy to consumers, so integrity of the occupancy count is established.",
+   "related structural assets": [
+    {"asset rtl": "level", "entity": "neorv32_fifo", "realization": "computes"},
+    {"asset rtl": "level_o", "entity": "neorv32_fifo", "realization": "exit port"}
+   ]
+  },
+  {
+   "concept": "FIFO status flags and availability signals (full, empty, free, avail, half) and their exported status outputs",
+   "security objective": "Integrity",
+   "reasoning": "The RTL computes fullness/emptiness and derived availability and half-full indicators from the pointers: e.g. \"match <= '1' when (...)\"; \"full <= '1' when (r_pnt(...) /= w_pnt(...)) and (match = '1') else '0'\"; \"empty <= '1' when (...)\"; then \"free <= not full; avail <= not empty; half <= level(level'left-1) or full;\" These signals are used to gate we/re when FIFO_SAFE and are exported via free_o/avail_o/half_o (combinationally when FIFO_RSYNC=false or registered in sync_status when FIFO_RSYNC=true). Because flows depend on correct status for gating and reporting, integrity of these status signals is established. The internal computed flags and the status output ports realize the concept.",
+   "related structural assets": [
+    {"asset rtl": "full", "entity": "neorv32_fifo", "realization": "computes"},
+    {"asset rtl": "empty", "entity": "neorv32_fifo", "realization": "computes"},
+    {"asset rtl": "free", "entity": "neorv32_fifo", "realization": "computes"},
+    {"asset rtl": "avail", "entity": "neorv32_fifo", "realization": "computes"},
+    {"asset rtl": "half", "entity": "neorv32_fifo", "realization": "computes"},
+    {"asset rtl": "free_o", "entity": "neorv32_fifo", "realization": "exit port"},
+    {"asset rtl": "avail_o", "entity": "neorv32_fifo", "realization": "exit port"},
+    {"asset rtl": "half_o", "entity": "neorv32_fifo", "realization": "exit port"}
+   ]
+  },
+  {
+   "concept": "Clear command that resets pointers (FIFO clear/flush event)",
+   "security objective": "Integrity",
+   "reasoning": "The RTL makes w_nxt and r_nxt zero when clear_i = '1' (\"w_nxt <= (others => '0') when (clear_i = '1') else ...\" and similarly for r_nxt), and pointer_reg will load those zeros into w_pnt/r_pnt on the next clock edge. Assertion of clear_i therefore resets pointer state (clearing the FIFO view); incorrect or unauthorized assertion modifies FIFO occupancy and indexing, so integrity of the clear command is established. The input that the entity consumes realizes this concept.",
+   "related structural assets": [
+    {"asset rtl": "clear_i", "entity": "neorv32_fifo", "realization": "sets"}
+   ]
+  }
+ ]
+}

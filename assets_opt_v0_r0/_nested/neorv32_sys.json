@@ -1,0 +1,112 @@
+{
+ "module name": "neorv32_sys",
+ "module purpose": "neorv32_sys_reset turns the external reset and the watchdog and debugger reset-request inputs into an external reset output and a system reset output, each released only after four rising edges of clk_i, and exports registered copies of the two request inputs; neorv32_sys_clock runs a 12-bit prescaler counter while any enable_i bit is set and drives one-cycle clock-enable pulses on clk_en_o when selected counter bits rise.",
+ "use-case flows": [
+  {
+   "flow": "reset",
+   "value": "reset-generator shift registers and all four reset outputs forced to '0' while rstn_ext_i = '0'",
+   "lines": [44, 45, 46, 47, 48, 68, 69, 70]
+  },
+  {
+   "flow": "operate",
+   "value": "external reset release: ones shifted into sreg_ext on each rising edge, rstn_ext_o released when all bits are '1'",
+   "lines": [49, 51, 52]
+  },
+  {
+   "flow": "operate",
+   "value": "system reset release: sreg_sys cleared while a watchdog or debugger request is low, otherwise shifted with ones; rstn_sys_o released when all bits are '1'",
+   "lines": [54, 55, 57, 59]
+  },
+  {
+   "flow": "report",
+   "value": "watchdog and debugger reset requests registered on the clock edge and exported on xrstn_wdt_o and xrstn_ocd_o",
+   "lines": [71, 72, 73]
+  },
+  {
+   "flow": "reset",
+   "value": "prescaler run flag, count and previous count cleared while rstn_i = '0'",
+   "lines": [124, 125, 126, 127]
+  },
+  {
+   "flow": "start",
+   "value": "prescaler run request: OR of the enable_i bits captured in en",
+   "lines": [129, 130]
+  },
+  {
+   "flow": "operate",
+   "value": "prescaler count advanced by one per edge while en = '1', cleared otherwise; previous count captured in cnt2",
+   "lines": [131, 133, 135]
+  },
+  {
+   "flow": "operate",
+   "value": "divided clock-enable pulses: one-cycle pulse on each clk_en_o bit when its counter bit rises",
+   "lines": [140, 141, 142, 143, 144, 145, 146, 147]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "System reset state -- whether the system is held in reset, released only after the external reset is inactive and no watchdog or debugger request was seen for four clock edges",
+   "security objective": "Integrity",
+   "reasoning": "The system-reset flow clears sreg_sys when `if (rstn_wdt_i = '0') or (rstn_dbg_i = '0') then` (line 54) holds (line 55), otherwise shifts in a '1' with `sreg_sys <= sreg_sys(sreg_sys'left-1 downto 0) & '1';` (line 57), and drives `rstn_sys_o <= and_reduce_f(sreg_sys);` (line 59); lines 44, 47 and 48 force both to '0' while rstn_ext_i = '0'. Integrity: rstn_sys_o must stay low while a request was seen in the last four edges or the external reset is active; a corrupted sreg_sys or rstn_sys_o breaks that relation, and rstn_sys_o delivers the value through an output port to consumers not supplied. Availability is also Established: with both request inputs high and rstn_ext_i high, the release occurs after four rising edges (lines 57, 59). sreg_sys stores (CLOCKED_BY clk_i, occurrence 4, line 57; self-updating); rstn_sys_o is exit port ahead of its own storage (DERIVES_FROM sreg_sys, occurrence 3, line 59). rstn_wdt_i and rstn_dbg_i set the decision (GATES sreg_sys, occurrence 2, line 54): they are tested inside the clock-edge arm, not in the reset arm, so they drive no RESETS record and the reset-input exclusion does not apply. rstn_ext_i drives RESETS (lines 44, 68) and clk_i drives SEQUENCES (lines 49, 71): both excluded. The map check lists this entity's CLOCKED_BY records as lacking a partner, but clk_i occurrence 3 holds SEQUENCES to these targets at line 49 and the RTL confirms the edge.",
+   "related structural assets": [
+    {"asset rtl": "sreg_sys", "entity": "neorv32_sys_reset", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "rstn_sys_o", "entity": "neorv32_sys_reset", "realization": "exit port", "occurrence": 3, "edge": {"type": "DERIVES_FROM", "partner": "sreg_sys"}},
+    {"asset rtl": "rstn_wdt_i", "entity": "neorv32_sys_reset", "realization": "sets", "occurrence": 2, "edge": {"type": "GATES", "partner": "sreg_sys"}},
+    {"asset rtl": "rstn_dbg_i", "entity": "neorv32_sys_reset", "realization": "sets", "occurrence": 2, "edge": {"type": "GATES", "partner": "sreg_sys"}}
+   ]
+  },
+  {
+   "concept": "External reset release state -- the reset output that follows the external reset and is released four clock edges after it deasserts",
+   "security objective": "Integrity",
+   "reasoning": "`sreg_ext <= sreg_ext(sreg_ext'left-1 downto 0) & '1';` (line 51) and `rstn_ext_o <= and_reduce_f(sreg_ext);` (line 52) release rstn_ext_o only after four rising edges of clk_i with rstn_ext_i high; lines 44-46 clear both while rstn_ext_i = '0'. Integrity: the exported reset must stay low during the external reset and for the shift sequence after it; it leaves the entity through an output port to consumers not supplied, so delivery of exactly this value is Established. Availability: the release is produced at the fourth edge after rstn_ext_i rises (lines 51-52). sreg_ext stores (CLOCKED_BY clk_i, occurrence 3, line 51; self-updating); rstn_ext_o is exit port ahead of its storage (DERIVES_FROM sreg_ext, occurrence 3, line 52). rstn_ext_i drives RESETS and is never reported.",
+   "related structural assets": [
+    {"asset rtl": "sreg_ext", "entity": "neorv32_sys_reset", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "rstn_ext_o", "entity": "neorv32_sys_reset", "realization": "exit port", "occurrence": 3, "edge": {"type": "DERIVES_FROM", "partner": "sreg_ext"}}
+   ]
+  },
+  {
+   "concept": "Watchdog reset request -- the request value consumed by the reset generator and reported out in registered form",
+   "security objective": "Integrity",
+   "reasoning": "`xrstn_wdt_o <= rstn_wdt_i;` (line 72) registers the watchdog request on each rising edge of clk_i (line 71) and exports it; line 69 forces '0' while rstn_ext_i = '0'. Integrity: the consumer outside the entity must receive exactly the registered request, Established from line 72 under the boundary assumption. Availability: the value is refreshed at every rising edge outside external reset (lines 71-72). rstn_wdt_i sets: this entity reads it both to decide the system reset (line 54) and to store it (CARRIES xrstn_wdt_o, occurrence 3, line 72), so it is not an input used only for unchanged forwarding; xrstn_wdt_o is exit port ahead of storage (COPIES rstn_wdt_i, occurrence 3, line 72).",
+   "related structural assets": [
+    {"asset rtl": "rstn_wdt_i", "entity": "neorv32_sys_reset", "realization": "sets", "occurrence": 3, "edge": {"type": "CARRIES", "partner": "xrstn_wdt_o"}},
+    {"asset rtl": "xrstn_wdt_o", "entity": "neorv32_sys_reset", "realization": "exit port", "occurrence": 3, "edge": {"type": "COPIES", "partner": "rstn_wdt_i"}}
+   ]
+  },
+  {
+   "concept": "Debugger reset request -- the request value consumed by the reset generator and reported out in registered form",
+   "security objective": "Integrity",
+   "reasoning": "`xrstn_ocd_o <= rstn_dbg_i;` (line 73) registers the debugger request on each rising edge of clk_i (line 71) and exports it; line 70 forces '0' while rstn_ext_i = '0'. Integrity: the consumer outside the entity must receive exactly the registered request, Established from line 73 under the boundary assumption. Availability: refreshed at every rising edge outside external reset (lines 71, 73). rstn_dbg_i sets: it is read to decide the system reset (line 54) and stored (CARRIES xrstn_ocd_o, occurrence 3, line 73); xrstn_ocd_o is exit port ahead of storage (COPIES rstn_dbg_i, occurrence 3, line 73).",
+   "related structural assets": [
+    {"asset rtl": "rstn_dbg_i", "entity": "neorv32_sys_reset", "realization": "sets", "occurrence": 3, "edge": {"type": "CARRIES", "partner": "xrstn_ocd_o"}},
+    {"asset rtl": "xrstn_ocd_o", "entity": "neorv32_sys_reset", "realization": "exit port", "occurrence": 3, "edge": {"type": "COPIES", "partner": "rstn_dbg_i"}}
+   ]
+  },
+  {
+   "concept": "Prescaler run decision -- whether the clock prescaler counts, taken from the enable request bits",
+   "security objective": "Integrity",
+   "reasoning": "`en <= or_reduce_f(enable_i);` (line 129) captures whether any request bit is set, and `if (en = '1') then` (line 130) advances cnt (line 131) or clears it (line 133). Integrity: the prescaler must run exactly when a request bit was set at the previous edge; a corrupted en stops or starts every divided enable (lines 140-147). Availability: while any enable_i bit is '1', en becomes '1' at the next rising edge outside reset (line 129). enable_i sets (SOURCES en, occurrence 2, line 129): it is a request vector read to compute a decision; it drives no SEQUENCES or RESETS record, is wired to no sub-unit, and enables a counter rather than the clock of other logic, so the clock-enable exclusion does not apply. en stores (CLOCKED_BY clk_i, occurrence 3, line 129) and also gates cnt (GATES cnt, occurrence 4, line 130). rstn_i (RESETS, line 124) and clk_i (SEQUENCES, line 128) are excluded.",
+   "related structural assets": [
+    {"asset rtl": "enable_i", "entity": "neorv32_sys_clock", "realization": "sets", "occurrence": 2, "edge": {"type": "SOURCES", "partner": "en"}},
+    {"asset rtl": "en", "entity": "neorv32_sys_clock", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Prescaler count state -- the running count and its one-edge-delayed copy from which every divided enable is timed",
+   "security objective": "Integrity",
+   "reasoning": "`cnt <= std_ulogic_vector(unsigned(cnt) + 1);` (line 131) advances the count on each rising edge while en = '1', `cnt <= (others => '0');` (line 133) clears it otherwise, and `cnt2 <= cnt;` (line 135) holds the previous count; rstn_i clears both (lines 126-127). Integrity: the enable pulses of lines 140-147 are correct only if cnt follows +1 per edge and cnt2 lags it by exactly one edge. Availability: the count advances at every rising edge while en = '1' (line 131). cnt stores (CLOCKED_BY clk_i, occurrence 3, line 131; listed as self-updating); cnt2 stores (CLOCKED_BY clk_i, occurrence 3, line 135), an unchanged capture that still stores. The flow graph lists cnt as constant-valued because its reset and clear drivers are constants, but line 131 computes it from itself.",
+   "related structural assets": [
+    {"asset rtl": "cnt", "entity": "neorv32_sys_clock", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "cnt2", "entity": "neorv32_sys_clock", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Divided clock-enable pulses -- the one-cycle enable events produced for each division ratio and exported",
+   "security objective": "Integrity",
+   "reasoning": "`clk_en_o(clk_div2_c) <= cnt(0) and (not cnt2(0));` (line 140) and lines 141-147 produce a one-cycle pulse on each clk_en_o bit when counter bit 0, 1, 2, 5, 6, 9, 10 or 11 rises. Integrity: each pulse must occur exactly at that bit's 0-to-1 transition; the pulses leave the entity through an output port to consumers not supplied, so delivery of exactly these events is Established from lines 140-147. Availability: pulses are produced only while en = '1' (lines 130-133); no unconditional guarantee is claimed. clk_en_o is exit port (GATED_BY cnt, occurrence 2, line 140). The map writes the single-bit and-operands as GATES, so the flow graph lists clk_en_o as not reached by data; the RTL shows it computed from cnt and cnt2. It is an output port that exports an enable, which the clock-enable rule does not exclude.",
+   "related structural assets": [
+    {"asset rtl": "clk_en_o", "entity": "neorv32_sys_clock", "realization": "exit port", "occurrence": 2, "edge": {"type": "GATED_BY", "partner": "cnt"}}
+   ]
+  }
+ ]
+}

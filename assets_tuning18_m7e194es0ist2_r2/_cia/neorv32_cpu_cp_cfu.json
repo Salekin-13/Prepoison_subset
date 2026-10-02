@@ -1,0 +1,171 @@
+{
+ "module name": "neorv32_cpu_cp_cfu",
+ "concepts": [
+  {
+   "concept": "Stored CFU key words (the 4\u00d732-bit words held in key_mem)",
+   "kind": "configuration",
+   "writers": "Line 179: key_mem(to_integer(unsigned(csr_addr_i))) <= csr_wdata_i when csr_we_i = '1' (clocked on rising_edge(clk_i) in process csr_write_access). Line 176: key_mem <= (others => (others => '0')) on reset when rstn_i = '0'.",
+   "observers": "Line 185: csr_rdata_o <= key_mem(to_integer(unsigned(csr_addr_i))) (direct CSR readback). Lines 236-238 -> 222/224 -> 249: key_mem(...) is read combinationally into tmp_z (lines 236-237) -> tmp_r (238) -> xtea.res (222/224) -> result_o (249), so results exported on result_o can also reveal key material.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 185,
+     "via": "csr_rdata_o",
+     "reason": "key_mem contents are read back on csr_rdata_o (line 185) and also influence result_o (line 249), so an external observer can learn the stored key words."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 179,
+     "via": "csr_wdata_i",
+     "reason": "csr_wdata_i writes key_mem at line 179 under csr_we_i without any guard preventing writes while the cipher uses key_mem (lines 236-237), so an external CSR write can change keys during operation."
+    },
+    "availability": {
+     "answer": "no",
+     "line": 179,
+     "via": null,
+     "reason": "key_mem is read combinationally by the core (lines 236-237) and is only driven by CSR writes at line 179 and reset at 176; there is no external enable/mode that can block core access to key_mem."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 179,
+     "via": null,
+     "reason": "key_mem is driven only by CSR writes (line 179) and reset (line 176); there is no alternate test/debug override or separate driver in the RTL."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Operation operands \u2014 the input words latched into xtea.opa and xtea.opb used by the core",
+   "kind": "data",
+   "writers": "Lines 205-206: on rising_edge(clk_i) inside xtea_core, when (start_i = '1') and (rtype_i = r3type_c) the RTL assigns xtea.opa <= rs1_i (line 205) and xtea.opb <= rs2_i (line 206). Lines 194-195: reset to zeros when rstn_i = '0'.",
+   "observers": "Lines 232-235: xtea.opa/xtea.opb drive tmp_a/tmp_b/tmp_x/tmp_y combinationally; this data flows into tmp_r (line 238) and xtea.res (lines 222/224) which is exported on result_o (line 249), so operands can be inferred from result_o.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 249,
+     "via": "result_o",
+     "reason": "operands latched from rs1_i/rs2_i (lines 205-206) influence the computed result that is exported on result_o (line 249), so their values can be observed outside the module."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 205,
+     "via": "rs1_i, rs2_i",
+     "reason": "xtea.opa/opb are clocked from rs1_i/rs2_i at lines 205-206 under the start/rtype gate and there is no RTL guard preventing a new start/write while the algorithm is using the latched operands, so external inputs can change them at times that affect the computation."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 204,
+     "via": "start_i",
+     "reason": "the capture of rs1_i/rs2_i into xtea.opa/opb is gated by (start_i = '1') and rtype_i = r3type_c (line 204), so external control of start_i/rtype_i can prevent operand capture and block operation."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 205,
+     "via": null,
+     "reason": "xtea.opa and xtea.opb are driven only by the start-gated copies from rs1_i/rs2_i (lines 205-206); no alternate debug/test override exists in the RTL."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Round accumulator and key-selector (xtea.sum) that controls which key word is used and round sequencing",
+   "kind": "state",
+   "writers": "Line 214: xtea.sum <= xtea.opa when funct3_i(2) = '1'. Line 216: xtea.sum <= xtea.sum + xtea_delta_c when funct3_i(1 downto 0) = xtea_enc_v0_c(1 downto 0). Line 218: xtea.sum <= xtea.sum - xtea_delta_c when funct3_i(1 downto 0) = xtea_dec_v1_c(1 downto 0). Line 196: reset to zero when rstn_i = '0'. All assignments are clocked in the xtea_core process (rising_edge(clk_i)).",
+   "observers": "Lines 236-237: xtea.sum is indexed into key_mem(to_integer(unsigned(xtea.sum(...)))) to produce tmp_z which flows (line 238) into the arithmetic that drives xtea.res (222/224) and so can affect result_o (249); xtea.sum is therefore observable indirectly via result_o.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 249,
+     "via": "result_o",
+     "reason": "xtea.sum selects key_mem words (lines 236-237) and thereby affects the exported result (result_o at line 249), so an external observer could infer the accumulator state and it should be considered secret depending on use."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 216,
+     "via": "funct3_i",
+     "reason": "xtea.sum is updated by internal assignments (e.g. addition at line 216) under control of funct3_i while xtea.done(0) = '1', so external control of funct3_i can alter the accumulator during operation and change which key word is selected."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 213,
+     "via": "funct3_i",
+     "reason": "funct3_i selects which update path for xtea.sum (starting at line 213) and can choose values that do not perform the expected update, allowing an external input to stall round progression and prevent forward progress."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 214,
+     "via": null,
+     "reason": "xtea.sum is driven only by the internal xtea_core assignments (lines 214/216/218) and reset; there is no alternate debug/test path that overrides the accumulator in the RTL."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Computed CFU result (xtea.res) that the block exports on result_o",
+   "kind": "data",
+   "writers": "Lines 222 and 224: on rising_edge(clk_i) inside xtea_core, when xtea.done(0) = '1' the RTL assigns xtea.res <= std_ulogic_vector(unsigned(tmp_b) + unsigned(tmp_r)) (line 222) or xtea.res <= std_ulogic_vector(unsigned(tmp_b) - unsigned(tmp_r)) (line 224) depending on funct3_i(1); Line 197: reset to zeros when rstn_i = '0'. Line 249 forwards xtea.res to result_o when the result case is selected.",
+   "observers": "Line 249: result_o <= xtea.res (when rtype_i = r3type_c and funct3_i matches cipher cases); line 250: valid_o <= xtea.done(1) indicates when the exported result is valid, so external observers can read xtea.res via result_o/valid_o (lines 249-250).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 249,
+     "via": "result_o",
+     "reason": "xtea.res is driven out on result_o (line 249) when the cipher case is selected, so the computed result is observable outside the module and should be treated as possibly sensitive."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 179,
+     "via": "csr_wdata_i",
+     "reason": "external CSR writes (csr_wdata_i at line 179) can change key_mem that is read combinationally (lines 236-237) and thus modify tmp_z/tmp_r used by the xtea.res assignments (lines 222/224), so an external writer can alter the computed result while the operation runs."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 249,
+     "via": "rtype_i, funct3_i",
+     "reason": "result_o is only assigned xtea.res for rtype_i = r3type_c and when funct3_i matches the cipher cases (result_select around lines 243-249); external control of rtype_i/funct3_i can prevent the computed result from being exported."
+    },
+    "undermined behavior": {
+     "answer": "yes-RTL",
+     "line": 252,
+     "via": "funct3_i",
+     "reason": "funct3_i = xtea_init_c selects a special case in result_select (line 252-253) that returns zeros (and valid='1'), thereby bypassing or replacing the actual computed xtea.res output."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Operation completion state (xtea.done) that gates when a result is valid and exported",
+   "kind": "state",
+   "writers": "Line 193: xtea.done <= (others => '0') on reset (rstn_i = '0'). Lines 200-201: on each clock xtea.done(0) <= '0' (line 200) and xtea.done(1) <= xtea.done(0) (line 201). Line 207: xtea.done(0) <= '1' when (start_i = '1') and (rtype_i = r3type_c).",
+   "observers": "Line 250: valid_o <= xtea.done(1) (result_select) makes the completion state visible externally; result_select also gates result_o using xtea.done(1) (line 250), so completion is observable via valid_o/result timing.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 250,
+     "via": "valid_o",
+     "reason": "xtea.done(1) is driven onto valid_o (line 250) and therefore the block's completion status is visible outside and can reveal what the module is doing."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 207,
+     "via": "start_i",
+     "reason": "xtea.done(0) is set directly by start_i and rtype_i at line 207 without additional protection, so external control can set or replay completion state while operations are in progress."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 207,
+     "via": "start_i",
+     "reason": "the completion bit is only seeded by asserting start_i with the correct rtype (line 207), so if start_i/rtype_i are not asserted the block cannot progress to a completion state and cannot present valid results."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 201,
+     "via": null,
+     "reason": "xtea.done is produced by the internal sequencing logic (lines 200-207) and reset (line 193); the RTL contains no alternate debug/test override that directly forces or bypasses the done register."
+    }
+   },
+   "security objective": "Confidentiality"
+  }
+ ],
+ "_problems": []
+}

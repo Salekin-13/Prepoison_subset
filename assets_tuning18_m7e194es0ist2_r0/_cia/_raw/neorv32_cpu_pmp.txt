@@ -1,0 +1,302 @@
+{
+  "module name": "neorv32_cpu_pmp",
+  "concepts": [
+    {
+      "concept": "PMP region configuration (per-region permission bits, address-matching mode, lock bit L)",
+      "kind": "configuration",
+      "writers": "Reset drives pmpcfg <= (others => '0') in csr_pmpcfg process on rstn_i = '0' (line 125); CSR writes drive pmpcfg bits on rising_edge(clk_i) when (pmpcfg_we(i/4) = '1') and (pmpcfg(i)(cfg_l_c) = '0') (guard at line 127) with data from ctrl_i.csr_wdata (assignments at lines 129,130,131,133,138-141,143,145); pmpcfg_we is produced by csr_we_cfg (pmpcfg_we <= (others => '0') line 112 and pmpcfg_we(... ) <= '1' line 114).",
+      "observers": "pmpcfg is copied to cfg_rd (line 203), packed into cfg_rd32 (line 236) and driven onto csr_o when CSR read selects configuration (csr_read_access assigns csr_o <= cfg_rd32, line 190); pmpcfg also feeds permission logic (perm_gen, line 323) and thus influences fail/fault outputs (fail assign line 354 and fault_o assign line 363).",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 190,
+          "via": "csr_o",
+          "reason": "The CSR read path copies pmpcfg to cfg_rd and into cfg_rd32 and drives csr_o when a CSR read selects the PMP config (csr_read_access -> csr_o at line 190), so external software can read the configuration; the integrator may treat these bits as secret."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 127,
+          "via": "ctrl_i.csr_wdata",
+          "reason": "pmpcfg fields are written from ctrl_i.csr_wdata under the guard (pmpcfg_we(i/4) = '1') and (pmpcfg(i)(cfg_l_c) = '0') (if at line 127) and these bits decide permissions used by perm_gen (line 323), so CSR writes can change protection while the system runs."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 127,
+          "via": "pmpcfg(i)(cfg_l_c) (settable via ctrl_i.csr_wdata)",
+          "reason": "The CSR-write guard checks the lock bit pmpcfg(i)(cfg_l_c) (line 127) and that lock bit is itself written from CSR (line 145), so an external CSR can set L and freeze further pmpcfg updates, preventing reconfiguration."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 129,
+          "via": null,
+          "reason": "pmpcfg is driven only by the csr_pmpcfg process from CSR writes (assignments such as line 129) and there is no alternate debug/test override path in the RTL."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "PMP region base addresses (per-region pmpaddr values used for matching)",
+      "kind": "configuration",
+      "writers": "Reset drives pmpaddr <= (others => '0') in csr_pmpaddr process on rstn_i = '0' (line 168); CSR writes assign pmpaddr(i) <= \"00\" & ctrl_i.csr_wdata(XLEN-3 downto 0) on rising_edge(clk_i) when (pmpaddr_we(i) = '1') and (pmpcfg(i)(cfg_l_c) = '0') (guard at line 170) with additional gating for i < NUM_REGIONS-1 (lines 171-174); pmpaddr_we is produced by csr_we_addr (pmpaddr_we <= (others => '0') line 156 and pmpaddr_we(... ) <= '1' line 158).",
+      "observers": "pmpaddr bits are copied to addr_rd in address_read_back (addr_rd(i) <= pmpaddr(i)(XLEN-3 downto pmp_lsb_c-2), lines 207-208) and csr_read_access drives addr_rd onto csr_o when CSR address selects address readback (csr_o <= addr_rd(...), line 192); pmpaddr also participates in cmp_ge/cmp_lt (lines 295-296) and thus affects fail/fault outputs (lines 354,363).",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 192,
+          "via": "csr_o",
+          "reason": "pmpaddr is copied into addr_rd (lines 207-208) and csr_read_access drives addr_rd onto csr_o when address readback is selected (line 192), so external software can read the stored addresses; integrator may treat them as secret."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 170,
+          "via": "ctrl_i.csr_wdata",
+          "reason": "pmpaddr(i) is written from ctrl_i.csr_wdata when pmpaddr_we(i)='1' and pmpcfg(i)(cfg_l_c)='0' (guard at line 170) and pmpaddr is used by the comparators (cmp_ge/cmp_lt, lines 295-296) to select regions, so CSR writes can change which region matches during operation."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 170,
+          "via": "pmpcfg(i)(cfg_l_c) (settable via ctrl_i.csr_wdata)",
+          "reason": "pmpaddr writes are gated by the lock bit pmpcfg(i)(cfg_l_c) (checked at line 170), and an external CSR write can set that lock (line 145) or refrain from asserting pmpaddr_we (line 158) to stop/address updates, freezing address configuration."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 173,
+          "via": null,
+          "reason": "pmpaddr is driven only by the csr_pmpaddr process from CSR write data (assignment example at line 173) and the RTL contains no separate debug/test override path for pmpaddr."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Access address used for match (acc_addr derived from pc_nxt or load/store address)",
+      "kind": "data",
+      "writers": "acc_addr is driven combinationally by acc_addr <= ctrl_i.pc_nxt when (ctrl_i.lsu_mo_we = '0') else addr_ls_i (line 244), sourcing ctrl_i.pc_nxt (line 244) or addr_ls_i (line 244).",
+      "observers": "acc_addr is consumed by comparison logic (cmp_na line 285, cmp_ge/ cmp_lt lines 295-296) and thus influences match and the fail/fault chain; its effect is observable externally via fault_o (fail->fault path lines 354 and 363).",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 363,
+          "via": "fault_o",
+          "reason": "acc_addr is selected from ctrl_i.pc_nxt or addr_ls_i (line 244) and participates in match/comparison logic that gates fail(0) and therefore fault_o (line 363), so observing fault_o can leak information about the accessed address; integrator may treat addresses as sensitive."
+        },
+        "integrity": {
+          "answer": "yes-assumed",
+          "line": 244,
+          "via": "ctrl_i.pc_nxt / addr_ls_i",
+          "reason": "acc_addr is taken directly from external inputs (ctrl_i.pc_nxt or addr_ls_i) via the combinational selection at line 244, so whichever master drives those inputs can change the access address used for matching."
+        },
+        "availability": {
+          "answer": "no",
+          "line": 244,
+          "via": null,
+          "reason": "acc_addr is a combinational selection from inputs (line 244) and is not gated or stalled inside this PMP module, so nothing internal to the module can freeze its update."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 244,
+          "via": null,
+          "reason": "acc_addr has a single combinational driver (line 244) selecting between pc_nxt and addr_ls_i and there is no separate debug/test bypass in the RTL."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Access privilege used in permission decisions (acc_priv from cpu_priv or lsu_priv)",
+      "kind": "data",
+      "writers": "acc_priv is driven combinationally by acc_priv <= ctrl_i.cpu_priv when (ctrl_i.lsu_mo_we = '0') else ctrl_i.lsu_priv (line 245), sourcing ctrl_i.cpu_priv or ctrl_i.lsu_priv.",
+      "observers": "acc_priv is used to compute allow in perm_gen (lines 321-341) and seeds the fail chain (fail(NUM_REGIONS) <= '1' when acc_priv /= priv_mode_m_c at line 351), thus its effect is observable externally via fault_o (line 363).",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 363,
+          "via": "fault_o",
+          "reason": "acc_priv is selected from ctrl inputs (line 245) and influences the fail/ fault decision (seed at line 351 and fault_o at line 363), so external observation of faults can reveal privilege information; integrator may treat privilege as sensitive."
+        },
+        "integrity": {
+          "answer": "yes-assumed",
+          "line": 245,
+          "via": "ctrl_i.cpu_priv / ctrl_i.lsu_priv",
+          "reason": "acc_priv is taken directly from ctrl inputs (line 245) and is used by perm_gen (lines 321-341) to compute allow, so an external agent that drives those inputs can change the privilege used for permission decisions."
+        },
+        "availability": {
+          "answer": "no",
+          "line": 245,
+          "via": null,
+          "reason": "acc_priv is combinationally selected from inputs (line 245) and there is no internal enable or stall that can freeze it inside the PMP module."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 245,
+          "via": null,
+          "reason": "acc_priv has a single combinational source from ctrl_i fields (line 245) and the RTL provides no alternate debug/test override."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Region-match decision (which PMP region matches the access: TOR / NAPOT selection)",
+      "kind": "decision",
+      "writers": "match(r) is assigned in match_gen process (process header at line 301) with conditional assignments: match(r) <= cmp_ge(r) and cmp_lt(r) (line 305), match(r) <= cmp_ge(r) and (not cmp_ge(r+1)) (line 307), match(r) <= cmp_na(r) (line 310), or match(r) <= '0' (line 312); the logic depends on pmpcfg, cmp_ge, cmp_lt, cmp_na (lines 301-314).",
+      "observers": "match is used to select which region's allow is applied in the fail reduction (fail(r) <= not allow(r) when (match(r) = '1') else fail(r+1), line 354) and thus influences fault_o (line 363), which is observable externally.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 354,
+          "via": "fault_o",
+          "reason": "match selects which region's deny/allow feeds the fail chain (assignment at line 354) and that chain drives fault_o (line 363), so external observation of faults can leak which region matched; integrator may treat the matching decision as sensitive."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 305,
+          "via": "pmpcfg / pmpaddr / acc_addr (driven via ctrl_i.csr_wdata, ctrl_i.pc_nxt, addr_ls_i)",
+          "reason": "match is computed from pmpcfg, pmpaddr and acc_addr (match_gen, lines 301-314) and those inputs are writable/driven from CSR or the control bus, so external CSR writes or input changes can alter which region matches while accesses are decided."
+        },
+        "availability": {
+          "answer": "no",
+          "line": 305,
+          "via": null,
+          "reason": "match is combinationally evaluated in match_gen (assignment at line 305) and there is no run-enable or stall input inside the PMP that can freeze the match computation."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 305,
+          "via": null,
+          "reason": "match is produced only by the match_gen logic (lines 301-314) and the RTL contains no alternate debug/test bypass that substitutes a different match result."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Per-region allow decision (allow(r)) that grants or denies the access",
+      "kind": "decision",
+      "writers": "allow(r) is assigned in perm_gen (process starting line 318) with assignments for instruction access (lines 321-326 -> example assignment line 323), read access (lines 328-333 -> example line 330) and write access (lines 335-340 -> example line 337), each controlled by ctrl_i.lsu_mo_we, ctrl_i.lsu_rw and acc_priv, and sourcing pmpcfg bits.",
+      "observers": "allow(r) is consumed by the fail reduction (fail(r) <= not allow(r) when (match(r) = '1') else fail(r+1), line 354) and consequently affects the external fault_o (line 363).",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 354,
+          "via": "fault_o",
+          "reason": "allow decisions flow into the fail chain (line 354) that drives fault_o (line 363), so observing fault events can reveal whether particular accesses were allowed; integrator may treat permission decisions as sensitive."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 323,
+          "via": "pmpcfg / acc_priv / ctrl_i.lsu_mo_we / ctrl_i.lsu_rw",
+          "reason": "allow is computed from pmpcfg and acc_priv under control of lsu_mo_we/lsu_rw in perm_gen (assign at line 323), and those inputs are externally writable/controllable (CSR writes, control bus), so an external actor can change allow while an access is being decided."
+        },
+        "availability": {
+          "answer": "no",
+          "line": 323,
+          "via": null,
+          "reason": "allow is computed combinationally in the perm_gen process (assignment example at line 323) and no internal run-enable/stall blocks its evaluation."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 323,
+          "via": null,
+          "reason": "allow is produced only by perm_gen from pmpcfg/acc_priv/control inputs and there is no alternate debug/test override of the allow assignments in the RTL."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Aggregated access-fail decision (fail vector, and specifically fail(0) used to fault)",
+      "kind": "decision",
+      "writers": "fail(NUM_REGIONS) is set from the privilege seed: fail(NUM_REGIONS) <= '1' when (acc_priv /= priv_mode_m_c) else '0' (line 351); for r = NUM_REGIONS-1 downto 0, fail(r) is assigned by the reduction chain fail(r) <= not allow(r) when (match(r) = '1') else fail(r+1) (line 354).",
+      "observers": "fail(0) is sampled to drive the external fault output: fault_o <= (not ctrl_i.cpu_debug) and fail(0) on rising_edge(clk_i) (line 363), so the fail outcome is externally observable via fault_o.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 363,
+          "via": "fault_o",
+          "reason": "fail(0) is used to drive the external fault output (line 363), so observing fault_o reveals whether the aggregated fail chain determined an access failure and thereby leaks internal match/allow results; integrator may treat this as sensitive."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 354,
+          "via": "allow / match (driven by pmpcfg/pmpaddr/ctrl inputs)",
+          "reason": "fail entries are assigned from allow and match (line 354); allow and match are derived from pmpcfg/pmpaddr/acc_priv which are writable/controllable from CSR and control inputs, so external changes can alter fail and thereby change enforcement."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 351,
+          "via": "acc_priv",
+          "reason": "fail(NUM_REGIONS) is seeded from acc_priv (line 351), an external control input, so an actor controlling privilege inputs can force the seed value and thereby cause the fail chain to assert and block progress."
+        },
+        "undermined behavior": {
+          "answer": "yes-RTL",
+          "line": 363,
+          "via": "ctrl_i.cpu_debug",
+          "reason": "cpu_debug gates the external fault output (fault_o <= (not ctrl_i.cpu_debug) and fail(0) at line 363), allowing a debug mode to suppress reporting of fail states even when fail indicates an access denial."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Fault indication exported (fault_o) that signals a disallowed access",
+      "kind": "event",
+      "writers": "fault_o is reset to '0' on rstn_i = '0' (line 361) and on rising_edge(clk_i) it is assigned fault_o <= (not ctrl_i.cpu_debug) and fail(0) (line 363), i.e., driven by cpu_debug and the internal fail vector.",
+      "observers": "fault_o is an output port (declaration line 40) and is therefore externally observable when driven (assignment at line 363).",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 363,
+          "via": "fault_o",
+          "reason": "fault_o is an external port driven from internal fail(0) and cpu_debug (line 363), so external observers learn when accesses are disallowed and the integrator may treat those events as sensitive."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 363,
+          "via": "ctrl_i.cpu_debug",
+          "reason": "fault_o is assigned from (not ctrl_i.cpu_debug) and fail(0) on the rising clock (line 363), so the cpu_debug input (and any inputs that influence fail(0)) can change the externally observed fault signal."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 363,
+          "via": "ctrl_i.cpu_debug",
+          "reason": "ctrl_i.cpu_debug directly gates fault_o at line 363, enabling an external debug mode to suppress (block) fault reporting and thereby affect availability of the fault indication."
+        },
+        "undermined behavior": {
+          "answer": "yes-RTL",
+          "line": 363,
+          "via": "ctrl_i.cpu_debug",
+          "reason": "cpu_debug selects a different externally visible behavior for fault_o (it masks the signal at line 363), providing a special-mode bypass of external fault reporting."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "CSR readback values (packed cfg_rd32 and addr_rd driven onto csr_o)",
+      "kind": "data",
+      "writers": "cfg_rd(i) <= pmpcfg(i) (line 203) and cfg_rd32(i) <= cfg_rd(...) packs cfg_rd into 32-bit words (line 236); addr_rd(i) is produced by address_read_back process (addr_rd <= (others => '0') line 207; addr_rd(XLEN-3 downto pmp_lsb_c-2) <= pmpaddr(...) line 208; and adjustments at lines 209-221); CSR readback selection drives csr_o in csr_read_access (csr_o <= cfg_rd32 at line 190 or csr_o <= addr_rd at line 192 or zeros at line 195).",
+      "observers": "csr_o is an output port (declaration line 36) and csr_read_access drives csr_o with cfg_rd32 or addr_rd when ctrl_i.csr_addr selects PMP config/address (lines 190 and 192), so packed cfg_rd32 and addr_rd are externally observable via csr_o.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 190,
+          "via": "csr_o",
+          "reason": "The CSR read path drives cfg_rd32 or addr_rd onto the external port csr_o when ctrl_i.csr_addr selects the PMP CSR (csr_read_access assigns csr_o at line 190/192), so readback exposes configuration and addresses; integrator may treat those values as secret."
+        },
+        "integrity": {
+          "answer": "yes-assumed",
+          "line": 203,
+          "via": "pmpcfg / pmpaddr (driven by ctrl_i.csr_wdata)",
+          "reason": "cfg_rd and addr_rd are derived from pmpcfg and pmpaddr (cfg_rd <= pmpcfg at line 203 and addr_rd assigned from pmpaddr at lines 207-208) which are themselves writable via CSR, so readback values can be changed by CSR writes and their trust depends on integration."
+        },
+        "availability": {
+          "answer": "no",
+          "line": 186,
+          "via": null,
+          "reason": "csr_o is produced combinationally by csr_read_access (process starting at line 186) and will reflect cfg_rd32 or addr_rd whenever ctrl_i.csr_addr selects the PMP CSR; there is no internal run-enable that freezes readback."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 190,
+          "via": null,
+          "reason": "csr_o is driven only by the csr_read_access selection (example assignment at line 190) and the RTL includes no alternate debug/test path that substitutes different readback values."
+        }
+      },
+      "security objective": "Confidentiality"
+    }
+  ]
+}

@@ -1,0 +1,171 @@
+{
+ "module name": "neorv32_cpu_cp_muldiv",
+ "concepts": [
+  {
+   "concept": "Decoded multiply/divide command and operation selection (which instruction the unit should execute and whether to start mul or div)",
+   "kind": "decision",
+   "writers": "valid_cmd is assigned combinationally from the control input fields (ctrl_i) at lines 97-99 (valid_cmd <= '1' when (ctrl_i.alu_cp_alu = '1') and (ctrl_i.ir_opcode(5) = '1') and (ctrl_i.ir_funct12(11 downto 5) = \"0000001\") and ((ctrl_i.ir_funct3(2) = '0') or ((ctrl_i.ir_funct3(2) = '1') and DIVISION_EN)) else '0'); the start strobes derive from valid_cmd at mul.start (line 154) and div.start (line 155).",
+   "observers": "No direct output port exposes valid_cmd; its effect is visible indirectly when an operation runs (completion visible on valid_o at line 145 and the result on res_o at lines 321/325/327/329).",
+   "answers": {
+    "confidentiality": {
+     "answer": "no",
+     "line": 97,
+     "via": "ctrl_i",
+     "reason": "valid_cmd is a combinational decode of ctrl_i instruction fields (line 97) and therefore conveys no information beyond inputs the instruction writer already holds."
+    },
+    "integrity": {
+     "answer": "yes-assumed",
+     "line": 97,
+     "via": "ctrl_i",
+     "reason": "valid_cmd is produced directly from external control inputs (line 97), so an external writer of ctrl_i can change the decision and thereby choose whether/which unit starts."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 154,
+     "via": "valid_cmd (ctrl_i)",
+     "reason": "the start strobes (mul.start/div.start) are gated from valid_cmd (lines 154-155), so external control inputs can prevent or force operation start and block progress."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 97,
+     "via": "ctrl_i",
+     "reason": "valid_cmd has a single combinational driver from the ctrl_i instruction fields (line 97) and there is no alternate debug/test override in the RTL."
+    }
+   },
+   "security objective": "Integrity"
+  },
+  {
+   "concept": "Operand values supplied to the unit (rs1_i and rs2_i) that are consumed to compute product or quotient/remainder",
+   "kind": "data",
+   "writers": "Inputs rs1_i and rs2_i are port inputs (lines 34-35); internal captures/copies occur on operation start: parallel mul captures into mul.dsp_x/mul.dsp_y at lines 170-173 (guard: if mul.start = '1'), serial mul copies rs1_i into mul.prod at line 212 (guard: if mul.start = '1'), divider captures/copies occur at lines 263-273 (div.quotient/div.rs2_abs assignments) under div.start = '1' and sign checks.",
+   "observers": "The operand-derived results leave the module on res_o (operation_result process) when ctrl.out_en = '1' (res_o written at lines 321 and selected from mul.prod at lines 325/327 or div.res at line 329); completion is also signalled on valid_o (line 145).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 325,
+     "via": "res_o",
+     "reason": "rs1_i/rs2_i are external input data and processed results derived from them are output on res_o (e.g. mul low bits at line 325 or div result at line 329), so the inputs' information can be observed externally via the result."
+    },
+    "integrity": {
+     "answer": "yes-assumed",
+     "line": 171,
+     "via": "rs1_i, rs2_i",
+     "reason": "the RTL shows internal copies of the operand ports (mul.dsp_x/mul.dsp_y at lines 170-173 and divider captures at 263-273), so external writers of rs1_i/rs2_i can change the operands and thus alter the computation."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 154,
+     "via": "mul.start / div.start (valid_cmd, ctrl_i)",
+     "reason": "operand capture into the unit is gated by the start strobes (mul.start/div.start at lines 154-155 driven from valid_cmd), so external control of valid_cmd/ctrl_i can prevent operand capture and stall progress."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 171,
+     "via": "mul.start",
+     "reason": "operands are captured only by the regular start-paths (e.g. mul.dsp_x/mul.dsp_y at line 171) and there is no alternate debug/test override that replaces these operand sources in the RTL."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Operand signedness decisions (ctrl.rs1_is_signed, ctrl.rs2_is_signed) that determine signed vs unsigned interpretation of inputs",
+   "kind": "decision",
+   "writers": "Signals ctrl.rs1_is_signed and ctrl.rs2_is_signed are assigned combinationally from ctrl_i.ir_funct3 at lines 148-151 (ctrl.rs1_is_signed <= '1' when ctrl_i.ir_funct3 = op_mulh_c | ... else '0'; ctrl.rs2_is_signed similarly at lines 150-151).",
+   "observers": "These signals are internal only (not output ports); their effect is visible indirectly in arithmetic results (res_o at lines 325/327/329) but there is no direct readback port.",
+   "answers": {
+    "confidentiality": {
+     "answer": "no",
+     "line": 148,
+     "via": "ctrl_i.ir_funct3",
+     "reason": "the signedness flags are purely a direct decode of ctrl_i.ir_funct3 (line 148) and do not appear on any module output themselves, so the RTL does not reveal additional secret data beyond the instruction fields."
+    },
+    "integrity": {
+     "answer": "yes-assumed",
+     "line": 148,
+     "via": "ctrl_i.ir_funct3",
+     "reason": "ctrl.rs1_is_signed / ctrl.rs2_is_signed are driven from external instruction bits (lines 148-151), so an external writer of ctrl_i can change these interpretation flags and thus alter how operands are treated."
+    },
+    "availability": {
+     "answer": "no",
+     "line": 148,
+     "via": "ctrl_i.ir_funct3",
+     "reason": "these signals are combinationally derived from ctrl_i.ir_funct3 (line 148) and update whenever the inputs change; there is no input-controllable stall/halt in the RTL that freezes them."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 148,
+     "via": "ctrl_i.ir_funct3",
+     "reason": "there is a single combinational driver from ctrl_i.ir_funct3 (lines 148-151) and no debug/test override or alternate assignment path in the RTL."
+    }
+   },
+   "security objective": "Integrity"
+  },
+  {
+   "concept": "Operation sequencing state and countdown (ctrl.state and ctrl.cnt) that determine when an operation is in progress and when it completes",
+   "kind": "state",
+   "writers": "ctrl.state is updated in the control process: reset to S_IDLE at line 107, set to S_DONE in the fast-mul path at line 122, set to S_BUSY at line 124, set to S_DONE from S_BUSY at line 132 (guard includes or_reduce_f(ctrl.cnt) = '0' or ctrl_i.cpu_trap = '1'), and set to S_IDLE with ctrl.out_en at line 138; ctrl.cnt is reset at line 108, reloaded to XLEN-2 at line 113, and decremented at line 130 while busy.",
+   "observers": "The state and countdown determine valid_o (valid_o <= '1' when ctrl.state = S_DONE at line 145) and ctrl.out_en (set in state exit at line 137) which in turn gates res_o (operation_result process lines 321-331), so external observers see operation state via valid_o (line 145) and res_o (lines 321/325/329).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 145,
+     "via": "valid_o",
+     "reason": "ctrl.state is a status register whose S_DONE value is exposed on valid_o (line 145) and its transitions reveal the unit's activity, so its value (and what it reveals) can be observed externally."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 131,
+     "via": "ctrl_i.cpu_trap",
+     "reason": "the control process allows external inputs to alter sequencing (ctrl.state is forced to S_DONE when ctrl_i.cpu_trap = '1' per line 131), so an external input can change the state while an operation is in progress."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 131,
+     "via": "ctrl_i.cpu_trap",
+     "reason": "an external input (ctrl_i.cpu_trap) appears in the completion condition (line 131) and can force or abort progress, so outside signals can stop or force the state machine."
+    },
+    "undermined behavior": {
+     "answer": "yes-RTL",
+     "line": 122,
+     "via": "FAST_MUL_EN (generic) / ctrl_i.ir_funct3",
+     "reason": "a special-path selection (FAST_MUL_EN with the funct3 check) bypasses the busy sequencing and sets ctrl.state to S_DONE immediately (line 121-122), providing an alternate completion path."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Final operation result (the value delivered to the requester on res_o, taken from the multiplier product or divider result)",
+   "kind": "data",
+   "writers": "res_o is driven in the operation_result process: initialized to zeros at line 321 and, when ctrl.out_en = '1' (line 322), assigned from mul.prod(31 downto 0) for MUL (line 325), mul.prod(63 downto 32) for MULH variants (line 327), or from div.res for divide/remainder (line 329); those sources themselves are written by the multiplier (mul.prod at lines 184/208/211/214/215 depending on FAST_MUL_EN) and the divider (div.res at line 300).",
+   "observers": "res_o is the module's external output port (declaration line 37) and is driven by the operation_result process (lines 321, 325, 327, 329), so the result is directly observable outside the module.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 325,
+     "via": "res_o",
+     "reason": "the final result is presented on the external output res_o (e.g. mul low bits at line 325 or div.res at line 329), so data derived from internal operands is observable outside the IP."
+    },
+    "integrity": {
+     "answer": "no",
+     "line": 325,
+     "via": "res_o",
+     "reason": "res_o is driven internally from the computed sources (mul.prod or div.res selected in the operation_result process at lines 325/327/329) and there is no external writer that can directly overwrite the output in the RTL."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 322,
+     "via": "ctrl.out_en",
+     "reason": "res_o is gated by ctrl.out_en (operation_result checks ctrl.out_en at line 322), and ctrl.out_en/state can be controlled by inputs (ctrl_i) so external signals can prevent or force the output from being presented."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 325,
+     "via": "res_o",
+     "reason": "the RTL has a single selection mechanism (case on ctrl_i.ir_funct3 guarded by ctrl.out_en at lines 323-329) and no separate debug/test override that substitutes a different result source."
+    }
+   },
+   "security objective": "Confidentiality"
+  }
+ ],
+ "_problems": []
+}

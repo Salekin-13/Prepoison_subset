@@ -1,0 +1,176 @@
+{
+ "module name": "neorv32_gptmr",
+ "module purpose": "neorv32_gptmr is a bus-programmed timer: on qualified bus writes it stores an enable bit and a 3-bit prescaler select in ctrl and a 32-bit threshold in timer.thres (lines 73-84); it counts ticks selected from clkgen_i (lines 117-124), compares the count with the threshold (line 131), raises a pending interrupt on a match and drives it on irq_o (lines 141-154), exports the enable on clkgen_en_o (line 106), and returns control bits, the pending flag, the threshold and the count on bus reads (lines 87-98).",
+ "use-case flows": [
+  {
+   "flow": "configure",
+   "value": "timer control setting (enable bit and prescaler select bits) taken from bus write data and held in ctrl",
+   "lines": [73, 74, 75, 76, 77, 78, 79]
+  },
+  {
+   "flow": "configure",
+   "value": "32-bit compare threshold taken from bus write data and held in timer.thres",
+   "lines": [73, 74, 83, 84]
+  },
+  {
+   "flow": "start",
+   "value": "enable bit releasing the counter and interrupt logic and exported to the clock generator on clkgen_en_o",
+   "lines": [76, 106, 118, 119, 141, 148]
+  },
+  {
+   "flow": "operate",
+   "value": "prescaled tick selected from clkgen_i, counter increment on tick, threshold comparison and counter wrap on match",
+   "lines": [117, 118, 119, 120, 121, 122, 124, 131]
+  },
+  {
+   "flow": "report",
+   "value": "pending interrupt set on a match while enabled, cleared by the clear request or by disable, driven on irq_o",
+   "lines": [71, 81, 141, 142, 143, 144, 145, 148, 154]
+  },
+  {
+   "flow": "read out",
+   "value": "control bits, pending flag, threshold and count returned on a bus read",
+   "lines": [87, 88, 89, 90, 91, 92, 94, 95, 96, 97, 98]
+  },
+  {
+   "flow": "reset",
+   "value": "ctrl, threshold, clear request, tick, count and pending flag cleared while rstn_i is low",
+   "lines": [61, 62, 63, 64, 65, 113, 114, 115, 138, 139]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Timer enable -- whether counting, interrupt generation and the external clock generator are switched on",
+   "security objective": "Integrity",
+   "reasoning": "The enable bit is written by a qualified bus write, `ctrl(ctrl_en_c) <= bus_req_i.data(ctrl_en_c);` (line 76, GATED_BY bus_req_i.stb, bus_req_i.rw and bus_req_i.addr at lines 73-75), and held in ctrl (CLOCKED_BY clk_i, occurrence 3). The operate and report flows depend on it: while it is 0, `timer.count <= (others => '0');` (line 119, GATED_BY ctrl) and `irq_pnd <= '0';` (line 148, GATED_BY ctrl); while it is 1, the count advances on ticks (lines 120-124) and a match sets irq_pnd (lines 141-143). It leaves the entity through `clkgen_en_o <= ctrl(ctrl_en_c);` (line 106, DERIVES_FROM ctrl at occurrence 2 of clkgen_en_o), whose consumer is not in this file, so the integrity of the delivered value is Established at the boundary. Integrity: a wrong enable starts or stops counting and interrupt generation against the written setting. Availability is also Established under the RTL conditions: with enable 1 and reset inactive, the counter and pending logic update on each clock edge. Confidentiality is not established: line 89 returns the bit on any qualified read. bus_req_i and bus_rsp_o are records carrying complete transactions (addr, data, ben, stb, rw; ack, err, data), so they are neither a setting point nor a readback exit; ctrl is the element inside the block that stores the value.",
+   "related structural assets": [
+    {
+     "asset rtl": "ctrl",
+     "entity": "neorv32_gptmr",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "clkgen_en_o",
+     "entity": "neorv32_gptmr",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "DERIVES_FROM", "partner": "ctrl"}
+    }
+   ]
+  },
+  {
+   "concept": "Prescaler selection -- which clkgen_i input bit paces the counter",
+   "security objective": "Integrity",
+   "reasoning": "The three prescaler bits are written by `ctrl(ctrl_prsc0_c) <= bus_req_i.data(ctrl_prsc0_c);` and the two following lines (lines 77-79) and held in ctrl (CLOCKED_BY clk_i, occurrence 4, line 77). The operate flow uses them as a run-time index: `timer.tick <= clkgen_i(to_integer(unsigned(ctrl(ctrl_prsc2_c downto ctrl_prsc0_c))));` (line 117, SELECTS timer.tick at ctrl occurrence 12). Integrity: a wrong selection changes which input paces the counter, so the count rate, the time of the threshold match (line 131) and the interrupt (line 143) deviate from the written setting. Availability: the selection is held between writes and applied on every clock edge (line 117). Confidentiality is not established: lines 90-92 return the bits on any qualified read. The setting is not exported through a non-transport port; ctrl is its only eligible reference.",
+   "related structural assets": [
+    {
+     "asset rtl": "ctrl",
+     "entity": "neorv32_gptmr",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Prescaled count tick -- the registered tick event that allows the counter to advance",
+   "security objective": "Integrity",
+   "reasoning": "The module computes the tick by sampling the selected clkgen_i bit, `timer.tick <= clkgen_i(...)` (line 117, CLOCKED_BY clk_i at occurrence 3, DERIVES_FROM clkgen_i, SELECTED_BY ctrl), and the counting flow depends on it: `elsif (timer.tick = '1') then` (line 120, GATES timer.count) decides whether the count increments (line 124) or wraps (line 122). Integrity: an extra or missing tick makes the count, and therefore the match and the interrupt, occur at the wrong time. Availability: the tick is re-sampled on every clock edge while reset is inactive (line 116-117). clkgen_i is read by this entity to compute and store the tick (SOURCES timer.tick at occurrence 2, line 117), so it sets the concept; it drives no SEQUENCES or RESETS and is wired to no sub-unit, so the clock and reset exclusion does not apply.",
+   "related structural assets": [
+    {
+     "asset rtl": "timer.tick",
+     "entity": "neorv32_gptmr",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "clkgen_i",
+     "entity": "neorv32_gptmr",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "SOURCES", "partner": "timer.tick"}
+    }
+   ]
+  },
+  {
+   "concept": "Compare threshold -- the count value at which the timer matches and wraps",
+   "security objective": "Integrity",
+   "reasoning": "The threshold is written by `timer.thres <= bus_req_i.data;` (line 84, COPIES bus_req_i.data, GATED_BY stb, rw and addr at lines 73, 74, 83) and held between writes (CLOCKED_BY clk_i, occurrence 3). The operate and report flows depend on it: `timer.match <= '1' when (timer.count = timer.thres) else '0';` (line 131, CONSTRAINS timer.match at occurrence 5) decides the counter wrap (line 122) and the interrupt (line 143). Integrity: a corrupted threshold moves the match point and so the period and the interrupt time. Availability: the value is held between writes and compared continuously (line 131). Confidentiality is not established: line 96 returns it on any qualified read, and that readback leaves through the transport record bus_rsp_o, which is not an eligible exit.",
+   "related structural assets": [
+    {
+     "asset rtl": "timer.thres",
+     "entity": "neorv32_gptmr",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Timer count -- the current counter state",
+   "security objective": "Integrity",
+   "reasoning": "timer.count is self-updating state: `timer.count <= std_ulogic_vector(unsigned(timer.count) + 1);` (line 124, CLOCKED_BY clk_i at occurrence 6, DERIVES_FROM timer.count), cleared while disabled (line 119), on a match (line 122) and in reset (line 115). The operate flow depends on it through the comparison at line 131 (CONSTRAINS timer.match at occurrence 8), and the read-out flow returns it (line 98). Integrity: a corrupted count changes when the match and the interrupt occur and what a read reports. Availability: the count advances on each tick while enabled (lines 118-124). Confidentiality is not established: line 98 returns it on any qualified read through the transport record bus_rsp_o.",
+   "related structural assets": [
+    {
+     "asset rtl": "timer.count",
+     "entity": "neorv32_gptmr",
+     "realization": "stores",
+     "occurrence": 6,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Threshold match decision -- whether the count has reached the threshold",
+   "security objective": "Integrity",
+   "reasoning": "The module computes the decision in `timer.match <= '1' when (timer.count = timer.thres) else '0';` (line 131, CONSTRAINED_BY timer.count and timer.thres at occurrence 3). Two flows depend on it: the counter wraps when it is 1 (line 121-122, GATES timer.count at occurrence 2) and the pending interrupt is set when it is 1 while enabled (line 142-143, GATES irq_pnd at occurrence 4). Integrity: a wrong decision wraps the counter early or late and raises or suppresses the interrupt. Availability: the comparison is combinational and holds whenever count equals threshold. The flow graph lists timer.match as not reached from any source because its inputs arrive by CONSTRAINS, a control edge; the RTL line 131 shows the dependence on count and threshold.",
+   "related structural assets": [
+    {
+     "asset rtl": "timer.match",
+     "entity": "neorv32_gptmr",
+     "realization": "computes",
+     "occurrence": 3,
+     "edge": {"type": "CONSTRAINED_BY", "partner": "timer.count"}
+    }
+   ]
+  },
+  {
+   "concept": "Pending timer interrupt -- the interrupt request raised on a threshold match",
+   "security objective": "Integrity",
+   "reasoning": "The report flow sets `irq_pnd <= '1';` when enabled and `timer.match = '1'` (lines 141-143, CLOCKED_BY clk_i at occurrence 4, GATED_BY ctrl and timer.match), clears it on the clear request (lines 144-145) or when disabled (line 148), and drives it out by `irq_o <= irq_pnd;` (line 154, COPIES irq_pnd at occurrence 2 of irq_o). The consumer of irq_o is not in this file, so the integrity of the delivered request is Established at the boundary; line 94 also reports it on a read. Integrity: a wrong pending flag raises a spurious interrupt or loses a real one. Availability is also Established under the RTL conditions: once set while enabled, the flag holds until a clear request, disable or reset (lines 141-148), and is driven continuously on irq_o. irq_pnd stores the request; irq_o is the exit port.",
+   "related structural assets": [
+    {
+     "asset rtl": "irq_pnd",
+     "entity": "neorv32_gptmr",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "irq_o",
+     "entity": "neorv32_gptmr",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "COPIES", "partner": "irq_pnd"}
+    }
+   ]
+  },
+  {
+   "concept": "Interrupt clear request -- the one-cycle command that clears the pending interrupt",
+   "security objective": "Integrity",
+   "reasoning": "A qualified control write stores `irq_clr <= bus_req_i.data(ctrl_irq_clr_c);` (line 81, CLOCKED_BY clk_i at occurrence 4, DERIVES_FROM bus_req_i.data), and line 71 returns it to 0 on every other clock edge, so it is a one-cycle command held in a register. The report flow depends on it: `elsif (irq_clr = '1') then irq_pnd <= '0';` (lines 144-145, GATES irq_pnd at occurrence 5) applies when no match is present. Integrity: a spurious clear drops a pending interrupt and a missing clear leaves it asserted. Availability: the command takes effect on the edge after the write while enabled and with no simultaneous match (lines 141-145); a match on that edge takes priority (line 142). The setting input is inside the transport record bus_req_i, so irq_clr is the only eligible reference.",
+   "related structural assets": [
+    {
+     "asset rtl": "irq_clr",
+     "entity": "neorv32_gptmr",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,130 @@
+{
+  "module name": "neorv32_hwspinlock",
+  "module purpose": "Implements a 32-entry hardware spinlock array: it captures bus requests (bus_req_i), updates per-index lock bits (lock_q(i)) on clock edges when the request and address select an index, and drives a bus response (bus_rsp_o) that ACKs requests and returns lock state (masked by the index select).",
+  "use-case flows": [
+    {
+      "flow": "start",
+      "value": "bus request strobe (bus_req_i.stb) that begins a read or write access",
+      "lines": [
+        44,
+        63,
+        66
+      ]
+    },
+    {
+      "flow": "configure",
+      "value": "write to a lock bit: update lock_q(i) from the request (lock_q(i) <= not bus_req_i.rw) under index selection",
+      "lines": [
+        43,
+        44,
+        45,
+        51
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "readback of lock state delivered on bus_rsp_o.data (either masked by sel when addr(7)='0' or the full lock_q vector)",
+      "lines": [
+        65,
+        66,
+        67,
+        68,
+        70
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "bus response fields produced for each request: ack (bus_rsp_o.ack) and err (bus_rsp_o.err)",
+      "lines": [
+        63,
+        64
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "reset forces lock bits and the response port to known values",
+      "lines": [
+        41,
+        42,
+        60,
+        61
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Bus write eligibility (per-index) \u2014 the module's decision whether a given bus request should update a particular lock_q(i)",
+      "security objective": "Integrity",
+      "reasoning": "The RTL makes the write to lock_q(i) conditional: the spinlock process updates lock_q(i) only when (bus_req_i.stb = '1') and (bus_req_i.addr(7) = '0') and (sel(i) = '1') (guard at line 44) and sel(i) is computed from the address equality at line 51. If these inputs or the sel computation are wrong, the implemented write decision (whether a lock bit is updated) will be incorrect. Map evidence: the write guard at line 44 appears in the analyser's GATES records (bus_req_i.stb and bus_req_i.addr gate the lock update at the occurrence on line 44) and sel is computed from bus_req_i.addr at line 51 (map records show a GATED_BY on sel at the occurrence for line 51). See the related structural assets below (each entry cites the element occurrence and the map record used as the edge).",
+      "related structural assets": [
+        {
+          "asset rtl": "bus_req_i",
+          "entity": "neorv32_hwspinlock",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATES",
+            "partner": "lock_q"
+          }
+        },
+        {
+          "asset rtl": "bus_req_i",
+          "entity": "neorv32_hwspinlock",
+          "realization": "sets",
+          "occurrence": 5,
+          "edge": {
+            "type": "GATES",
+            "partner": "sel"
+          }
+        },
+        {
+          "asset rtl": "sel",
+          "entity": "neorv32_hwspinlock",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "bus_req_i.addr"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Spinlock state \u2014 the 32-bit register vector (lock_q) that holds each lock bit",
+      "security objective": "Integrity",
+      "reasoning": "The RTL implements lock state as edge-triggered registers that are reset and conditionally updated, and whose exact bit values are returned to requesters. Evidence in the RTL: lock_q(i) is reset to '0' on rstn_i (line 41-42), it is updated on the rising edge of clk_i when the write guard holds (lines 43-45: the guarded assignment lock_q(i) <= not bus_req_i.rw), and the response path returns lock_q (lines 66-70: bus_rsp_o.data <= lock_q and sel or <= lock_q). The relationship map records lock_q as a CLOCKED_BY target on the assignment at line 45 and a RESET_BY target at line 42, and shows bus_rsp_o.data deriving from lock_q at line 68 (DERIVES_FROM) and copying lock_q at line 70 (COPIES). These map records and the RTL lines establish that the integrity of lock_q is required for correct update and correct readout.",
+      "related structural assets": [
+        {
+          "asset rtl": "lock_q",
+          "entity": "neorv32_hwspinlock",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "bus_req_i",
+          "entity": "neorv32_hwspinlock",
+          "realization": "sets",
+          "occurrence": 4,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "lock_q"
+          }
+        },
+        {
+          "asset rtl": "bus_rsp_o",
+          "entity": "neorv32_hwspinlock",
+          "realization": "exit port",
+          "occurrence": 6,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "lock_q"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,204 @@
+{
+ "module name": "neorv32_trng",
+ "concepts": [
+  {
+   "concept": "Bus request decode (strobe / read-write / addr[2]) that decides register writes, reads and FIFO operations",
+   "kind": "decision",
+   "writers": "Written by an external bus master into input port bus_req_i (port declaration use at line 27); consumed by the bus_access process (uses at lines 98, 103-106, 108-117, 171); no internal RTL assignment to bus_req_i.",
+   "observers": "Observed externally via the bus response outputs driven by bus_access: bus_rsp_o.ack (line 98), bus_rsp_o.err (line 99) and bus_rsp_o.data (lines 100, 109-112, 115-117); also affects fifo.re (line 171) which changes FIFO read behavior.",
+   "answers": {
+    "confidentiality": {
+     "answer": "no",
+     "line": 98,
+     "via": "bus_rsp_o.ack",
+     "reason": "The decoded bus request fields are inputs from an external master and are reflected to outputs (e.g. ack copied at line 98), so they reveal nothing new beyond the writer's own view."
+    },
+    "integrity": {
+     "answer": "yes-assumed",
+     "line": 103,
+     "via": "bus_req_i",
+     "reason": "The bus request bits are external inputs used by the bus_access process (gated at line 103 and used to drive writes at lines 104-106 and reads at 108-117), so whether they are trusted depends on the integrator's choice of bus master."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 171,
+     "via": "bus_req_i",
+     "reason": "FIFO reads are gated by bus request signals (fifo.re is driven only when bus_req_i.stb='1' and rw='0' and addr(2)='1' at line 171), so an external actor can withhold or assert those inputs to block or force reads."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 103,
+     "via": "bus_req_i",
+     "reason": "There is no alternate debug/test/override source in the RTL; the decode is driven only from the external bus_req_i fields used at lines 103-117 and 171."
+    }
+   },
+   "security objective": "Integrity"
+  },
+  {
+   "concept": "Sampling enable setting stored by the module (controls whether the TRNG samples)",
+   "kind": "configuration",
+   "writers": "Written to the internal register 'enable' on reset (enable <= '0' at line 95) and by bus writes: enable <= bus_req_i.data(ctrl_en_c) in the bus_access write branch (line 105) under guard (bus_req_i.stb='1' and bus_req_i.rw='1').",
+   "observers": "Read-back on bus reads: bus_rsp_o.data(ctrl_en_c) <= enable (line 109); internally connected to neoTRNG.enable_i via port map (line 137) which influences sampling inside neoTRNG.",
+   "answers": {
+    "confidentiality": {
+     "answer": "no",
+     "line": 109,
+     "via": "bus_rsp_o.data",
+     "reason": "The enable bit is written by the bus master and explicitly read back to the bus at line 109, so it is not treated as a secret by the RTL."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 105,
+     "via": "bus_req_i.data",
+     "reason": "Enable is written directly from bus_req_i.data at line 105 without RTL protection while sampling may be active (sample_en <= enable_i at line 354), so an external writer can change it during operation."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 354,
+     "via": "enable",
+     "reason": "sample_en inside neoTRNG is driven from enable_i (line 354), so an external write that clears enable (via bus_req_i) will stop sampling and block progress."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 105,
+     "via": "bus_req_i.data",
+     "reason": "Enable has a single RTL driver (bus write at line 105 plus reset) and there is no alternate debug/test override path in the RTL."
+    }
+   },
+   "security objective": "Integrity"
+  },
+  {
+   "concept": "FIFO-clear control (the fifo_clr bit and the computed fifo.clear) that clears the random-data buffer",
+   "kind": "decision",
+   "writers": "The fifo_clr register is set to '0' on reset (line 94) and defaulted to '0' each cycle (line 101); it is written from bus_req_i.data(ctrl_fifo_clr_c) on bus writes in the write branch (line 106) under guard (bus_req_i.stb='1' and bus_req_i.rw='1'); the computed fifo.clear is assigned in the RTL by fifo.clear <= '1' when (enable = '0') or (fifo_clr = '1') else '0' (line 170) and is connected to the FIFO clear_i port (line 157).",
+   "observers": "The fifo.clear signal drives the FIFO's clear_i (line 157) and changes FIFO state that is observable via fifo.avail and bus reads: bus_rsp_o.data(ctrl_avail_c) <= fifo.avail (line 112) and the read-data path selects zeros vs fifo.rdata (lines 114-117, zeros returned at line 115).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 115,
+     "via": "bus_rsp_o.data",
+     "reason": "fifo_clr (written by a bus write at line 106) causes fifo.clear (line 170) which empties the FIFO and makes subsequent reads return zeros (line 115), so external observers can detect the clear and confidentiality depends on integrator policy."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 106,
+     "via": "bus_req_i.data",
+     "reason": "An external bus write sets fifo_clr at line 106 and there is no RTL guard preventing this while FIFO contents exist; fifo.clear uses fifo_clr (line 170) to clear stored entropy, so external actors can change FIFO contents."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 170,
+     "via": "fifo_clr",
+     "reason": "fifo.clear is asserted when (enable='0') or (fifo_clr='1') at line 170, so external inputs (via fifo_clr or enable) can force the FIFO cleared and prevent data delivery."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 170,
+     "via": "fifo.clear",
+     "reason": "fifo.clear is computed in a single RTL assignment (line 170) and there is no separate debug/test override path in the RTL to substitute a different driver."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Random bytes as delivered to a consumer (data written by neoTRNG into the FIFO and returned on bus reads)",
+   "kind": "data",
+   "writers": "Generated inside neoTRNG: sample_sreg is updated (line 360) and copied out with data_o <= sample_sreg (line 366); at the top level neoTRNG's data_o and valid_o are mapped to fifo.wdata and fifo.we (lines 138-139) and fed into rnd_pool_fifo (wdata_i/we_i at lines 161-162).",
+   "observers": "Delivered to the bus on reads: FIFO rdata_o maps to fifo.rdata (line 166) and bus_access copies fifo.rdata into bus_rsp_o.data in the read-data path (line 117); FIFO availability is reported at line 112.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 117,
+     "via": "bus_rsp_o.data",
+     "reason": "The TRNG bytes flow from neoTRNG into the FIFO (lines 138-139, 161-162) and are presented to external readers on bus reads (bus_rsp_o.data <= fifo.rdata at line 117), so confidentiality depends on how the integrator treats those outputs."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 106,
+     "via": "bus_req_i",
+     "reason": "Although the bytes are produced internally (neoTRNG -> fifo.wdata, lines 138-139), an external bus write can assert fifo_clr (line 106) and via fifo.clear (line 170) remove or replace FIFO contents (reads return zeros at line 115), so external inputs can change what is delivered."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 170,
+     "via": "fifo_clr",
+     "reason": "fifo.clear is driven by enable and fifo_clr at line 170, so an external actor can force the FIFO cleared and thus prevent consumers from receiving bytes."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 138,
+     "via": "neoTRNG_inst",
+     "reason": "The delivered bytes have a single RTL driver path (neoTRNG.data_o -> fifo.wdata -> FIFO -> bus_rsp_o.data) and there is no runtime debug/test override in the RTL that substitutes alternate data."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Assembled TRNG output byte (sample_sreg) inside neoTRNG before it leaves the subunit",
+   "kind": "data",
+   "writers": "sample_sreg is reset at neoTRNG reset (line 352), cleared when sampling is disabled or a byte is complete (sample_sreg <= (others => '0') at line 357 under the condition at lines 355-356), and updated by the debiasing shift (sample_sreg <= sample_sreg(6 downto 0) & (sample_sreg(7) xor debias_data) at line 360) when debias_valid = '1'.",
+   "observers": "Exposed via neoTRNG.data_o <= sample_sreg (line 366), mapped to top-level FIFO wdata (line 139) and ultimately returned on bus reads (bus_rsp_o.data <= fifo.rdata at line 117).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 117,
+     "via": "bus_rsp_o.data",
+     "reason": "sample_sreg is copied to data_o (line 366) and propagated through the FIFO to bus reads (bus_rsp_o.data <= fifo.rdata at line 117), so external observers can read the assembled byte and confidentiality depends on integrator policy."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 357,
+     "via": "enable",
+     "reason": "sample_sreg is cleared when sampling is disabled (the reset/clear path at lines 355-357) and sample_en is driven from enable_i (line 354), which an external bus write can change (enable <= bus_req_i.data at line 105), so external inputs can alter sample_sreg content."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 354,
+     "via": "enable",
+     "reason": "sample_en inside neoTRNG is driven from enable_i (line 354); clearing enable via bus writes prevents further sample_sreg updates and thus stops byte production."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 360,
+     "via": "sample_sreg",
+     "reason": "The assembled byte register sample_sreg has explicit RTL assignments (update at line 360, clears at lines 352/357) and no runtime override path is present to substitute a different driver."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "FIFO availability flag (fifo.avail) used to report whether data exists and to select returned data vs zeros",
+   "kind": "decision",
+   "writers": "Driven by the FIFO submodule rnd_pool_fifo via its avail_o port mapped to fifo.avail (line 167); fifo.avail's value is influenced by FIFO operations (wdata/we at lines 161-162, re at line 165) and by fifo.clear (clear_i at line 157 which is computed at line 170).",
+   "observers": "Returned to the bus as the control-field bit bus_rsp_o.data(ctrl_avail_c) <= fifo.avail (line 112) and used in the read-data branch to select zeros vs fifo.rdata (guard and assignments at lines 114-117).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 112,
+     "via": "bus_rsp_o.data",
+     "reason": "fifo.avail is produced by the FIFO (line 167) and explicitly reported on the bus (bus_rsp_o.data(ctrl_avail_c) <= fifo.avail at line 112), so its value is observable and confidentiality depends on integration."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 170,
+     "via": "fifo.clear",
+     "reason": "fifo.avail is directly affected by fifo.clear (computed at line 170 and fed to the FIFO at line 157), and fifo.clear itself can be asserted by external-controlled signals (fifo_clr or enable), so external inputs can force changes in fifo.avail."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 170,
+     "via": "fifo.clear",
+     "reason": "Since fifo.clear is asserted when enable='0' or fifo_clr='1' (line 170), external control can force the FIFO empty state and thus the availability flag and data delivery."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 167,
+     "via": "rnd_pool_fifo_inst",
+     "reason": "fifo.avail is supplied only by the FIFO submodule (avail_o mapped at line 167) and there is no runtime debug/test override in the RTL to replace its source."
+    }
+   },
+   "security objective": "Confidentiality"
+  }
+ ],
+ "_problems": []
+}

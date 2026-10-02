@@ -1,0 +1,217 @@
+{
+  "module name": "neorv32_spi",
+  "conceptual assets": [
+    {
+      "concept": "SPI enable configuration (ctrl.enable)",
+      "security objective": "Integrity",
+      "reasoning": "The enable bit is written by the bus-access flow (`ctrl.enable <= bus_req_i.data(ctrl_en_c)` on a write to addr(2)= '0', reset clears it) and the RTL uses it to gate operation: `tx_fifo.clear <= not ctrl.enable`, `rx_fifo.clear <= not ctrl.enable`, `rtx_engine.state(2) <= ctrl.enable`, and `clkgen_en_o <= ctrl.enable`; irq assertion is also gated by ctrl.enable in irq_generator. Corrupting this stored bit changes FIFO clears, engine activity, clock-export and irq gating, violating the implemented control flow.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.enable",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "clkgen_en_o",
+          "entity": "neorv32_spi",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "SPI clock configuration and generated SCK (prsc, cdiv, highspeed, cpha, cpol \u2192 spi_clk_en / SCK)",
+      "security objective": "Integrity",
+      "reasoning": "Clock and edge-generation parameters are written by bus_access into ctrl.prsc, ctrl.cdiv, ctrl.highspeed, ctrl.cpha and ctrl.cpol. clock_generator uses `clkgen_i(to_integer(unsigned(ctrl.prsc)))` and `ctrl.cdiv` to assert `spi_clk_en` (`if (cdiv_cnt = ctrl.cdiv) then spi_clk_en <= '1'`), and transceiver uses `spi_clk_en` with `ctrl.cpha`/`ctrl.cpol` to toggle `rtx_engine.sck`. The produced SCK leaves the entity via `spi_clk_o <= rtx_engine.sck`. Corrupting these stored parameters or the computed clock/edge (spi_clk_en / sck) breaks the module's SPI timing and edge sequencing.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.prsc",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.cdiv",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.highspeed",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.cpha",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.cpol",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "spi_clk_en",
+          "entity": "neorv32_spi",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "rtx_engine.sck",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "spi_clk_o",
+          "entity": "neorv32_spi",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "IRQ enable configuration bits (irq_rx_avail, irq_tx_empty, irq_tx_nhalf, irq_idle)",
+      "security objective": "Integrity",
+      "reasoning": "The bus-access write path stores these enable bits (`ctrl.irq_rx_avail <= bus_req_i.data(ctrl_irq_rx_avail_c)`, etc.). irq_generator uses them to qualify conditions that drive `irq_o` (the expression includes `ctrl.irq_rx_avail`, `ctrl.irq_tx_empty`, `ctrl.irq_tx_nhalf`, `ctrl.irq_idle`). Corrupting these stored enables changes which FIFO/idle conditions produce an interrupt, violating the intended interrupt qualification.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.irq_rx_avail",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_tx_empty",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_tx_nhalf",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_idle",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "IRQ request output (irq_o)",
+      "security objective": "Integrity",
+      "reasoning": "irq_o is the module's interrupt event output computed in irq_generator: `irq_o <= ctrl.enable and ((ctrl.irq_rx_avail and rx_fifo.avail) or (ctrl.irq_tx_empty and (not tx_fifo.avail)) or (ctrl.irq_tx_nhalf and (not tx_fifo.half)) or (ctrl.irq_idle and (not tx_fifo.avail) and (not rtx_engine.busy)))`. The output is an entity exit; incorrect assertion/suppression violates the implemented notification flow.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_o",
+          "entity": "neorv32_spi",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Transmit FIFO head word (next TX byte and control bit)",
+      "security objective": "Integrity",
+      "reasoning": "The transceiver consumes the FIFO head to drive transfers: in state \"100\" the RTL checks `tx_fifo.avail` and then `if (tx_fifo.rdata(8) = '1') then rtx_engine.cs_ctrl <= tx_fifo.rdata(3 downto 0) else rtx_engine.sreg <= tx_fifo.rdata(7 downto 0)`. tx_fifo.rdata therefore defines the next-transmit byte or a CS-control word. Corrupting this stored head word changes which byte or CS is issued, violating transmit semantics.",
+      "related structural assets": [
+        {
+          "asset rtl": "tx_fifo.rdata",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Transmit FIFO status (avail, free, half)",
+      "security objective": "Integrity",
+      "reasoning": "The RTL uses FIFO status in control and reporting: bus_access reports `ctrl_tx_empty_c/ctrl_tx_nhalf_c/ctrl_tx_full_c` from `not tx_fifo.avail`, `not tx_fifo.half`, `not tx_fifo.free`; transceiver tests `tx_fifo.avail` before consuming data; irq_generator uses `not tx_fifo.avail` and `not tx_fifo.half` to qualify interrupts. These stored status signals mediate flow control and interrupt qualification; corruption misreports FIFO state and alters pop/irq behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "tx_fifo.avail",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tx_fifo.free",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tx_fifo.half",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Receive FIFO data and availability",
+      "security objective": "Integrity",
+      "reasoning": "Received bytes are written into the RX FIFO (`rx_fifo.wdata <= '0' & rtx_engine.sreg; rx_fifo.we <= rtx_engine.done`) and external reads return `rx_fifo.rdata(7 downto 0)` (`bus_rsp_o.data(7 downto 0) <= rx_fifo.rdata(7 downto 0)`). irq_generator also tests `rx_fifo.avail` to generate rx-available interrupts. The stored RX word and its availability are therefore security-relevant to delivered RX data and notifications; corruption violates received-data integrity and reporting.",
+      "related structural assets": [
+        {
+          "asset rtl": "rx_fifo.rdata",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rx_fifo.avail",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Transceiver shift register (rtx_engine.sreg) and MOSI bit output",
+      "security objective": "Integrity",
+      "reasoning": "The engine loads sreg from the TX FIFO (`rtx_engine.sreg <= tx_fifo.rdata(7 downto 0)`), shifts in samples (`rtx_engine.sreg <= rtx_engine.sreg(6 downto 0) & rtx_engine.sdi_sync`) and the MSB is driven out: `spi_dat_o <= rtx_engine.sreg(7)`. The final sreg value is also written into RX FIFO (`rx_fifo.wdata <= '0' & rtx_engine.sreg` when done). Corrupting this stored shift-register value or the MOSI output violates transmitted/received bitstream correctness.",
+      "related structural assets": [
+        {
+          "asset rtl": "rtx_engine.sreg",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "spi_dat_o",
+          "entity": "neorv32_spi",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Chip-select control and CS outputs (rtx_engine.cs_ctrl \u2192 spi_csn_o)",
+      "security objective": "Integrity",
+      "reasoning": "When a FIFO head encodes a CS command (`tx_fifo.rdata(8) = '1'`) the transceiver writes `rtx_engine.cs_ctrl <= tx_fifo.rdata(3 downto 0)`; chip_select process drives `spi_csn_o` (defaults to all '1', and if `rtx_engine.cs_ctrl(3) = '1'` it drives one indexed bit low using `to_integer(unsigned(rtx_engine.cs_ctrl(2 downto 0)))`). The stored cs_ctrl and CS outputs determine which peripheral is selected; corruption changes peripheral selection.",
+      "related structural assets": [
+        {
+          "asset rtl": "rtx_engine.cs_ctrl",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "spi_csn_o",
+          "entity": "neorv32_spi",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Transceiver busy status (rtx_engine.busy)",
+      "security objective": "Integrity",
+      "reasoning": "The busy flag is computed by the RTL (`rtx_engine.busy <= '0' when (rtx_engine.state(1 downto 0) = \"00\") else '1'`). The bus-access path reports busy (`bus_rsp_o.data(ctrl_busy_c) <= rtx_engine.busy or tx_fifo.avail`) and irq_generator uses busy to detect idle conditions. Corrupting this computed status misreports engine activity and alters idle/irq behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "rtx_engine.busy",
+          "entity": "neorv32_spi",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Transceiver FSM state (rtx_engine.state)",
+      "security objective": "Integrity",
+      "reasoning": "The transceiver process stores and advances `rtx_engine.state` (reset clears it; rising-edge logic changes it through \"100\",\"101\",\"110\",\"111\", etc.). That state gates FIFO consumption (`tx_fifo.re <= '1' when (rtx_engine.state = \"100\")`) and stepwise SCK/shift behavior. Corrupting the stored FSM state changes transfer sequencing and FIFO interactions, violating transfer progress and correctness.",
+      "related structural assets": [
+        {
+          "asset rtl": "rtx_engine.state",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        }
+      ]
+    }
+  ]
+}

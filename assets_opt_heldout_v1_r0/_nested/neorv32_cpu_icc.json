@@ -1,0 +1,194 @@
+{
+ "module name": "neorv32_cpu_icc",
+ "module purpose": "neorv32_cpu_icc links CSR accesses to a point-to-point inter-core channel: a CSR write to the data CSR pushes csr_wdata_i into a transmit queue (tx_queue_inst), whose head word and availability leave on icc_tx_o and which the partner's acknowledge (icc_rx_i.ack) pops; CSR reads return a status word (receive-pending bit, transmit-queue free bit) or the partner's data word from icc_rx_i, and a CSR read of the data CSR raises an acknowledge on icc_tx_o.",
+ "use-case flows": [
+  {
+   "flow": "start",
+   "value": "enqueue request: a CSR write that addresses the data CSR decides to push a word into the transmit queue",
+   "lines": [60, 82]
+  },
+  {
+   "flow": "operate",
+   "value": "outgoing message word: csr_wdata_i written into tx_queue_inst, presented to the partner on icc_tx_o.dat with icc_tx_o.rdy, and released by icc_rx_i.ack",
+   "lines": [81, 82, 85, 86, 87]
+  },
+  {
+   "flow": "read out",
+   "value": "incoming message word icc_rx_i.dat returned on csr_rdata_o when the data CSR is addressed and icc_rx_i.rdy is 1, zero otherwise",
+   "lines": [45, 46, 47, 50, 51, 52]
+  },
+  {
+   "flow": "report",
+   "value": "status word on csr_rdata_o: receive-pending bit (icc_rx_i.rdy) in bit 0 and transmit-queue free bit (tx_fifo_free) in bit 1 when the status CSR is addressed",
+   "lines": [45, 46, 47, 48, 49, 83]
+  },
+  {
+   "flow": "report",
+   "value": "receive acknowledge to the partner: icc_tx_o.ack raised on a CSR read that addresses the data CSR",
+   "lines": [59]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Outgoing inter-core message word -- the data word the CPU writes for transmission to the partner over the link",
+   "security objective": "Integrity",
+   "reasoning": "The send flow wires `wdata_i => csr_wdata_i` (line 81) into tx_queue_inst, written when `we_i => tx_fifo_we` (line 82) is 1, and the queue output drives the link through `rdata_o => icc_tx_o.dat` (line 86). The queue is a sub-unit whose implementation is not supplied, and the word's consumer (the partner) lies outside this file, so integrity is Established from the delivering lines: the queue must receive exactly csr_wdata_i on a decided write (lines 81-82) and the partner must receive on icc_tx_o exactly the word the queue delivers (line 86). Availability is not claimed: delivery depends on the queue internals and the partner acknowledge (line 85), which are not visible here. csr_wdata_i sets the word: this entity wires it into a sub-unit that is not supplied (CONNECTS tx_queue_inst.wdata_i, occurrence 2, line 81). icc_tx_o is the exit port, named whole and cited at occurrence 3 (line 86), where its field dat is driven by tx_queue_inst.rdata_o. icc_t carries a data word, a ready flag and an acknowledge for a point-to-point link, with no address, byte enable or read/write distinction, so it is not a transport record. No signal of this entity holds the word. Confidentiality is not established: no line restricts who observes icc_tx_o.",
+   "related structural assets": [
+    {
+     "asset rtl": "csr_wdata_i",
+     "entity": "neorv32_cpu_icc",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "CONNECTS", "partner": "tx_queue_inst.wdata_i"}
+    },
+    {
+     "asset rtl": "icc_tx_o",
+     "entity": "neorv32_cpu_icc",
+     "realization": "exit port",
+     "occurrence": 3,
+     "edge": {"type": "CONNECTS", "partner": "tx_queue_inst.rdata_o"}
+    }
+   ]
+  },
+  {
+   "concept": "Transmit-queue write decision -- whether a CSR access pushes a word into the outgoing queue",
+   "security objective": "Integrity",
+   "reasoning": "`tx_fifo_we <= '1' when (csr_we_i = '1') and (csr_addr_i = csr_mxiccdata_c) else '0';` (line 60) computes the decision and `we_i => tx_fifo_we` (line 82) delivers it to tx_queue_inst, which is not supplied. Integrity is Established: the queue must receive a write strobe exactly when a CSR write addresses the data CSR (line 60); a wrong value enqueues a word that was not written or drops one that was (lines 81-82). tx_fifo_we computes the decision (GATED_BY csr_we_i, occurrence 2, line 60); it is not a copy of another element. csr_we_i (GATES tx_fifo_we, occurrence 2, line 60) and csr_addr_i (GATES tx_fifo_we, occurrence 6, line 60) are read by this entity to decide it, so they set it. csr_mxiccdata_c is a constant, not a candidate.",
+   "related structural assets": [
+    {
+     "asset rtl": "tx_fifo_we",
+     "entity": "neorv32_cpu_icc",
+     "realization": "computes",
+     "occurrence": 2,
+     "edge": {"type": "GATED_BY", "partner": "csr_we_i"}
+    },
+    {
+     "asset rtl": "csr_we_i",
+     "entity": "neorv32_cpu_icc",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "GATES", "partner": "tx_fifo_we"}
+    },
+    {
+     "asset rtl": "csr_addr_i",
+     "entity": "neorv32_cpu_icc",
+     "realization": "sets",
+     "occurrence": 6,
+     "edge": {"type": "GATES", "partner": "tx_fifo_we"}
+    }
+   ]
+  },
+  {
+   "concept": "Incoming inter-core message word -- the partner's data word returned to the CPU on a CSR read",
+   "security objective": "Integrity",
+   "reasoning": "The read-out flow drives `csr_rdata_o <= icc_rx_i.dat;` (line 52) only when the data CSR is addressed (lines 46-47, else branch at line 50) and `if (icc_rx_i.rdy = '1')` holds (line 51); otherwise csr_rdata_o keeps its zero default (line 45). The word leaves this entity toward a reader that is not supplied, so integrity is Established: the reader must receive exactly icc_rx_i.dat under these conditions and zero otherwise (lines 45, 51-52). csr_rdata_o is the exit port (COPIES icc_rx_i.dat, occurrence 5, line 52). icc_rx_i is where the word enters; this entity reads the port to decide on its delivery, since its field rdy GATES csr_rdata_o at line 51 (occurrence 4), so it sets the concept. Its field dat is only forwarded (CARRIES csr_rdata_o, line 52). icc_t is not a transport record (data, ready and acknowledge only, no address). No signal of this entity holds the word. Confidentiality is not established: no line restricts which CSR reader receives it.",
+   "related structural assets": [
+    {
+     "asset rtl": "csr_rdata_o",
+     "entity": "neorv32_cpu_icc",
+     "realization": "exit port",
+     "occurrence": 5,
+     "edge": {"type": "COPIES", "partner": "icc_rx_i.dat"}
+    },
+    {
+     "asset rtl": "icc_rx_i",
+     "entity": "neorv32_cpu_icc",
+     "realization": "sets",
+     "occurrence": 4,
+     "edge": {"type": "GATES", "partner": "csr_rdata_o"}
+    }
+   ]
+  },
+  {
+   "concept": "Receive-pending status -- whether a partner word is waiting, reported to the CPU and used to qualify the data read",
+   "security objective": "Integrity",
+   "reasoning": "`csr_rdata_o(0) <= icc_rx_i.rdy;` (line 48) reports the flag on a status-CSR read (lines 46-47), and the same flag decides whether the data read returns the word (line 51). Integrity is Established: the reported bit must equal the received flag (line 48), and the read-out at line 52 depends on it. icc_rx_i sets the flag: this entity reads it both to report it (its field rdy CARRIES csr_rdata_o, occurrence 3, line 48) and to decide on the data read (GATES csr_rdata_o, line 51). csr_rdata_o is the exit port (COPIES icc_rx_i.rdy, occurrence 3, line 48).",
+   "related structural assets": [
+    {
+     "asset rtl": "icc_rx_i",
+     "entity": "neorv32_cpu_icc",
+     "realization": "sets",
+     "occurrence": 3,
+     "edge": {"type": "CARRIES", "partner": "csr_rdata_o"}
+    },
+    {
+     "asset rtl": "csr_rdata_o",
+     "entity": "neorv32_cpu_icc",
+     "realization": "exit port",
+     "occurrence": 3,
+     "edge": {"type": "COPIES", "partner": "icc_rx_i.rdy"}
+    }
+   ]
+  },
+  {
+   "concept": "Transmit-queue free status -- whether the outgoing queue can accept another word, reported to the CPU",
+   "security objective": "Integrity",
+   "reasoning": "`free_o => tx_fifo_free` (line 83) brings the queue's free indication into this entity, and `csr_rdata_o(1) <= tx_fifo_free;` (line 49) reports it on a status-CSR read (lines 46-47). The value is received from a sub-unit that is not supplied and delivered through an output port, so integrity is Established: the reader must receive exactly the value the queue reports (lines 49, 83). tx_fifo_free computes it in this entity through the CONNECTS edge of mode out from tx_queue_inst.free_o (occurrence 4, line 83); it is a plain signal, not a record field. csr_rdata_o is the exit port (COPIES tx_fifo_free, occurrence 4, line 49). The queue's internal computation is not inferred.",
+   "related structural assets": [
+    {
+     "asset rtl": "tx_fifo_free",
+     "entity": "neorv32_cpu_icc",
+     "realization": "computes",
+     "occurrence": 4,
+     "edge": {"type": "CONNECTS", "partner": "tx_queue_inst.free_o"}
+    },
+    {
+     "asset rtl": "csr_rdata_o",
+     "entity": "neorv32_cpu_icc",
+     "realization": "exit port",
+     "occurrence": 4,
+     "edge": {"type": "COPIES", "partner": "tx_fifo_free"}
+    }
+   ]
+  },
+  {
+   "concept": "Receive acknowledge to the partner -- the event that tells the partner its word was read",
+   "security objective": "Integrity",
+   "reasoning": "`icc_tx_o.ack <= '1' when (csr_re_i = '1') and (csr_addr_i = csr_mxiccdata_c) else '0';` (line 59) computes the event and drives it out of this entity on icc_tx_o to a partner that is not supplied. Integrity is Established: the partner must receive the acknowledge exactly when a CSR read addresses the data CSR (line 59), the same CSR whose read returns the received word (line 52). icc_tx_o is the exit port, named whole and cited at occurrence 2 (line 59), where its field ack is GATED_BY csr_re_i. csr_re_i (GATES icc_tx_o.ack, occurrence 2, line 59) and csr_addr_i (GATES icc_tx_o.ack, occurrence 5, line 59) are read by this entity to decide it, so they set it.",
+   "related structural assets": [
+    {
+     "asset rtl": "icc_tx_o",
+     "entity": "neorv32_cpu_icc",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "GATED_BY", "partner": "csr_re_i"}
+    },
+    {
+     "asset rtl": "csr_re_i",
+     "entity": "neorv32_cpu_icc",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "GATES", "partner": "icc_tx_o.ack"}
+    },
+    {
+     "asset rtl": "csr_addr_i",
+     "entity": "neorv32_cpu_icc",
+     "realization": "sets",
+     "occurrence": 5,
+     "edge": {"type": "GATES", "partner": "icc_tx_o.ack"}
+    }
+   ]
+  },
+  {
+   "concept": "Transmit handshake -- the word-available indication sent to the partner and the partner acknowledge that releases the queued word",
+   "security objective": "Integrity",
+   "reasoning": "`avail_o => icc_tx_o.rdy` (line 87) drives the queue's availability indication out of this entity, and `re_i => icc_rx_i.ack` (line 85) passes the partner's acknowledge into the queue. Both values cross this entity between the partner and a sub-unit that is not supplied, so integrity is Established from these lines: the partner must receive exactly the queue's availability (line 87), and the queue must receive exactly the partner's acknowledge (line 85). icc_tx_o is the exit port, cited at occurrence 4 (line 87) through the CONNECTS edge from tx_queue_inst.avail_o. icc_rx_i sets the acknowledge: this entity wires it into the sub-unit (CONNECTS tx_queue_inst.re_i, occurrence 6, line 85). The queue's response to re_i is not inferred.",
+   "related structural assets": [
+    {
+     "asset rtl": "icc_tx_o",
+     "entity": "neorv32_cpu_icc",
+     "realization": "exit port",
+     "occurrence": 4,
+     "edge": {"type": "CONNECTS", "partner": "tx_queue_inst.avail_o"}
+    },
+    {
+     "asset rtl": "icc_rx_i",
+     "entity": "neorv32_cpu_icc",
+     "realization": "sets",
+     "occurrence": 6,
+     "edge": {"type": "CONNECTS", "partner": "tx_queue_inst.re_i"}
+    }
+   ]
+  }
+ ]
+}

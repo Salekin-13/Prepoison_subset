@@ -1,0 +1,256 @@
+{
+  "module name": "neorv32_twd",
+  "conceptual assets": [
+    {
+      "concept": "Module enable (operation gate that enables sampling, engine progression, FIFO clears and IRQs)",
+      "security objective": "Integrity",
+      "reasoning": "bus_access writes the enable bit (`ctrl.enable <= bus_req_i.data(ctrl_en_c)`). That bit gates observable behavior: `clkgen_en_o <= ctrl.enable;`, synchronizer only advances sampling when `if (ctrl.enable = '1') then ...`, both FIFOs are cleared when `ctrl.enable = '0'` (`tx_fifo.clr` / `rx_fifo.clr`), irq_trigger ANDs `ctrl.enable` into `irq_o`, and bus_engine requires `ctrl.enable = '1'` to enter operation (`if (ctrl.enable = '1') and (smp.start = '1') then engine.state <= S_INIT;`). Therefore the integrity of the enable configuration is required for correct module operation; it is stored in the ctrl record and exported to the clock-gen output.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.enable",
+          "entity": "neorv32_twd",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "clkgen_en_o",
+          "entity": "neorv32_twd",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Device address used for address matching (which incoming frames the engine accepts)",
+      "security objective": "Integrity",
+      "reasoning": "The device address is written by the bus (`ctrl.device_addr <= bus_req_i.data(ctrl_dev_addr6_c downto ctrl_dev_addr0_c)`) and is compared to the received address in the engine: `if (ctrl.device_addr = engine.sreg(7 downto 1)) then ...`. Corruption of this stored address changes whether the engine accepts or ignores frames, so its integrity is required for correct address matching.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.device_addr",
+          "entity": "neorv32_twd",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Hide-read configuration that conditions suppression of read responses",
+      "security objective": "Integrity",
+      "reasoning": "The hide-read bit is set from the bus (`ctrl.hide_read <= bus_req_i.data(ctrl_hide_read_c)`) and is consulted during address/decode: in S_ADDR the code checks `if (engine.sreg(0) = '1' and (ctrl.hide_read = '1' and (tx_fifo.free = '0'))) then engine.state <= S_IDLE;`. Thus ctrl.hide_read changes whether read requests are suppressed; its integrity is required for correct accept/respond behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.hide_read",
+          "entity": "neorv32_twd",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "FIFO clear controls (explicit clear of RX and TX FIFOs)",
+      "security objective": "Availability",
+      "reasoning": "The bus can write clear pulses (`ctrl.clr_rx`, `ctrl.clr_tx` set in bus_access). Those fields drive FIFO clear lines: `rx_fifo.clr <= '1' when (ctrl.enable = '0') or (ctrl.clr_rx = '1') else '0';` and `tx_fifo.clr <= '1' when (ctrl.enable = '0') or (ctrl.clr_tx = '1') else '0';`. Asserting these clears removes stored FIFO data; unauthorized or incorrect setting of these bits can discard data and thus violates availability of queued data.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.clr_rx",
+          "entity": "neorv32_twd",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.clr_tx",
+          "entity": "neorv32_twd",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Received bytes stored in the RX FIFO (data and availability flags)",
+      "security objective": "Integrity",
+      "reasoning": "Engine-produced received bytes are offered to the RX FIFO (`rx_fifo.wdata <= engine.sreg; rx_fifo.we <= engine.wr_we;`). The bus reads return `rx_fifo.rdata` (`bus_rsp_o.data(7 downto 0) <= rx_fifo.rdata`), and IRQ logic uses `rx_fifo.avail` and `rx_fifo.free`. Corruption of the stored rx data or its availability/free flags would break readback and interrupt behavior, so integrity of the RX FIFO contents and status is established by the RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "rx_fifo.rdata",
+          "entity": "neorv32_twd",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rx_fifo.avail",
+          "entity": "neorv32_twd",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rx_fifo.free",
+          "entity": "neorv32_twd",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Transmit bytes stored in the TX FIFO (data and availability/free flags)",
+      "security objective": "Integrity",
+      "reasoning": "Bus writes place bytes into the TX FIFO (`tx_fifo.wdata <= bus_req_i.data(7 downto 0); tx_fifo.we <= (bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '1')`). The engine selects TX data when available (`engine.rdata <= tx_fifo.rdata when (tx_fifo.avail = '1') ...`) and IRQ/flow-control observe `tx_fifo.avail`/`tx_fifo.free`. Therefore the FIFO-stored transmit bytes and their status are used to produce sent data; their integrity is established.",
+      "related structural assets": [
+        {
+          "asset rtl": "tx_fifo.rdata",
+          "entity": "neorv32_twd",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tx_fifo.avail",
+          "entity": "neorv32_twd",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tx_fifo.free",
+          "entity": "neorv32_twd",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Selected transmit byte presented to the engine (byte multiplexing between TX FIFO and tx_dummy)",
+      "security objective": "Integrity",
+      "reasoning": "The module computes which byte the engine presents (`engine.rdata <= tx_fifo.rdata when (tx_fifo.avail = '1') else tx_dummy when (ctrl.tx_dummy_en = '1') else (others => '1')`). The engine then loads `engine.sreg <= engine.rdata` and uses `engine.dout <= engine.rdata(7)` when driving the bus. The fallback `tx_dummy` is maintained by `tx_backup`. Corrupting engine.rdata, tx_dummy or the tx_dummy enable would change the byte presented for transmission, so integrity of the selected transmit byte is established.",
+      "related structural assets": [
+        {
+          "asset rtl": "engine.rdata",
+          "entity": "neorv32_twd",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "tx_dummy",
+          "entity": "neorv32_twd",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.tx_dummy_en",
+          "entity": "neorv32_twd",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Serial data driven onto the TWD SDA line (transmitted bit stream)",
+      "security objective": "Integrity",
+      "reasoning": "The bus_engine process drives the output SDA line (default `twd_sda_o <= '1'`), drives ACK/NACK and transmits data bits: in S_RTX `if (engine.cmd = '1') then twd_sda_o <= engine.dout;` and in S_RESP/S_ACK it drives `twd_sda_o` for ACK paths. `engine.dout` and `engine.sreg` hold the bit/byte source. The SDA port is the module's external exit for transmitted bits; integrity of the SDA output and its controlling internal signals must hold for correct transmission.",
+      "related structural assets": [
+        {
+          "asset rtl": "twd_sda_o",
+          "entity": "neorv32_twd",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "engine.dout",
+          "entity": "neorv32_twd",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "engine.sreg",
+          "entity": "neorv32_twd",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "IRQ mask configuration bits (which FIFO conditions raise irq_o)",
+      "security objective": "Integrity",
+      "reasoning": "The IRQ mask bits are written by the bus (`ctrl.irq_rx_avail`, `ctrl.irq_rx_full`, `ctrl.irq_tx_empty`) and are used by irq_trigger: `irq_o <= ctrl.enable and ((ctrl.irq_rx_avail and rx_fifo.avail) or (ctrl.irq_rx_full and (not rx_fifo.free)) or (ctrl.irq_tx_empty and (not tx_fifo.avail)));`. Corruption of these stored mask bits changes which conditions produce interrupts; their integrity is required to preserve intended interrupt behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.irq_rx_avail",
+          "entity": "neorv32_twd",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_rx_full",
+          "entity": "neorv32_twd",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_tx_empty",
+          "entity": "neorv32_twd",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "IRQ output assertion (interrupt event produced by the module)",
+      "security objective": "Integrity",
+      "reasoning": "The irq_trigger process computes and assigns the external interrupt output (`irq_o <= ctrl.enable and ((...) )`), combining ctrl enable, IRQ mask bits and FIFO status signals. The resulting `irq_o` leaves the entity through the port `irq_o`; integrity of the produced IRQ signal is required to preserve the module's interrupt semantics.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_o",
+          "entity": "neorv32_twd",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "rx_fifo.avail",
+          "entity": "neorv32_twd",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tx_fifo.avail",
+          "entity": "neorv32_twd",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Sampled bus line values and derived start/stop/edge events (SDA/SCL sampling and detection)",
+      "security objective": "Integrity",
+      "reasoning": "The synchronizer samples the external pins (`smp.sda_sreg(0) <= to_stdulogic(to_bit(twd_sda_i)); smp.scl_sreg(0) <= to_stdulogic(to_bit(twd_scl_i));`) and bus_event computes `smp.scl_rise`, `smp.scl_fall`, `smp.start`, `smp.stop` from the sreg values. The engine uses those signals (`if (ctrl.enable = '1') and (smp.start = '1') then ...`, shifts on `smp.scl_rise`, branches on `smp.scl_fall`) to parse and progress transactions. Therefore the sampled SDA/SCL values and derived edge/start/stop events are required to be correct; their integrity is established by the RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "twd_sda_i",
+          "entity": "neorv32_twd",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "twd_scl_i",
+          "entity": "neorv32_twd",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "smp.sda",
+          "entity": "neorv32_twd",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "smp.scl",
+          "entity": "neorv32_twd",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Sampling clock selection that enables sampling (fsel -> smp.clk_en)",
+      "security objective": "Integrity",
+      "reasoning": "The sampling-enable signal is selected by ctrl.fsel (`smp.clk_en <= clkgen_i(clk_div64_c) when (ctrl.fsel = '1') else clkgen_i(clk_div8_c);`). The synchronizer uses smp.clk_en to advance sda/scl sampling and produce smp.valid, which in turn enables edge/start/stop detection. Changing ctrl.fsel or the derived smp.clk_en changes the sampling cadence and detection, so their integrity is required for correct sampling.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.fsel",
+          "entity": "neorv32_twd",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "smp.clk_en",
+          "entity": "neorv32_twd",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "FIFO read/write control signals from the engine (which enable FIFO read or write operations)",
+      "security objective": "Integrity",
+      "reasoning": "The engine drives FIFO control lines that implement data movement: `rx_fifo.we <= engine.wr_we; tx_fifo.re <= engine.rd_re;` and the engine process sets `engine.wr_we` and `engine.rd_re` in the state machine (S_RTX, S_ACK, ...). These control whether bytes are written into RX FIFO or read from TX FIFO; corruption of these control signals would change data flow and violate the module's transfer semantics, establishing integrity relevance.",
+      "related structural assets": [
+        {
+          "asset rtl": "engine.wr_we",
+          "entity": "neorv32_twd",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "engine.rd_re",
+          "entity": "neorv32_twd",
+          "realization": "stores"
+        }
+      ]
+    }
+  ]
+}

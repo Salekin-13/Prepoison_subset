@@ -1,0 +1,143 @@
+{
+ "module name": "neorv32_imem",
+ "concepts": [
+  {
+   "concept": "Instruction memory contents \u0014 the 32-bit instruction words the block holds and delivers to requesters",
+   "kind": "data",
+   "writers": "rdata is driven from ROM (mem_rom_c) and from the RAM byte registers: ROM read assignments at line 81 (rdata <= mem_rom_c(to_integer(addr))) and line 95 (rdata <= mem_rom_c(to_integer(addr_ff))); RAM reads assemble rdata from mem_ram_b0..mem_ram_b3 at lines 128-131 (default) and 159-162 (alt-style). The RAM bytes mem_ram_b0..b3 themselves are written from the bus (bus_req_i.data) at lines 116,119,122,125 (non-alt) and 145,148,151,154 (alt) under the guard (bus_req_i.stb = '1') and (bus_req_i.rw = '1') with per-byte enables bus_req_i.ben(n) (lines 115/118/121/124 and 144/147/150/153). mem_rom_c is a pre-initialized constant (line 44).",
+   "observers": "External observation occurs via bus_rsp_o.data which is driven from rdata when rden = '1' (bus_rsp_o.data <= rdata when (rden = '1') else (others => '0') at line 185); no other module outputs expose rdata.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 185,
+     "via": "bus_rsp_o.data",
+     "reason": "The fetched 32-bit word (rdata) is driven onto the external output bus_rsp_o.data when rden = '1' (line 185), so an external observer can read instruction contents."
+    },
+    "integrity": {
+     "answer": "yes-assumed",
+     "line": 116,
+     "via": "bus_req_i.data",
+     "reason": "In RAM builds the stored bytes that determine rdata can be changed by external bus writes (e.g., mem_ram_b0 <= bus_req_i.data(7 downto 0) at line 116, guarded by bus_req_i.stb and bus_req_i.rw), so an external writer can modify fetched instructions."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 176,
+     "via": "bus_req_i.stb",
+     "reason": "Output data is gated by rden and rden is driven from bus_req_i.stb and bus_req_i.rw (rden <= bus_req_i.stb and (not bus_req_i.rw) at line 176), so external inputs can block delivery of instruction words."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 185,
+     "via": "bus_rsp_o.data",
+     "reason": "The RTL provides no runtime debug/test override that substitutes or bypasses rdata; bus_rsp_o.data is driven only from rdata (line 185) and the only alternative selections are static generics (IMEM_INIT/alt_style)."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Writable instruction memory \u0014 the ability for bus writes to modify IMEM bytes (RAM builds)",
+   "kind": "state",
+   "writers": "The RAM byte registers mem_ram_b0..mem_ram_b3 are written from bus_req_i.data at lines 116,119,122,125 (default path) and 145,148,151,154 (alt-style path) under the clock (process on clk_i) and guarded by the write condition if (bus_req_i.stb = '1') and (bus_req_i.rw = '1') at lines 114 (default) and 143 (alt); each byte write is gated by the corresponding bus_req_i.ben(n) checks at lines 115/118/121/124 and 144/147/150/153.",
+   "observers": "The RAM bytes are read into rdata at lines 128-131 (default) and 159-162 (alt-style) and then exported via bus_rsp_o.data (line 185), so external observers can read bytes written to mem_ram_b*.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 185,
+     "via": "bus_rsp_o.data",
+     "reason": "RAM-stored instruction bytes are read into rdata and presented on bus_rsp_o.data when rden = '1' (line 185), so external observers can read stored program bytes."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 114,
+     "via": "bus_req_i.data",
+     "reason": "The RTL allows external bus writes (guarded by the condition at line 114) to overwrite mem_ram_b* (e.g. assignments at lines 116/119/122/125) with no internal lock, so their integrity can be changed while the system runs."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 114,
+     "via": "bus_req_i.stb",
+     "reason": "Updates to mem_ram_b* only occur when bus_req_i.stb and bus_req_i.rw are asserted (guard at line 114), so external inputs control whether writes happen and can therefore prevent or force updates."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 116,
+     "via": "bus_req_i.data",
+     "reason": "There is no runtime override or alternate debug/test write path in the RTL; writes to mem_ram_b* always come from bus_req_i.data (e.g. line 116) under the stated guards."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Effective memory index \u0014 the internal address used to select which memory word is read or written",
+   "kind": "data",
+   "writers": "addr is assigned directly from the bus address slice at line 101 (addr <= unsigned(bus_req_i.addr(addr_hi_c downto 2))); the latched index addr_ff is clocked from addr in the mem_access processes at lines 92 and 142 (alt-style) and is set to zeros at lines 84 and 134 in the non-alt generate branches.",
+   "observers": "The index is provided by the external input bus_req_i.addr (line 101) so the requester knows it; the effective index also influences the externally observable bus_rsp_o.data (line 185) because different indices return different memory contents.",
+   "answers": {
+    "confidentiality": {
+     "answer": "no",
+     "line": 101,
+     "via": "bus_req_i.addr",
+     "reason": "The internal index 'addr' is computed directly from the external input bus_req_i.addr (line 101), so its value is set and known by the requester and does not reveal secret state."
+    },
+    "integrity": {
+     "answer": "yes-assumed",
+     "line": 101,
+     "via": "bus_req_i.addr",
+     "reason": "The effective memory index is driven from the external bus_req_i.addr (line 101), so an external master can change which memory location is targeted and thus influence correctness."
+    },
+    "availability": {
+     "answer": "no",
+     "line": 101,
+     "via": "bus_req_i.addr",
+     "reason": "addr is a concurrent assignment from bus_req_i.addr (line 101) and updates unconditionally with the input (no internal enable gates it), so nothing inside the module can block its update."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 101,
+     "via": "bus_req_i.addr",
+     "reason": "There is no runtime bypass or alternate driver in the RTL; addr is driven from bus_req_i.addr (line 101) and addr_ff is merely a clocked copy selected by static generics."
+    }
+   },
+   "security objective": "Integrity"
+  },
+  {
+   "concept": "Read-response control \u0014 the stored read-enable (rden) and the outgoing acknowledge (bus_rsp_o.ack) that govern delivery of fetch results",
+   "kind": "decision",
+   "writers": "rden is reset to '0' at line 173 and updated on the clock at line 176 (rden <= bus_req_i.stb and (not bus_req_i.rw)); bus_rsp_o.ack is reset at line 174 and then driven on clock edges at line 178 when IMEM_INIT = true (bus_rsp_o.ack <= bus_req_i.stb and (not bus_req_i.rw)) or at line 180 when IMEM_INIT = false (bus_rsp_o.ack <= bus_req_i.stb).",
+   "observers": "bus_rsp_o.ack is an external output observable at lines 174/178/180; rden itself is internal but gates the externally visible bus_rsp_o.data at line 185.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 178,
+     "via": "bus_rsp_o.ack",
+     "reason": "bus_rsp_o.ack is driven as an external status (line 178) and in IMEM_INIT builds indicates read (ack only when not rw), so observing ack reveals the block's read-response state."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 176,
+     "via": "bus_req_i.stb",
+     "reason": "rden is assigned directly from external inputs bus_req_i.stb and bus_req_i.rw at line 176, so external masters can change the read-enable/ack behavior during operation."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 176,
+     "via": "bus_req_i.stb",
+     "reason": "rden (computed at line 176) gates the data output (bus_rsp_o.data at line 185), and because rden is derived from external inputs an external actor can block or force the data path and thus affect availability."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 176,
+     "via": "rden",
+     "reason": "The RTL contains no runtime debug/test override that substitutes ack or rden; their behavior is determined by the clocked assignments (e.g., rden at line 176) and static generics."
+    }
+   },
+   "security objective": "Confidentiality"
+  }
+ ],
+ "_problems": [
+  "concept answered 0 times: Instruction memory contents \u2014 the 32-bit instruction words t",
+  "concept answered 0 times: Writable instruction memory \u2014 the ability for bus writes to ",
+  "concept answered 0 times: Effective memory index \u2014 the internal address used to select",
+  "concept answered 0 times: Read-response control \u2014 the stored read-enable (rden) and th"
+ ]
+}

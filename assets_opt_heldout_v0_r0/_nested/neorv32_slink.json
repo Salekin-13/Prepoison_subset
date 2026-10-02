@@ -1,0 +1,117 @@
+{
+ "module name": "neorv32_slink",
+ "module purpose": "neorv32_slink is a bus-controlled stream link: bus writes set a control register (link enable, FIFO clear pulses, six interrupt-condition enables) and a TX destination register, and push TX words (last flag from address bit 2, stored destination, bus data) into a TX FIFO sub-unit that drives the TX stream outputs; RX stream words (data, source, last) are written into an RX FIFO sub-unit, popped by bus reads that also capture the word's last flag and source, and two registered interrupt outputs are raised from FIFO status masked by the enables.",
+ "use-case flows": [
+  {"flow": "configure", "value": "control settings (link enable and six interrupt-condition enables) taken from bus write data at register offset 00", "lines": [143, 145, 147, 148, 152, 153, 154, 155, 156, 157]},
+  {"flow": "configure", "value": "TX destination route (4 bits) taken from bus write data at register offset 01 and inserted into every enqueued TX word", "lines": [160, 161, 296]},
+  {"flow": "start", "value": "FIFO clear request (one-cycle rx_clr / tx_clr pulses) combined with the link enable into the clear decision delivered to each FIFO and used to clear rx_last", "lines": [140, 141, 149, 150, 213, 226, 242, 243, 281, 294]},
+  {"flow": "start", "value": "TX enqueue decision on a bus write with address bit 3 set, delivering the assembled word to the TX FIFO", "lines": [285, 286, 295, 296]},
+  {"flow": "operate", "value": "TX stream word (data, destination, last) and its valid flag driven from the TX FIFO read side, popped by the stream ready input", "lines": [289, 290, 291, 298, 299, 300, 301, 302]},
+  {"flow": "operate", "value": "RX stream word (data, source, last) written into the RX FIFO when valid, with the FIFO free flag returned as ready", "lines": [217, 218, 219, 229, 230, 231, 232, 233]},
+  {"flow": "read out", "value": "RX word popped on a bus read with address bit 3 set, its data returned and its last flag and source captured", "lines": [191, 221, 222, 227, 244, 245, 247, 248]},
+  {"flow": "read out", "value": "control settings, rx_last, FIFO status, FIFO sizes and both route registers returned on a bus read", "lines": [165, 166, 167, 169, 171, 172, 173, 174, 175, 176, 178, 179, 180, 181, 182, 183, 185, 186, 187, 188, 189]},
+  {"flow": "report", "value": "RX and TX interrupt requests computed from FIFO status, interrupt-condition enables and the link enable", "lines": [259, 260, 261, 262, 310, 311, 312, 313]},
+  {"flow": "reset", "value": "control fields, route registers, rx_last and both interrupt outputs forced to zero while rstn_i is low", "lines": [121, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 238, 239, 240, 256, 257, 307, 308]}
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Link enable setting -- whether the stream link operates: both FIFOs released from clear and interrupts allowed",
+   "security objective": "Integrity",
+   "reasoning": "ctrl.enable is written from bus write data on an addressed control write, `ctrl.enable <= bus_req_i.data(ctrl_en_c);` (line 148; GATED_BY bus_req_i.addr, bus_req_i.rw and bus_req_i.stb at occurrence 3), held between writes (CLOCKED_BY clk_i, occurrence 3) and cleared by reset (line 123). It decides `rx_fifo.clear <= (not ctrl.enable) or ctrl.rx_clr;` (line 226, GATES rx_fifo.clear at occurrence 5) and the TX counterpart (line 294), and gates both interrupt outputs (lines 259 and 310, GATES at occurrences 6 and 8). Integrity is Established: a corrupted value flushes or releases both FIFOs and allows or suppresses interrupts contrary to the written setting, and the readback at line 167 must agree with it. Availability is independently Established: while ctrl.enable is 0 both FIFOs are held in clear (lines 226, 294), so no stream word is queued or delivered, and both interrupt outputs stay 0. Confidentiality is not established: line 167 returns it on any read at offset 00. The value enters through bus_req_i.data and is read back through bus_rsp_o, both fields of transport records (complete read/write transactions: addr, data, ben, stb, rw; ack, err, data), so neither is a reference; ctrl.enable is the element that stores the setting.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.enable", "entity": "neorv32_slink", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "FIFO flush request and decision -- the one-cycle clear requests and the resulting clear decision delivered to each FIFO",
+   "security objective": "Integrity",
+   "reasoning": "ctrl.rx_clr and ctrl.tx_clr are written from bus data bits 1 and 2 (lines 149, 150; CLOCKED_BY clk_i at occurrence 4) and forced back to 0 on every clock edge (lines 140, 141), so a control write produces a one-cycle clear request. rx_fifo.clear computes the RX flush decision `(not ctrl.enable) or ctrl.rx_clr` (line 226, GATED_BY ctrl.enable and ctrl.rx_clr at occurrence 3), delivers it to rx_fifo_inst.clear_i (line 213), and is tested here in `if (rx_fifo.clear = '1')` to clear rx_last (lines 242-243). tx_fifo.clear computes the TX decision (line 294, GATED_BY ctrl.tx_clr at occurrence 3) and delivers it to tx_fifo_inst.clear_i (line 281). Both fields are computed here from a decision, so the sub-unit wiring exception is satisfied. Integrity is Established: the FIFO sub-units, which are not supplied, must receive exactly the decision defined at lines 226 and 294, and the rx_last clear at line 243 depends on it. Availability is independently Established: an asserted clear discards queued words and holds the FIFO cleared for as long as it is asserted. ctrl.enable also gates this decision but realizes its own concept (link enable).",
+   "related structural assets": [
+    {"asset rtl": "ctrl.rx_clr", "entity": "neorv32_slink", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.tx_clr", "entity": "neorv32_slink", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "rx_fifo.clear", "entity": "neorv32_slink", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "ctrl.rx_clr"}},
+    {"asset rtl": "tx_fifo.clear", "entity": "neorv32_slink", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "ctrl.tx_clr"}}
+   ]
+  },
+  {
+   "concept": "Interrupt-condition enables -- which RX and TX FIFO conditions are allowed to raise an interrupt",
+   "security objective": "Integrity",
+   "reasoning": "The six enables are written from bus data bits 16-21 on a control write (lines 152-157; each CLOCKED_BY clk_i at occurrence 3, GATED_BY bus_req_i.addr), cleared by reset (lines 126-131) and read back (lines 178-183). Each is an operand of its interrupt equation: `(ctrl.irq_rx_nempty and (rx_fifo.avail))` (line 260), lines 261-262 for RX and lines 311-313 for TX (SOURCES rx_irq_o or tx_irq_o at occurrence 5). Integrity is Established: a corrupted enable raises or suppresses the corresponding interrupt contrary to the written setting, and the readback must agree. Availability is independently Established: a cleared enable suppresses its interrupt condition. Confidentiality is not established: lines 178-183 return the enables on any read at offset 00.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.irq_rx_nempty", "entity": "neorv32_slink", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.irq_rx_half", "entity": "neorv32_slink", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.irq_rx_full", "entity": "neorv32_slink", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.irq_tx_empty", "entity": "neorv32_slink", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.irq_tx_nhalf", "entity": "neorv32_slink", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.irq_tx_nfull", "entity": "neorv32_slink", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Interrupt requests -- the RX and TX interrupt events the module raises",
+   "security objective": "Integrity",
+   "reasoning": "`rx_irq_o <= ctrl.enable and ((ctrl.irq_rx_nempty and (rx_fifo.avail)) or (ctrl.irq_rx_half and (rx_fifo.half)) or (ctrl.irq_rx_full and (not rx_fifo.free)));` (lines 259-262) and the TX equation (lines 310-313) are registered on each rising edge (CLOCKED_BY clk_i at occurrence 3) and reset to 0 (lines 257, 308). Each output carries DERIVES_FROM the enables and FIFO status and GATED_BY ctrl.enable at occurrence 3. Integrity is Established: the events leave the entity, so the consumer must receive exactly the value these equations define. Availability is independently Established: when ctrl.enable and an enabled condition hold, the request is produced at the next rising edge. Both ports also store the value; exit port takes precedence. The FIFO status fields (rx_fifo.avail, rx_fifo.half, rx_fifo.free and the TX counterparts) only receive sub-unit outputs and are read here as data operands, not in an if, case or when condition, so they are carriers and not reported.",
+   "related structural assets": [
+    {"asset rtl": "rx_irq_o", "entity": "neorv32_slink", "realization": "exit port", "occurrence": 3, "edge": {"type": "DERIVES_FROM", "partner": "ctrl.irq_rx_nempty"}},
+    {"asset rtl": "tx_irq_o", "entity": "neorv32_slink", "realization": "exit port", "occurrence": 3, "edge": {"type": "DERIVES_FROM", "partner": "ctrl.irq_tx_empty"}}
+   ]
+  },
+  {
+   "concept": "TX destination route setting -- the destination ID attached to every word the bus enqueues for transmission",
+   "security objective": "Integrity",
+   "reasoning": "route_dst is written by `route_dst <= bus_req_i.data(3 downto 0);` on a write at offset 01 (line 161; GATED_BY bus_req_i.addr at occurrence 3), held between writes (CLOCKED_BY clk_i, occurrence 3), reset at line 132 and read back at line 188. It is inserted into every TX FIFO word by `tx_fifo.wdata <= bus_req_i.addr(2) & route_dst & bus_req_i.data;` (line 296, SOURCES tx_fifo.wdata at occurrence 5). Integrity is Established: each enqueued word must carry the stored destination, so a corrupted value misroutes every later TX word. Availability is independently Established because the setting is held between writes and applied to every enqueue. Confidentiality is not established: line 188 returns it on any read at offset 01. The destination field later leaves on slink_tx_dst_o (line 300) from the FIFO read word; that port is reported under the outgoing TX word, because the FIFO internals are not supplied.",
+   "related structural assets": [
+    {"asset rtl": "route_dst", "entity": "neorv32_slink", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "TX enqueue decision -- whether a bus access pushes a word into the TX FIFO",
+   "security objective": "Integrity",
+   "reasoning": "`tx_fifo.we <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(3) = '1') else '0';` (line 295, GATED_BY bus_req_i.rw, bus_req_i.addr and bus_req_i.stb at occurrence 3) computes the decision and delivers it to tx_fifo_inst.we_i (line 286). It is computed here from a decision, so the sub-unit wiring exception holds. Integrity is Established: the TX FIFO, not supplied, must receive exactly this decision; a wrong value enqueues words that were not written or drops words that were. Availability is independently Established: when the predicate holds at a clock edge the enqueue is requested. The stb, rw and addr inputs are fields of the transport record bus_req_i and are not references.",
+   "related structural assets": [
+    {"asset rtl": "tx_fifo.we", "entity": "neorv32_slink", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "bus_req_i.rw"}}
+   ]
+  },
+  {
+   "concept": "Outgoing TX stream word -- payload, destination, end-of-frame flag and valid flag delivered to the stream sink",
+   "security objective": "Integrity",
+   "reasoning": "The TX FIFO read word leaves the entity through `slink_tx_data_o <= tx_fifo.rdata(31 downto 0);` (line 299), `slink_tx_dst_o <= tx_fifo.rdata(35 downto 32);` (line 300) and `slink_tx_last_o <= tx_fifo.rdata(36);` (line 301), each DERIVES_FROM tx_fifo.rdata at occurrence 2, and `slink_tx_valid_o <= tx_fifo.avail;` (line 302, COPIES tx_fifo.avail at occurrence 2). Integrity is Established under the integrator assumption: the sink receives exactly the slices of the FIFO read word and the availability flag that lines 299-302 define. Availability is independently Established: a word is presented whenever the FIFO reports one available. tx_fifo.rdata and tx_fifo.avail only receive sub-unit outputs (lines 290-291) and are read as data, so they are carriers. slink_tx_ready_i is only copied unchanged to tx_fifo.re (line 298), so it is not an eligible setting point. tx_fifo.wdata (line 296) only places bus fields and route_dst side by side, unchanged, on the sub-unit input, and the payload enters through bus_req_i, a transport record; neither is reported.",
+   "related structural assets": [
+    {"asset rtl": "slink_tx_data_o", "entity": "neorv32_slink", "realization": "exit port", "occurrence": 2, "edge": {"type": "DERIVES_FROM", "partner": "tx_fifo.rdata"}},
+    {"asset rtl": "slink_tx_dst_o", "entity": "neorv32_slink", "realization": "exit port", "occurrence": 2, "edge": {"type": "DERIVES_FROM", "partner": "tx_fifo.rdata"}},
+    {"asset rtl": "slink_tx_last_o", "entity": "neorv32_slink", "realization": "exit port", "occurrence": 2, "edge": {"type": "DERIVES_FROM", "partner": "tx_fifo.rdata"}},
+    {"asset rtl": "slink_tx_valid_o", "entity": "neorv32_slink", "realization": "exit port", "occurrence": 2, "edge": {"type": "COPIES", "partner": "tx_fifo.avail"}}
+   ]
+  },
+  {
+   "concept": "RX dequeue decision -- whether a bus access pops a word from the RX FIFO",
+   "security objective": "Integrity",
+   "reasoning": "`rx_fifo.re <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(3) = '1') else '0';` (line 227, GATED_BY bus_req_i.rw at occurrence 3) computes the decision, delivers it to rx_fifo_inst.re_i (line 221), and is tested here in `elsif (rx_fifo.re = '1')` and `if (rx_fifo.re = '1')` (lines 244, 247; GATES rx_last and route_src) to capture the popped word's attributes. It is computed here and tested here, so the sub-unit wiring exception holds. Integrity is Established: the RX FIFO, not supplied, must receive exactly this decision, and the attribute capture at lines 245 and 248 must coincide with it; a wrong value discards an unread word or captures attributes of the wrong word. Availability is independently Established: a qualifying read pops the word at the clock edge.",
+   "related structural assets": [
+    {"asset rtl": "rx_fifo.re", "entity": "neorv32_slink", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "bus_req_i.rw"}}
+   ]
+  },
+  {
+   "concept": "Attributes of the last dequeued RX word -- its end-of-frame flag and its source ID",
+   "security objective": "Integrity",
+   "reasoning": "`rx_last <= rx_fifo.rdata(36);` (line 245; CLOCKED_BY clk_i and DERIVES_FROM rx_fifo.rdata at occurrence 5, GATED_BY rx_fifo.re) and `route_src <= rx_fifo.rdata(35 downto 32);` (line 248; CLOCKED_BY clk_i at occurrence 4, GATED_BY rx_fifo.re) store the fields of the word popped by a bus read. rx_last is also cleared by the flush decision (line 243) and both are reset (lines 239-240). They are reported on status reads (lines 169, 189). Integrity is Established: the reported attributes must equal the fields of the word actually dequeued (lines 245, 248). Availability is independently Established: each is held until the next pop, flush or reset. The flow graph lists both as not reached from an input, because their source is the sub-unit output rx_fifo.rdata (connection mode out at line 222); the RTL shows the assignments. Confidentiality is not established: lines 169 and 189 return them on any read.",
+   "related structural assets": [
+    {"asset rtl": "rx_last", "entity": "neorv32_slink", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "route_src", "entity": "neorv32_slink", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "RX flow-control readiness -- the RX FIFO free indication returned to the stream source",
+   "security objective": "Integrity",
+   "reasoning": "`slink_rx_ready_o <= rx_fifo.free;` (line 233, COPIES rx_fifo.free at occurrence 2) exports the free flag that rx_fifo_inst drives (line 219). Integrity is Established under the integrator assumption: the stream source receives exactly the free indication the flow defines, and the same flag gates the RX full interrupt (line 262) and is reported at line 173. Availability is independently Established: while it is 0 the source is held off and no RX word is accepted by this handshake. rx_fifo.free only receives a sub-unit output and is read as data, so it is a carrier; slink_rx_ready_o is the port through which the value leaves the entity.",
+   "related structural assets": [
+    {"asset rtl": "slink_rx_ready_o", "entity": "neorv32_slink", "realization": "exit port", "occurrence": 2, "edge": {"type": "COPIES", "partner": "rx_fifo.free"}}
+   ]
+  },
+  {
+   "concept": "Received RX stream word -- payload, source and end-of-frame flag accepted from the stream source and returned to the bus",
+   "security objective": "Integrity",
+   "reasoning": "The RX word enters on slink_rx_data_i, slink_rx_src_i and slink_rx_last_i, written with slink_rx_valid_i into the RX FIFO (lines 229-232), and is returned by `bus_rsp_o.data <= rx_fifo.rdata(31 downto 0);` (line 191). Integrity is Established under the integrator assumption: the FIFO sub-unit must receive exactly the word on the stream inputs, and the requester must receive exactly the popped word. Mapping limitation: the four RX inputs are only copied unchanged into rx_fifo.wdata and rx_fifo.we (COPIES at lines 229-232), so they are not eligible setting points; rx_fifo.wdata, rx_fifo.we and rx_fifo.rdata only pass values to or from the sub-unit and are carriers; the word leaves through bus_rsp_o, a transport record. No eligible declaration survives, so the list is empty.",
+   "related structural assets": []
+  }
+ ]
+}

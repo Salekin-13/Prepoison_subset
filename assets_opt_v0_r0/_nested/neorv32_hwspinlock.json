@@ -1,0 +1,62 @@
+{
+ "module name": "neorv32_hwspinlock",
+ "module purpose": "neorv32_hwspinlock holds 32 one-bit lock registers (lock_q, one per generate index, lines 36-53). A bus read with addr(7)='0' returns the addressed bit's prior value and sets it to '1', a bus write there clears it (lines 44-45, 68), a read with addr(7)='1' returns all 32 bits (line 70), and every access is acknowledged on the registered bus_rsp_o (lines 63-64).",
+ "use-case flows": [
+  {
+   "flow": "operate",
+   "value": "test-and-set of one addressed lock bit: a read returns the bit's prior value and sets it to '1'; a write clears it to '0'",
+   "lines": [44, 45, 51, 66, 67, 68]
+  },
+  {
+   "flow": "read out",
+   "value": "all 32 stored lock bits returned on a read with addr(7)='1'",
+   "lines": [66, 67, 69, 70]
+  },
+  {
+   "flow": "report",
+   "value": "access acknowledgement (ack copies stb) and a constant-zero error flag",
+   "lines": [63, 64]
+  },
+  {
+   "flow": "reset",
+   "value": "every lock bit cleared to '0' and the response forced to rsp_terminate_c while rstn_i is '0'",
+   "lines": [41, 42, 60, 61]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Lock state -- whether each of the 32 locks is currently held (set) or free (clear)",
+   "security objective": "Integrity",
+   "reasoning": "The test-and-set flow updates the bit with `lock_q(i) <= not bus_req_i.rw;` under `(bus_req_i.stb = '1') and (bus_req_i.addr(7) = '0') and (sel(i) = '1')` (lines 44-45): a read (rw='0') sets the bit and a write (rw='1') clears it. In the same clock edge the read response is `bus_rsp_o.data <= lock_q and sel;` (line 68), so the requester receives the bit's value before its own set. Integrity is Established: the returned prior value and the stored bit must follow this update rule, or two reads of the same slot could both see '0', and a bit must stay set until a write to its slot or reset (line 42). Availability is also Established under the implemented conditions: the bit is held between accesses (storage edge, CLOCKED_BY clk_i at line 45) and is returned on every qualified read (lines 68, 70). Confidentiality is not established: line 70 returns all bits on any read with addr(7)='1' and no line restricts the reader. lock_q stores the state (occurrence 3, CLOCKED_BY clk_i, line 45). The value leaves through bus_rsp_o.data (COPIES lock_q at line 70, DERIVES_FROM lock_q at line 68) and is set from bus_req_i.rw (SOURCES lock_q, line 45), but bus_req_i and bus_rsp_o are records carrying complete bus transactions (address, data, byte enable, strobe, rw; data, ack, err), so the transport rule excludes them whole and by field; lock_q is the in-block element that stores the value.",
+   "related structural assets": [
+    {
+     "asset rtl": "lock_q",
+     "entity": "neorv32_hwspinlock",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {
+      "type": "CLOCKED_BY",
+      "partner": "clk_i"
+     }
+    }
+   ]
+  },
+  {
+   "concept": "Lock slot selection decision -- which of the 32 lock bits an access sets, clears or reports",
+   "security objective": "Integrity",
+   "reasoning": "The per-slot decision is the comparison `sel(i) <= '1' when (bus_req_i.addr(6 downto 2) = std_ulogic_vector(to_unsigned(i, 5))) else '0';` (line 51). It decides which bit the test-and-set flow changes (GATES lock_q at line 44, occurrence 2) and which bit the read returns (`lock_q and sel`, SOURCES bus_rsp_o.data at line 68, occurrence 4). Integrity is Established: an access addressed to slot i must set or clear only lock_q(i) and return only bit i; a wrong selection would set, clear or report a different lock than the one addressed, breaking the update and readback relation of lines 44-45 and 68. sel computes this comparison result (occurrence 3, GATED_BY bus_req_i.addr, line 51); it is the decision itself, not a forwarding connection. The address field it compares is a field of the transport record bus_req_i and is not reported. Confidentiality is not established.",
+   "related structural assets": [
+    {
+     "asset rtl": "sel",
+     "entity": "neorv32_hwspinlock",
+     "realization": "computes",
+     "occurrence": 3,
+     "edge": {
+      "type": "GATED_BY",
+      "partner": "bus_req_i.addr"
+     }
+    }
+   ]
+  }
+ ]
+}

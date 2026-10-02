@@ -1,0 +1,110 @@
+{
+ "module name": "neorv32_cpu_cp_cond",
+ "module purpose": "neorv32_cpu_cp_cond decodes instruction fields of ctrl_i into a command-valid decision that it drives on valid_o, tests whether rs2_i is zero with a polarity chosen by ctrl_i.ir_funct3(1), and on each rising edge of clk_i registers rs1_i into res_o when the command is valid and the condition holds, otherwise zero; rstn_i clears res_o.",
+ "use-case flows": [
+  {
+   "flow": "start",
+   "value": "command validity: whether the decoded instruction fields in ctrl_i select this unit's conditional operation",
+   "lines": [41, 42, 43]
+  },
+  {
+   "flow": "operate",
+   "value": "condition: the zero test of rs2_i combined with the polarity bit ctrl_i.ir_funct3(1)",
+   "lines": [62, 63]
+  },
+  {
+   "flow": "operate",
+   "value": "conditional result: rs1_i registered into res_o when the command is valid and the condition holds, zero otherwise",
+   "lines": [52, 53, 54, 55, 56]
+  },
+  {
+   "flow": "report",
+   "value": "command-valid indication driven from valid_cmd on valid_o",
+   "lines": [66]
+  },
+  {
+   "flow": "reset",
+   "value": "res_o cleared to all zeros while rstn_i = '0'",
+   "lines": [50, 51]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Command-valid decision -- whether the current instruction is this unit's conditional operation, as used for the result and reported to the consumer",
+   "security objective": "Integrity",
+   "reasoning": "valid_cmd is '1' only when ctrl_i.alu_cp_alu = '1', ctrl_i.ir_opcode(5) = '1', ctrl_i.ir_funct3(2) = '1', ctrl_i.ir_funct3(0) = '1' and ctrl_i.ir_funct12(11 downto 5) = \"0000111\" (lines 41-43). The decision gates the result register (GATES res_o, valid_cmd occurrence 3, line 53) and leaves the entity through `valid_o <= valid_cmd;` (line 66). Integrity is Established: the result rule (lines 53-56) and the consumer of valid_o, which is not supplied, require the decision to equal this predicate. Availability: valid_o follows valid_cmd combinationally whenever the predicate holds (line 66); nothing more is claimed. ctrl_i sets the decision: this entity reads its fields alu_cp_alu and ir_opcode (line 41), ir_funct3 (line 42) and ir_funct12 (line 43) to decide (GATES valid_cmd; cited at ctrl_i occurrence 2, line 41, where field alu_cp_alu GATES valid_cmd). ctrl_i carries decoded instruction control fields and performs no address/data/acknowledge transaction here, so it is not a transport record. valid_cmd computes the decision (GATED_BY ctrl_i.alu_cp_alu, occurrence 2, line 41). valid_o is an exit port (COPIES valid_cmd, occurrence 2, line 66). The flow graph lists valid_cmd as not reached from an input only because GATES is a control edge; the RTL shows it is computed from ctrl_i fields. No line restricts who observes valid_o, so confidentiality is not established.",
+   "related structural assets": [
+    {
+     "asset rtl": "ctrl_i",
+     "entity": "neorv32_cpu_cp_cond",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "GATES", "partner": "valid_cmd"}
+    },
+    {
+     "asset rtl": "valid_cmd",
+     "entity": "neorv32_cpu_cp_cond",
+     "realization": "computes",
+     "occurrence": 2,
+     "edge": {"type": "GATED_BY", "partner": "ctrl_i.alu_cp_alu"}
+    },
+    {
+     "asset rtl": "valid_o",
+     "entity": "neorv32_cpu_cp_cond",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "COPIES", "partner": "valid_cmd"}
+    }
+   ]
+  },
+  {
+   "concept": "Condition decision -- whether the zero test of rs2 matches the polarity selected by the instruction, deciding if rs1 passes or the result is zeroed",
+   "security objective": "Integrity",
+   "reasoning": "`condition <= rs2_zero xnor ctrl_i.ir_funct3(1);` (line 63) combines the zero test `rs2_zero <= '1' when (rs2_i = zero_c) else '0';` (line 62) with the polarity bit, and condition gates the result register (GATES res_o, occurrence 2, line 53). All its users lie in this entity: res_o takes rs1_i when valid_cmd and condition are '1' (line 54) and zero otherwise (line 56). Integrity is Established: if condition differs from (rs2_i = 0) xnor ctrl_i.ir_funct3(1), res_o passes rs1_i where the rule at lines 53-56 gives zero, or the reverse. condition computes the decision (DERIVES_FROM rs2_zero, occurrence 3, line 63; the record also targets ctrl_i.ir_funct3). rs2_i sets it: this entity reads it only to decide (GATES rs2_zero, occurrence 2, line 62; CONTROL-ONLY in the flow graph). ctrl_i sets the polarity: its field ir_funct3 SOURCES condition at line 63 (ctrl_i occurrence 7). rs2_zero is the zero-test operand that condition combines and feeds nothing else (SOURCES condition, line 63), so it is part of this computation, not an additional reference. Confidentiality is not established.",
+   "related structural assets": [
+    {
+     "asset rtl": "condition",
+     "entity": "neorv32_cpu_cp_cond",
+     "realization": "computes",
+     "occurrence": 3,
+     "edge": {"type": "DERIVES_FROM", "partner": "rs2_zero"}
+    },
+    {
+     "asset rtl": "rs2_i",
+     "entity": "neorv32_cpu_cp_cond",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "GATES", "partner": "rs2_zero"}
+    },
+    {
+     "asset rtl": "ctrl_i",
+     "entity": "neorv32_cpu_cp_cond",
+     "realization": "sets",
+     "occurrence": 7,
+     "edge": {"type": "SOURCES", "partner": "condition"}
+    }
+   ]
+  },
+  {
+   "concept": "Conditional operation result -- the value the unit delivers: rs1 when the command is valid and the condition holds, zero otherwise",
+   "security objective": "Integrity",
+   "reasoning": "On each rising edge of clk_i with rstn_i = '1' (line 52), `res_o <= rs1_i;` (line 54) when `(valid_cmd = '1') and (condition = '1')` (line 53), else `res_o <= (others => '0');` (line 56); reset clears it (line 51). res_o delivers the value to a consumer that is not supplied, so Integrity is Established from lines 53-56: the consumer must receive exactly rs1_i under the condition and zero otherwise. Availability is Established under the implemented conditions: the result is registered at each rising edge (line 52) and held until the next. rs1_i sets the value: this entity reads it to store it in res_o (CARRIES res_o, occurrence 2, line 54). res_o is an exit port (COPIES rs1_i, occurrence 3, line 54); it also stores the value (CLOCKED_BY clk_i), and exit port takes precedence. valid_cmd and condition gate this value and are reported under their own decisions. Whether rs1_i must stay hidden when the output is zeroed depends on context outside the RTL, so confidentiality is not claimed.",
+   "related structural assets": [
+    {
+     "asset rtl": "rs1_i",
+     "entity": "neorv32_cpu_cp_cond",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "CARRIES", "partner": "res_o"}
+    },
+    {
+     "asset rtl": "res_o",
+     "entity": "neorv32_cpu_cp_cond",
+     "realization": "exit port",
+     "occurrence": 3,
+     "edge": {"type": "COPIES", "partner": "rs1_i"}
+    }
+   ]
+  }
+ ]
+}

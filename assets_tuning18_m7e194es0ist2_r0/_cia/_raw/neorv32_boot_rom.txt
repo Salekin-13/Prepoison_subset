@@ -1,0 +1,104 @@
+{
+  "module name": "neorv32_boot_rom",
+  "concepts": [
+    {
+      "concept": "Boot ROM read data \u0014 the 32-bit word taken from the embedded boot ROM and returned on the bus",
+      "kind": "data",
+      "writers": "rdata is written by the mem_access process at line 48: rdata <= mem_rom_c(to_integer(unsigned(bus_req_i.addr(boot_rom_size_index_c+1 downto 2)))) on the rising edge of clk_i (rising_edge at line 47); the source array mem_rom_c is a constant initialized at line 35; no other writers in this module.",
+      "observers": "bus_rsp_o.data is driven from rdata when rden = '1' (line 64); bus_rsp_o.ack (line 65) and bus_rsp_o.err (line 66) are outputs but only bus_rsp_o.data exposes the ROM word contents.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 64,
+          "via": "bus_rsp_o.data",
+          "reason": "The ROM word stored in rdata is presented on the output port bus_rsp_o.data when rden = '1' (line 64), so an external observer can read the word and the integrator may treat that word as secret."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 48,
+          "via": "bus_req_i.addr",
+          "reason": "rdata is updated on each rising clock from mem_rom_c indexed by bus_req_i.addr (assignment at line 48, clock at line 47) while bus_rsp_o.data can present rdata when rden = '1' (line 64), so the delivered word can change due to external address changes and is not blocked while in use."
+        },
+        "availability": {
+          "answer": "no",
+          "line": 48,
+          "via": null,
+          "reason": "rdata is assigned unconditionally from the internal mem_rom_c at the clock edge (line 48) so nothing external in this RTL can freeze the internal rdata update (only its exposure is gated)."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 64,
+          "via": null,
+          "reason": "bus_rsp_o.data has a single gated driver from rdata (line 64) and there is no alternate debug/test override or bypass for the ROM read path in the RTL."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Read-response decision \u0014 the latched signal that enables returning data and drives the ack (rden)",
+      "kind": "decision",
+      "writers": "rden is reset to '0' when rstn_i = '0' (synchronous reset path in the bus_feedback process at line 58) and otherwise latched on the rising edge of clk_i from bus_req_i.stb and (not bus_req_i.rw) (assignment at line 60); no other writers.",
+      "observers": "rden gates the data output at bus_rsp_o.data (used in the conditional on line 64) and is directly copied to bus_rsp_o.ack (line 65), so rden is observable externally via bus_rsp_o.ack (and affects bus_rsp_o.data).",
+      "answers": {
+        "confidentiality": {
+          "answer": "no",
+          "line": 65,
+          "via": "bus_rsp_o.ack",
+          "reason": "rden is copied directly to the external output bus_rsp_o.ack (line 65) and is the value written (by the requester), so the RTL returns the value to the writer and does not withhold it."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 60,
+          "via": "bus_req_i.stb / bus_req_i.rw",
+          "reason": "rden is clocked from bus_req_i.stb and (not bus_req_i.rw) (line 60) and that latched value directly controls delivery and ack (lines 64-65), so external inputs can change rden while it is in use and affect operation."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 60,
+          "via": "bus_req_i.stb / bus_req_i.rw",
+          "reason": "The bus_req_i fields drive rden at line 60; clearing or holding stb/rw prevents rden from being set and thus prevents data/ack (blocking progress), so an external actor can stop responses."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 60,
+          "via": null,
+          "reason": "rden has a single clocked driver in the bus_feedback process (assignment at line 60, reset at line 58) and there is no alternate debug/test override in the RTL."
+        }
+      },
+      "security objective": "Integrity"
+    },
+    {
+      "concept": "Requested address (the bus-provided address bits that select which ROM word is read)",
+      "kind": "data",
+      "writers": "bus_req_i.addr is an input port (declared in the port list at line 23) driven externally (outside this module); the module does not write it and it is sampled/used to index mem_rom_c in the mem_access assignment at line 48.",
+      "observers": "The address is not output directly, but it selects rdata (line 48) and so the returned bus_rsp_o.data (line 64) is derived from the requested address and can be observed externally; there is no direct readback of the address itself.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 64,
+          "via": "bus_rsp_o.data",
+          "reason": "bus_req_i.addr is used to index ROM at line 48 and the selected ROM word is presented on bus_rsp_o.data (line 64), so observing the returned word can reveal which address was requested and the integrator may treat the address as sensitive."
+        },
+        "integrity": {
+          "answer": "yes-assumed",
+          "line": 48,
+          "via": "bus_req_i.addr",
+          "reason": "The ROM index is taken directly from bus_req_i.addr in the mem_access write to rdata (line 48) and that address is supplied by an external writer, so the integrity of the address depends on whether the external writer is trusted."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 60,
+          "via": "bus_req_i.stb",
+          "reason": "Returning a read requires the request handshake (rden set from bus_req_i.stb and not bus_req_i.rw at line 60); if stb is not asserted the module will not present data for any address, so external signals can block progress."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 48,
+          "via": null,
+          "reason": "bus_req_i.addr is the single input used to select the ROM index at the mem_access assignment (line 48) and there is no alternate debug/test override in the RTL."
+        }
+      },
+      "security objective": "Confidentiality"
+    }
+  ]
+}

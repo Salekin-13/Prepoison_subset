@@ -1,0 +1,105 @@
+{
+ "module name": "neorv32_cpu_regfile",
+ "module purpose": "neorv32_cpu_regfile holds the register array reg_file, writes the write-back data rd_i into the register chosen by ctrl_i when write-back is enabled, and returns the registers addressed by ctrl_i on rs1_o, rs2_o and (when RS3_EN) rs3_o at each rising edge of clk_i; the RST_EN generic selects between a variant without reset that decides writes through rf_we, rd_zero and opa_addr (lines 69-93) and a variant with reset that decides writes per index inline (lines 99-131).",
+ "use-case flows": [
+  {
+   "flow": "operate",
+   "value": "write-back: rd_i stored into the register addressed by ctrl_i when the write-back predicates hold",
+   "lines": [76, 77, 78, 79, 80, 84, 85, 86, 103, 108, 109, 110]
+  },
+  {
+   "flow": "read out",
+   "value": "stored register values returned on rs1_o, rs2_o and rs3_o at the indices given by ctrl_i",
+   "lines": [88, 89, 126, 127, 141, 144]
+  },
+  {
+   "flow": "lock",
+   "value": "register index 0 kept out of ordinary write-back (rd_zero suppression without RST_EN; constant zero and a write loop starting at 1 with RST_EN)",
+   "lines": [76, 77, 103, 117]
+  },
+  {
+   "flow": "reset",
+   "value": "registers 1 and up and the rs1_o/rs2_o outputs cleared to zero while rstn_i is low (RST_EN builds)",
+   "lines": [106, 107, 122, 123, 124]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Register file contents -- the data values held in the register array and returned as read operands",
+   "security objective": "Integrity",
+   "reasoning": "Write-back stores rd_i: `reg_file(to_integer(unsigned(opa_addr(addr_bits_c-1 downto 0)))) <= rd_i;` (line 86, builds with RST_EN false) and `reg_file(i) <= rd_i;` (line 110, RST_EN builds). Read-out returns the stored values: `rs1_o <= reg_file(...)` (lines 88, 126), rs2_o (lines 89, 127) and rs3_o (line 141, RS3_EN builds). Integrity is Established: a value read on rs1_o/rs2_o/rs3_o must equal the last value written at that index by lines 86/110. Availability is also Established: values are held between writes and delivered at each rising edge (lines 84, 125, 140); with RST_EN they are cleared while rstn_i is low (lines 106-107, 122-124). Confidentiality is not established: no line restricts which index may be read. reg_file stores (CLOCKED_BY clk_i at occurrence 2, line 86; its SOURCES records into the output ports rs1_o, rs2_o, rs3_o show the use); its storage is mixed because reg_file(0) is tied to zero by a concurrent statement in RST_EN builds (line 117). rd_i sets the value (CARRIES reg_file, occurrence 2, line 86; also line 110). rs1_o, rs2_o and rs3_o are exit ports (DERIVES_FROM reg_file), exit taking precedence over their own CLOCKED_BY storage; rs3_o carries register data only when RS3_EN holds and is tied to zero otherwise (line 149).",
+   "related structural assets": [
+    {
+     "asset rtl": "reg_file",
+     "entity": "neorv32_cpu_regfile",
+     "realization": "stores",
+     "occurrence": 2,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "rd_i",
+     "entity": "neorv32_cpu_regfile",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "CARRIES", "partner": "reg_file"}
+    },
+    {
+     "asset rtl": "rs1_o",
+     "entity": "neorv32_cpu_regfile",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "DERIVES_FROM", "partner": "reg_file"}
+    },
+    {
+     "asset rtl": "rs2_o",
+     "entity": "neorv32_cpu_regfile",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "DERIVES_FROM", "partner": "reg_file"}
+    },
+    {
+     "asset rtl": "rs3_o",
+     "entity": "neorv32_cpu_regfile",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "DERIVES_FROM", "partner": "reg_file"}
+    }
+   ]
+  },
+  {
+   "concept": "Register write-back decision -- whether a write-back lands in the register array and at which index, including suppression of ordinary writes to index 0",
+   "security objective": "Integrity",
+   "reasoning": "In builds with RST_EN false, `rf_we <= (ctrl_i.rf_wb_en and (not rd_zero)) or ctrl_i.rf_zero_we;` (line 77) decides whether reg_file is written (`if (rf_we = '1')`, line 85), `rd_zero <= '1' when (ctrl_i.rf_rd = \"00000\") else '0';` (line 76) is the comparison that blocks ordinary write-back to index 0, and opa_addr (lines 78-80) picks the written index by priority (zero-write, then rf_rd, then rf_rs1) and SELECTS reg_file at line 86. In RST_EN builds the decision is the inline condition `(unsigned(ctrl_i.rf_rd(...)) = to_unsigned(i, addr_bits_c)) and (ctrl_i.rf_wb_en = '1')` (line 109) for indices 1 and up (line 103), with reg_file(0) tied to zero (line 117). Integrity is Established: a wrong decision writes rd_i into an unaddressed register, overwrites index 0, or drops a write-back, breaking lines 77/86 and 109-110. Availability is also Established under the implemented conditions: the write lands at the rising edge when the predicates hold (lines 84-86, 108-110). ctrl_i sets the decision: it is a whole record port read by this entity to decide, not a transport record (it carries neither write data nor read data, which use rd_i and rs1_o-rs3_o); it is cited at occurrence 3 (line 77) with its field ctrl_i.rf_zero_we's GATES rf_we, and its fields rf_wb_en and rf_rd also GATE reg_file at line 109. rf_we computes the enable (GATED_BY ctrl_i.rf_zero_we, occurrence 2), rd_zero computes the index-0 comparison result (GATED_BY ctrl_i.rf_rd, occurrence 2), and opa_addr computes the write index (GATED_BY ctrl_i.rf_wb_en, occurrence 2; DERIVES_FROM ctrl_i.rf_rd and ctrl_i.rf_rs1); these three exist only when RST_EN is false (their configuration records). Not reported: rs3_addr only carries the slice ctrl_i.ir_funct12(11 downto 7) (line 144) into the rs3_o read index (line 141); clk_i and rstn_i are the clock and reset inputs (SEQUENCES at line 84, RESETS at line 106).",
+   "related structural assets": [
+    {
+     "asset rtl": "ctrl_i",
+     "entity": "neorv32_cpu_regfile",
+     "realization": "sets",
+     "occurrence": 3,
+     "edge": {"type": "GATES", "partner": "rf_we"}
+    },
+    {
+     "asset rtl": "rf_we",
+     "entity": "neorv32_cpu_regfile",
+     "realization": "computes",
+     "occurrence": 2,
+     "edge": {"type": "GATED_BY", "partner": "ctrl_i.rf_zero_we"}
+    },
+    {
+     "asset rtl": "rd_zero",
+     "entity": "neorv32_cpu_regfile",
+     "realization": "computes",
+     "occurrence": 2,
+     "edge": {"type": "GATED_BY", "partner": "ctrl_i.rf_rd"}
+    },
+    {
+     "asset rtl": "opa_addr",
+     "entity": "neorv32_cpu_regfile",
+     "realization": "computes",
+     "occurrence": 2,
+     "edge": {"type": "GATED_BY", "partner": "ctrl_i.rf_wb_en"}
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,122 @@
+{
+  "module name": "neorv32_cpu_pmp",
+  "conceptual assets": [
+    {
+      "concept": "Per-region PMP configuration registers (R/W/X bits, mode and lock) that determine region permission checks and writability",
+      "security objective": "Integrity",
+      "reasoning": "The RTL stores per-region configuration in pmpcfg and uses those bits to compute permissions: csr_pmpcfg process writes pmpcfg(i) from ctrl_i.csr_wdata when pmpcfg_we(i/4) = '1' and the lock bit is clear (pmpcfg(i)(cfg_l_c) = '0') (see csr_pmpcfg). The perm_gen process later reads pmpcfg(r)(cfg_x_c/cfg_r_c/cfg_w_c/cfg_l_c) to compute allow(r). Therefore corruption or unauthorized modification of pmpcfg would change allow decisions and break access enforcement. The module consumes CSR writes to set these registers and computes per-register write enables before the clocked store.",
+      "related structural assets": [
+        {
+          "asset rtl": "pmpcfg",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "pmpcfg_we",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Per-region PMP address registers that define region endpoints used for address matching",
+      "security objective": "Integrity",
+      "reasoning": "pmpaddr(i) is updated in csr_pmpaddr when pmpaddr_we(i) = '1' and the region's lock bit is clear (pmpcfg(i)(cfg_l_c) = '0'), writing the CSR payload into pmpaddr (see csr_pmpaddr). pmpaddr values are consumed by the generated cmp_ge/cmp_lt and addr_mask logic and by match generation (region_gen and address_read_back). Incorrect pmpaddr values therefore cause incorrect region matches and incorrect permission outcomes.",
+      "related structural assets": [
+        {
+          "asset rtl": "pmpaddr",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "pmpaddr_we",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Access operands under check: the effective address (acc_addr) and privilege (acc_priv) used for PMP evaluation",
+      "security objective": "Integrity",
+      "reasoning": "The RTL selects the address and privilege used for matching via concurrent assignments: acc_addr <= ctrl_i.pc_nxt when (ctrl_i.lsu_mo_we = '0') else addr_ls_i, and acc_priv <= ctrl_i.cpu_priv when (ctrl_i.lsu_mo_we = '0') else ctrl_i.lsu_priv. These signals are then used by cmp_ge/cmp_lt/cmp_na and perm_gen to produce match and allow. If acc_addr or acc_priv are corrupted, matching and permission decisions will be incorrect, directly affecting enforcement.",
+      "related structural assets": [
+        {
+          "asset rtl": "acc_addr",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "acc_priv",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "addr_ls_i",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Per-region address-match decision (match vector) selecting which region, if any, matches the current access under the configured mode (TOR/NA4/NAPOT)",
+      "security objective": "Integrity",
+      "reasoning": "match(r) is computed in match_gen from pmpcfg mode bits and comparator signals (cmp_ge/cmp_lt/cmp_na): e.g., for TOR mode match uses cmp_ge(r) and cmp_lt(r) or cmp_ge(r) and not cmp_ge(r+1); for NAPOT match uses cmp_na(r). match is then used by the fail-generation chain to choose which region's permissions apply. Corruption of match would cause the wrong region to be selected and therefore wrong permission enforcement.",
+      "related structural assets": [
+        {
+          "asset rtl": "match",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Per-region permission decision (allow vector) that indicates whether a matched region permits the current access type for the current privilege",
+      "security objective": "Integrity",
+      "reasoning": "perm_gen computes allow(r) from pmpcfg bits, acc_priv and the access type signals (ctrl_i.lsu_mo_we, ctrl_i.lsu_rw): e.g. when lsu_mo_we='0' the process uses cfg_x_c and cfg_l_c to decide execute permission, otherwise it uses cfg_r_c or cfg_w_c for loads/stores. allow(r) is consumed by the fail-generation logic; incorrect allow values directly permit or deny accesses incorrectly, so integrity of allow is required.",
+      "related structural assets": [
+        {
+          "asset rtl": "allow",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Access-fault detection and reporting (fail chain and fault_o) that signals a disallowed access",
+      "security objective": "Integrity",
+      "reasoning": "The RTL builds a fail chain: fail(NUM_REGIONS) is '1' when acc_priv /= priv_mode_m_c, and for r downwards fail(r) <= not allow(r) when (match(r) = '1') else fail(r+1) (fault_check_gen). The clocked fault_check process then sets fault_o <= (not ctrl_i.cpu_debug) and fail(0) on rising_edge(clk_i). These computed fail(0) and the output fault_o implement the module's exception reporting; corruption or suppression of the fail result or of fault_o (or incorrect cpu_debug gating) would make the core miss or misreport access faults, violating enforcement semantics.",
+      "related structural assets": [
+        {
+          "asset rtl": "fail",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "fault_o",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "sets"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,140 @@
+{
+  "module name": "neorv32_cpu_cp_cfu",
+  "conceptual assets": [
+    {
+      "concept": "CFU key memory contents (four 32-bit words) used by XTEA operations",
+      "security objective": "Integrity",
+      "reasoning": "key_mem is a stored 4-entry array cleared on reset (`if (rstn_i = '0') then key_mem <= (others => (others => '0'))`) and written by the CSR write path (`if (csr_we_i = '1') then key_mem(to_integer(unsigned(csr_addr_i))) <= csr_wdata_i;`). The keys are read into the operation path (`tmp_z <= key_mem(to_integer(unsigned(xtea.sum(1 downto 0))))`) and contribute to `tmp_r` and thus to `xtea.res` which is exported via `result_o`. Therefore integrity of key_mem is required for correct CFU results; readback is implemented by `csr_rdata_o <= key_mem(...)` (no RTL confidentiality restriction).",
+      "related structural assets": [
+        {
+          "asset rtl": "key_mem",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr_we_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "csr_addr_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "csr_wdata_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "csr_rdata_o",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Operation input operands captured at start (xtea.opa / xtea.opb loaded from rs1_i / rs2_i)",
+      "security objective": "Integrity",
+      "reasoning": "On start with rtype=r3 (`if (start_i = '1') and (rtype_i = r3type_c) then xtea.opa <= rs1_i; xtea.opb <= rs2_i; xtea.done(0) <= '1';`) the core latches operands into `xtea.opa`/`xtea.opb`. These fields drive tmp_x/tmp_y/tmp_a/tmp_b/tmp_r and the registered `xtea.res`. Corruption of the captured operands therefore breaks the computed result.",
+      "related structural assets": [
+        {
+          "asset rtl": "xtea.opa",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "xtea.opb",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rs1_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "rs2_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "start_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "rtype_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Running sum state controlling rounds and key selection (xtea.sum)",
+      "security objective": "Integrity",
+      "reasoning": "When an operation is active (`if (xtea.done(0) = '1')`) the core updates `xtea.sum` according to funct3: e.g. `if (funct3_i(2) = '1') then xtea.sum <= xtea.opa; elsif (funct3_i(1 downto 0) = ... ) then xtea.sum <= std_ulogic_vector(unsigned(xtea.sum) + unsigned(xtea_delta_c));` etc. Bits of `xtea.sum` are used to index key_mem (`tmp_z <= key_mem(to_integer(unsigned(xtea.sum(1 downto 0))))`) and `xtea.sum` participates in `tmp_r`; corrupting `xtea.sum` therefore alters key selection and the final result.",
+      "related structural assets": [
+        {
+          "asset rtl": "xtea.sum",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "funct3_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Computed CFU result value produced by XTEA (xtea.res) and exported as result_o",
+      "security objective": "Integrity",
+      "reasoning": "Under operation (`if (xtea.done(0) = '1')`) the core assigns `xtea.res <= std_ulogic_vector(unsigned(tmp_b) + unsigned(tmp_r))` or the subtract variant; result_select then drives `result_o <= xtea.res` when `rtype_i = r3type_c` and funct3 selects enc/dec. Corruption of `xtea.res` or its export changes the reported CFU result.",
+      "related structural assets": [
+        {
+          "asset rtl": "xtea.res",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "result_o",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "funct3_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Operation completion/valid indicator (xtea.done -> valid_o)",
+      "security objective": "Integrity",
+      "reasoning": "The core sets `xtea.done(0) <= '1'` on start and shifts it (`xtea.done(1) <= xtea.done(0)`) inside xtea_core; result_select exposes completion as `valid_o <= xtea.done(1)` for rtype=r3 and enc/dec funct3 (and asserts valid_o='1' for xtea_init). Integrity of the internal done bits and of `valid_o` is required so consumers correctly observe operation completion.",
+      "related structural assets": [
+        {
+          "asset rtl": "xtea.done",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "valid_o",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "start_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "rtype_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets"
+        }
+      ]
+    }
+  ]
+}

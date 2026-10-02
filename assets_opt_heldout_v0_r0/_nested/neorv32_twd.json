@@ -1,0 +1,230 @@
+{
+ "module name": "neorv32_twd",
+ "module purpose": "neorv32_twd is a two-wire bus device (target) controller: a bus-written control word (enable, sampling-frequency select, own 7-bit device address, interrupt enables, TX-dummy enable, read hiding, FIFO clear commands) and a data port to an RX FIFO and a TX FIFO; it samples twd_sda_i and twd_scl_i, detects SCL edges and START/STOP conditions, runs a state machine that matches the received address against ctrl.device_addr, shifts received bytes into the RX FIFO and transmits TX FIFO bytes (or a backup byte) on twd_sda_o, and raises irq_o from enabled FIFO conditions.",
+ "use-case flows": [
+  {
+   "flow": "configure",
+   "value": "control settings (enable, fsel, device_addr, irq enables, tx_dummy_en, hide_read) and FIFO clear commands written from bus write data on a control-word write",
+   "lines": [156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168]
+  },
+  {
+   "flow": "operate",
+   "value": "a byte written by the bus into the TX FIFO on a data-port write",
+   "lines": [222, 231, 232]
+  },
+  {
+   "flow": "read out",
+   "value": "stored control settings, FIFO size constants, FIFO and line status, busy flag, and an RX FIFO byte returned on a bus read (the data-port read also pops the RX FIFO)",
+   "lines": [171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 190, 284]
+  },
+  {
+   "flow": "start",
+   "value": "a START condition on the lines starts an addressed transfer when the controller is enabled",
+   "lines": [346, 381, 382, 387, 388, 389, 390, 391, 392]
+  },
+  {
+   "flow": "operate",
+   "value": "address phase: address byte shifted in, compared with the device address, read/write bit captured, acknowledge driven on SDA",
+   "lines": [401, 402, 403, 404, 405, 406, 411, 412, 413, 418, 419, 420]
+  },
+  {
+   "flow": "operate",
+   "value": "receive: data bits shifted in from SDA and the completed byte written into the RX FIFO unless it is full, then acknowledged",
+   "lines": [282, 283, 311, 318, 342, 438, 439, 440, 441, 443, 444, 449, 450, 482]
+  },
+  {
+   "flow": "operate",
+   "value": "transmit: TX FIFO byte (or backup byte, or all ones) loaded and shifted out on SDA, master acknowledge sampled, TX FIFO popped",
+   "lines": [233, 241, 242, 250, 251, 252, 427, 428, 429, 453, 454, 455, 456, 463, 464, 468, 469, 473, 474, 477, 478]
+  },
+  {
+   "flow": "operate",
+   "value": "line sampling at the selected rate and bus-event detection (SCL rise and fall, START, STOP)",
+   "lines": [311, 312, 315, 316, 317, 318, 319, 322, 323, 329, 342, 343, 344, 345, 346, 347]
+  },
+  {
+   "flow": "report",
+   "value": "interrupt request from enabled FIFO conditions, and status bits (FIFO flags, sensed lines, busy)",
+   "lines": [182, 183, 184, 185, 186, 187, 188, 293, 294, 295, 296, 494]
+  },
+  {
+   "flow": "reset",
+   "value": "rstn_i clears control, backup, interrupt, sampling, event and engine registers; disable or a clear command flushes the FIFOs; clear commands self-clear each cycle",
+   "lines": [136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 154, 155, 230, 238, 239, 281, 290, 291, 305, 306, 307, 308, 334, 335, 336, 337, 338, 339, 340, 356, 357, 358, 359, 360, 361, 362, 363, 364, 365, 366]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Controller enable -- whether the device engine, line sampling, FIFOs and interrupt are active",
+   "security objective": "Integrity",
+   "reasoning": "The configure flow stores it: ctrl.enable <= bus_req_i.data(ctrl_en_c) (line 159, CLOCKED_BY clk_i at occurrence 3; reset to '0' at line 138). Behavior depends on it: it forces both FIFO clears (lines 230, 281), gates sampling and sets the line shift registers to ones when low (lines 315-323), gates START acceptance and every return to S_IDLE (lines 381, 389, 397, 421, 434, 465), gates irq_o (line 293), and is exported by clkgen_en_o <= ctrl.enable (line 198). Integrity is Established because a wrong value changes all of these decisions. Availability is also Established: while it is '0' the FIFOs are held clear and the engine returns to S_IDLE, so no transfer completes. ctrl.enable stores it; clkgen_en_o is the exit port (COPIES ctrl.enable, occurrence 2). The write is decided by bus_req_i fields and read back on bus_rsp_o.data (line 172); both are transport records, so neither is a reference.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.enable", "entity": "neorv32_twd", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "clkgen_en_o", "entity": "neorv32_twd", "realization": "exit port", "occurrence": 2, "edge": {"type": "COPIES", "partner": "ctrl.enable"}}
+   ]
+  },
+  {
+   "concept": "Own device address and the address-match acceptance decision -- whether the device answers an addressed transfer",
+   "security objective": "Integrity",
+   "reasoning": "ctrl.device_addr is stored from bus write data (line 163, CLOCKED_BY clk_i at occurrence 3; reset at line 142). In S_ADDR, after the address byte (engine.cnt(3) = '1' and smp.scl_fall = '1', line 401), if (ctrl.device_addr = engine.sreg(7 downto 1)) (line 402) moves engine.state to S_RESP (line 406; CONSTRAINED_BY ctrl.device_addr at occurrence 10), and in S_RESP twd_sda_o <= '0' (line 418; SELECTED_BY engine.state at occurrence 4) drives the acknowledge out of the entity. Integrity is Established: a wrong stored address or a wrong match result makes the device acknowledge a transfer for another address or ignore its own. ctrl.device_addr stores the setting; engine.state computes the acceptance (it is also the sequencing state, reported separately); twd_sda_o is the exit port of the acknowledge. engine.sreg is the compared operand, not the result.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.device_addr", "entity": "neorv32_twd", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "engine.state", "entity": "neorv32_twd", "realization": "computes", "occurrence": 10, "edge": {"type": "CONSTRAINED_BY", "partner": "ctrl.device_addr"}},
+    {"asset rtl": "twd_sda_o", "entity": "neorv32_twd", "realization": "exit port", "occurrence": 4, "edge": {"type": "SELECTED_BY", "partner": "engine.state"}}
+   ]
+  },
+  {
+   "concept": "Read-request hiding policy -- whether a read addressed to the device is ignored under the stated TX FIFO condition",
+   "security objective": "Integrity",
+   "reasoning": "ctrl.hide_read is stored from bus write data (line 168, CLOCKED_BY clk_i at occurrence 3; reset at line 147). On an address match, if (engine.sreg(0) = '1' and (ctrl.hide_read = '1' and (tx_fifo.free = '0'))) sends engine.state to S_IDLE instead of S_RESP (lines 403-406; GATED_BY ctrl.hide_read at occurrence 9), so no acknowledge is driven. Integrity is Established: the stored policy decides whether a read request is acknowledged. ctrl.hide_read stores the policy and engine.state computes the resulting decision. The condition tests tx_fifo.free exactly as written at line 403.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.hide_read", "entity": "neorv32_twd", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "engine.state", "entity": "neorv32_twd", "realization": "computes", "occurrence": 9, "edge": {"type": "GATED_BY", "partner": "ctrl.hide_read"}}
+   ]
+  },
+  {
+   "concept": "Interrupt source enables -- which FIFO conditions may raise the interrupt",
+   "security objective": "Integrity",
+   "reasoning": "ctrl.irq_rx_avail, ctrl.irq_rx_full and ctrl.irq_tx_empty are stored from bus write data (lines 164-166, CLOCKED_BY clk_i at occurrence 3 each; reset at lines 143-145) and read back (lines 175-177, transport). They select the conditions of irq_o <= ctrl.enable and ((ctrl.irq_rx_avail and rx_fifo.avail) or (ctrl.irq_rx_full and (not rx_fifo.free)) or (ctrl.irq_tx_empty and (not tx_fifo.avail))) (lines 293-296; each SOURCES irq_o at occurrence 5). Integrity is Established: a wrong enable raises an interrupt for a disabled condition or suppresses an enabled one.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.irq_rx_avail", "entity": "neorv32_twd", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.irq_rx_full", "entity": "neorv32_twd", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.irq_tx_empty", "entity": "neorv32_twd", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Interrupt request -- the event the module signals when an enabled FIFO condition holds",
+   "security objective": "Integrity",
+   "reasoning": "irq_o is computed and registered by lines 293-296 (CLOCKED_BY clk_i, reset to '0' at line 291) and leaves the entity through its own port. Integrity is Established: the consumer outside this entity must receive exactly ctrl.enable and the OR of the enabled conditions (lines 293-296). Availability is also Established under the implemented condition: while the controller is enabled and an enabled condition holds, irq_o is '1' after each rising edge of clk_i. irq_o is the exit port (DERIVES_FROM ctrl.irq_rx_avail at occurrence 3), ahead of its overlapping storage role.",
+   "related structural assets": [
+    {"asset rtl": "irq_o", "entity": "neorv32_twd", "realization": "exit port", "occurrence": 3, "edge": {"type": "DERIVES_FROM", "partner": "ctrl.irq_rx_avail"}}
+   ]
+  },
+  {
+   "concept": "FIFO clear commands and flush decisions -- when the RX and TX FIFO contents are discarded",
+   "security objective": "Integrity",
+   "reasoning": "ctrl.clr_rx and ctrl.clr_tx are stored from bus write data (lines 160-161, CLOCKED_BY clk_i at occurrence 4) and set back to '0' every cycle (lines 154-155), so each is a one-cycle command. rx_fifo.clr <= '1' when (ctrl.enable = '0') or (ctrl.clr_rx = '1') else '0' (line 281) and tx_fifo.clr (line 230) compute the flush decision here and deliver it to clear_i of the FIFO sub-units (lines 217, 268). Integrity is Established from those delivering lines: each FIFO must receive exactly this decision. Availability is also Established: an asserted clear discards buffered bytes. The sub-unit wiring exception holds for rx_fifo.clr and tx_fifo.clr because each is computed here from a decision (GATED_BY at occurrence 3).",
+   "related structural assets": [
+    {"asset rtl": "ctrl.clr_rx", "entity": "neorv32_twd", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.clr_tx", "entity": "neorv32_twd", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "rx_fifo.clr", "entity": "neorv32_twd", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "ctrl.clr_rx"}},
+    {"asset rtl": "tx_fifo.clr", "entity": "neorv32_twd", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "ctrl.clr_tx"}}
+   ]
+  },
+  {
+   "concept": "Bus access decisions of this block -- control-word write, TX FIFO push and RX FIFO pop",
+   "security objective": "Integrity",
+   "reasoning": "tx_fifo.we <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '1') (line 231) and rx_fifo.re for a read of the same address (line 284) compute the push and pop decisions here (GATED_BY bus_req_i.stb at occurrence 3) and deliver them to we_i and re_i of the FIFO sub-units (lines 222, 276). Integrity is Established from those lines: a FIFO must push or pop exactly on a qualified data-port access. The control-word write is decided inline by bus_req_i fields (lines 156-158) and has no separate element; bus_req_i is a transport record, so it is not a setting point. tx_fifo.wdata only passes bus data unchanged into the sub-unit (line 232), so it is a carrier.",
+   "related structural assets": [
+    {"asset rtl": "tx_fifo.we", "entity": "neorv32_twd", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "bus_req_i.stb"}},
+    {"asset rtl": "rx_fifo.re", "entity": "neorv32_twd", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "bus_req_i.stb"}}
+   ]
+  },
+  {
+   "concept": "Sampling-frequency selection -- the rate at which the bus lines are sampled",
+   "security objective": "Integrity",
+   "reasoning": "ctrl.fsel is stored from bus write data (line 162, CLOCKED_BY clk_i at occurrence 3) and read back (line 173). smp.clk_en <= clkgen_i(clk_div64_c) when (ctrl.fsel = '1') else clkgen_i(clk_div8_c) (line 329) gates sampling and smp.valid (lines 316-319), which qualifies every bus event (lines 344-347). Integrity is Established: the setting decides the sampling rate that the event detection and the engine depend on. ctrl.fsel stores it. clkgen_i only supplies clock-enable ticks, and smp.clk_en only forwards the selected tick and gates, so neither is a reference.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.fsel", "entity": "neorv32_twd", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Transmit-underflow response policy -- what is sent when the TX FIFO is empty",
+   "security objective": "Integrity",
+   "reasoning": "ctrl.tx_dummy_en is stored from bus write data (line 167, CLOCKED_BY clk_i at occurrence 3) and read back (line 178). engine.rdata <= tx_fifo.rdata when (tx_fifo.avail = '1') else tx_dummy when (ctrl.tx_dummy_en = '1') else (others => '1') (lines 250-252; GATES engine.rdata at occurrence 5) decides which byte the transmit flow sends on underflow. Integrity is Established: a wrong setting changes the transmitted byte.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.tx_dummy_en", "entity": "neorv32_twd", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Transmit data -- the byte sent to the bus master during a read transfer",
+   "security objective": "Integrity",
+   "reasoning": "engine.rdata selects the byte to send (lines 250-252; DERIVES_FROM tx_fifo.rdata at occurrence 2). It is loaded into engine.sreg and engine.dout (lines 428-429 and 463-464), shifted bit by bit (line 456) and driven by twd_sda_o <= engine.dout while engine.cmd = '1' (lines 453-454; COPIES engine.dout at occurrence 5). tx_dummy keeps the last byte popped from the TX FIFO (lines 241-242, CLOCKED_BY clk_i at occurrence 3) and is the substitute at line 251. Integrity is Established: the bits leaving on twd_sda_o must equal the selected byte, in order. engine.rdata computes; tx_dummy, engine.sreg (occurrence 10, line 428) and engine.dout (occurrence 3, line 429) store; twd_sda_o is the exit port. tx_fifo.rdata only receives the sub-unit output and forwards it (lines 226, 242, 250) without being tested, so it is a carrier.",
+   "related structural assets": [
+    {"asset rtl": "tx_dummy", "entity": "neorv32_twd", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "engine.rdata", "entity": "neorv32_twd", "realization": "computes", "occurrence": 2, "edge": {"type": "DERIVES_FROM", "partner": "tx_fifo.rdata"}},
+    {"asset rtl": "engine.sreg", "entity": "neorv32_twd", "realization": "stores", "occurrence": 10, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "engine.dout", "entity": "neorv32_twd", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "twd_sda_o", "entity": "neorv32_twd", "realization": "exit port", "occurrence": 5, "edge": {"type": "COPIES", "partner": "engine.dout"}}
+   ]
+  },
+  {
+   "concept": "Received data -- the byte written by the bus master into the device",
+   "security objective": "Integrity",
+   "reasoning": "twd_sda_i is sampled into smp.sda_sreg(0) (line 311; SOURCES smp.sda_sreg at occurrence 2), shifted (line 318), reduced to smp.sda (line 342), shifted into engine.sreg on each SCL rise (line 449, CLOCKED_BY clk_i at occurrence 11) and written into the RX FIFO by rx_fifo.wdata <= engine.sreg (line 282) when engine.wr_we is set (lines 283, 443). Integrity is Established from those delivering lines: the RX FIFO must receive exactly the shifted-in byte. twd_sda_i sets it because this entity reads it to store it; smp.sda_sreg, smp.sda and engine.sreg store it. rx_fifo.wdata copies engine.sreg into the sub-unit and rx_fifo.rdata only carries the sub-unit output to the transport port (line 190), so both are carriers.",
+   "related structural assets": [
+    {"asset rtl": "twd_sda_i", "entity": "neorv32_twd", "realization": "sets", "occurrence": 2, "edge": {"type": "SOURCES", "partner": "smp.sda_sreg"}},
+    {"asset rtl": "smp.sda_sreg", "entity": "neorv32_twd", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "smp.sda", "entity": "neorv32_twd", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "engine.sreg", "entity": "neorv32_twd", "realization": "stores", "occurrence": 11, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Engine-side FIFO access decisions -- commit a received byte to the RX FIFO, pop the TX FIFO after a master acknowledge",
+   "security objective": "Integrity",
+   "reasoning": "In S_RTX at the byte end, if (engine.cmd = '0' and rx_fifo.free = '0') the byte is dropped and the engine returns to S_IDLE (lines 439-441); otherwise engine.wr_we <= not engine.cmd (line 443, CLOCKED_BY clk_i at occurrence 6). In S_ACK, engine.rd_re <= '1' when engine.cmd = '1', smp.scl_rise = '1' and smp.sda = '0' (lines 477-478, CLOCKED_BY clk_i at occurrence 6); it also gates the tx_dummy capture (line 241). The decisions reach we_i and re_i of the FIFO sub-units through rx_fifo.we (line 283) and tx_fifo.re (line 233). Integrity is Established from those delivering lines. Availability is also Established: a byte that arrives while the RX FIFO is full is not stored (line 441). engine.wr_we and engine.rd_re store the decisions (registered); rx_fifo.we and tx_fifo.re only copy them into the sub-units, so they are carriers.",
+   "related structural assets": [
+    {"asset rtl": "engine.wr_we", "entity": "neorv32_twd", "realization": "stores", "occurrence": 6, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "engine.rd_re", "entity": "neorv32_twd", "realization": "stores", "occurrence": 6, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Two-wire bus events -- SCL rising and falling edges and START and STOP conditions",
+   "security objective": "Integrity",
+   "reasoning": "twd_scl_i is sampled into smp.scl_sreg (line 312; SOURCES smp.scl_sreg at occurrence 2) and shifted (line 319). smp.scl_rise, smp.scl_fall, smp.start and smp.stop are computed from the shifted samples, qualified by smp.valid (lines 344-347; CLOCKED_BY clk_i at occurrence 3 each); smp.sda_sreg (reported under received data) supplies the SDA operand of START and STOP. Every engine transition, shift and acknowledge sample depends on them (lines 381, 389, 397-401, 411, 423, 427, 434-438, 448, 455, 465-467, 473, 477). Integrity is Established: a wrong event starts, aborts or mis-clocks a transfer. twd_scl_i sets the events because this entity reads it to store it; the shift register and the four event registers store them. smp.valid only gates the event logic.",
+   "related structural assets": [
+    {"asset rtl": "twd_scl_i", "entity": "neorv32_twd", "realization": "sets", "occurrence": 2, "edge": {"type": "SOURCES", "partner": "smp.scl_sreg"}},
+    {"asset rtl": "smp.scl_sreg", "entity": "neorv32_twd", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "smp.start", "entity": "neorv32_twd", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "smp.stop", "entity": "neorv32_twd", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "smp.scl_rise", "entity": "neorv32_twd", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "smp.scl_fall", "entity": "neorv32_twd", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Transfer sequencing state -- the engine protocol state and its bit counter",
+   "security objective": "Integrity",
+   "reasoning": "engine.state is the self-selecting state register of case engine.state (line 377) over S_IDLE, S_INIT, S_ADDR, S_RESP, S_RTX and S_ACK (lines 382-487, CLOCKED_BY clk_i at occurrence 4; reset to S_IDLE at line 359; when others returns to S_IDLE at line 487). It selects SDA driving, shifting and the FIFO write and pop pulses (SELECTS records at occurrence 3). engine.cnt counts bits (lines 413, 450, CLOCKED_BY clk_i at occurrence 5) and engine.cnt(3) marks the byte end (lines 401, 438). Integrity is Established: a wrong state or count misplaces acknowledges, data bits and FIFO writes. Availability is also Established under the implemented conditions: each START with the controller enabled leaves S_IDLE (line 381), and a STOP or disable returns to S_IDLE.",
+   "related structural assets": [
+    {"asset rtl": "engine.state", "entity": "neorv32_twd", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "engine.cnt", "entity": "neorv32_twd", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Transfer direction -- whether the addressed transfer is a read or a write",
+   "security objective": "Integrity",
+   "reasoning": "engine.cmd <= engine.sreg(0) in S_RESP (line 420, CLOCKED_BY clk_i at occurrence 3) captures the direction bit of the address byte. It decides whether the device transmits (lines 453-456), commits received bytes (lines 439-443), drives the data acknowledge (lines 481-482), continues after an acknowledge (line 468) and pops the TX FIFO (line 477). Integrity is Established: a wrong direction sends data on a write or stores data on a read. engine.cmd stores it.",
+   "related structural assets": [
+    {"asset rtl": "engine.cmd", "entity": "neorv32_twd", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Master acknowledge of a transmitted byte -- whether a read transfer continues",
+   "security objective": "Integrity",
+   "reasoning": "engine.ack <= smp.sda on an SCL rise in S_ACK (lines 473-474, CLOCKED_BY clk_i at occurrence 4). In S_ACK, if (engine.cmd = '0') or ((engine.cmd = '1') and (engine.ack = '0')) the engine returns to S_RTX for the next byte (lines 468-469; GATES engine.state at occurrence 3). Integrity is Established: the captured acknowledge decides whether transmission continues. engine.ack stores it.",
+   "related structural assets": [
+    {"asset rtl": "engine.ack", "entity": "neorv32_twd", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Device status on a control read -- sensed line levels and the busy flag",
+   "security objective": "Integrity",
+   "reasoning": "A control read returns smp.scl (line 186), smp.sda (line 187) and engine.busy (line 188) through bus_rsp_o.data. engine.busy <= '0' when (engine.state = S_IDLE) else '1' (line 494; GATED_BY engine.state at occurrence 3) computes the busy status. smp.scl is stored at line 343 (CLOCKED_BY clk_i at occurrence 4); as written, its value is computed from smp.sda_sreg(2) or smp.sda_sreg(1), the same operands as smp.sda (line 342). Integrity is Established from the delivering lines: the reader must receive exactly the values these lines define. The exit is bus_rsp_o, a transport record, so it is not a reference.",
+   "related structural assets": [
+    {"asset rtl": "engine.busy", "entity": "neorv32_twd", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "engine.state"}},
+    {"asset rtl": "smp.scl", "entity": "neorv32_twd", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "smp.sda", "entity": "neorv32_twd", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "FIFO fill status used for flow control -- RX FIFO full, TX FIFO data available and TX FIFO full",
+   "security objective": "Integrity",
+   "reasoning": "The FIFO sub-units drive rx_fifo.free (line 274), tx_fifo.avail (line 227) and tx_fifo.free (line 223); their internals are not supplied. This entity tests each one in a condition: rx_fifo.free drops a received byte when the FIFO is full (line 439), tx_fifo.avail chooses FIFO data over the substitute (line 250) and qualifies the tx_dummy capture (line 241), and tx_fifo.free is part of the read-hiding condition (line 403). They also feed irq_o (lines 295-296) and status bits (lines 183-185). Integrity is Established from the receiving lines: these decisions require exactly the status the sub-units deliver. Each enters through a CONNECTS edge of mode out (occurrence 3), so the sub-unit wiring exception is met. rx_fifo.avail is only read as data (lines 182, 294), so it is a carrier.",
+   "related structural assets": [
+    {"asset rtl": "rx_fifo.free", "entity": "neorv32_twd", "realization": "sets", "occurrence": 3, "edge": {"type": "CONNECTS", "partner": "rx_fifo_inst.free_o"}},
+    {"asset rtl": "tx_fifo.avail", "entity": "neorv32_twd", "realization": "sets", "occurrence": 3, "edge": {"type": "CONNECTS", "partner": "tx_fifo_inst.avail_o"}},
+    {"asset rtl": "tx_fifo.free", "entity": "neorv32_twd", "realization": "sets", "occurrence": 3, "edge": {"type": "CONNECTS", "partner": "tx_fifo_inst.free_o"}}
+   ]
+  }
+ ]
+}

@@ -1,0 +1,269 @@
+{
+  "module name": "neorv32_bus",
+  "concepts": [
+    {
+      "concept": "Multiplexed system request (the request record sent out on the shared bus: x_req_o)",
+      "kind": "data",
+      "writers": "Line 140: x_req_o.addr <= a_req_i.addr when (sel = '0') else b_req_i.addr (selected by sel); Line 141: x_req_o.amo <= a_req_i.amo when (sel = '0') else b_req_i.amo; Line 142: x_req_o.amoop <= a_req_i.amoop when (sel = '0') else b_req_i.amoop; Line 143: x_req_o.lock <= a_req_i.lock when (sel = '0') else b_req_i.lock; Line 144-147: x_req_o.priv/debug/src/rw assigned from a_req_i or b_req_i under sel; Lines 150-152: x_req_o.data chosen with PORT_A_READ_ONLY / PORT_B_READ_ONLY compile-time conditions and sel at line 150-152; Lines 154-156: x_req_o.ben chosen similarly; Line 158: x_req_o.stb <= stb (stb computed in arbiter_fsm).",
+      "observers": "Line 30: x_req_o is an output port of neorv32_bus_switch (fields driven at lines 140-158) so an external system attached to that port can observe the request.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 30,
+          "via": "x_req_o (output port)",
+          "reason": "The request record's fields are driven onto the module's external output port (assignments at lines 140-158) so an external observer can read the forwarded request; integrator may treat that data as secret."
+        },
+        "integrity": {
+          "answer": "yes-assumed",
+          "line": 140,
+          "via": "a_req_i / b_req_i (input ports)",
+          "reason": "Each x_req_o field is selected directly from a_req_i or b_req_i under sel (example x_req_o.addr at line 140) so external masters driving those inputs can change the outgoing request and trust depends on integration."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 93,
+          "via": "x_rsp_i.ack (input)",
+          "reason": "The arbiter FSM waits for the external response acknowledge (x_rsp_i.ack) to return from a BUSY state (line 93), so if ack does not arrive externally new x_req_o transactions (via stb) can be blocked."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 140,
+          "via": null,
+          "reason": "x_req_o fields have a single concurrent-driver pattern (each field assigned from a_req_i or b_req_i under sel, e.g. line 140) and no runtime debug/test override is present in the RTL."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Arbitration decision (which master is granted / current busy state)",
+      "kind": "state",
+      "writers": "Line 49: state reset to S_IDLE on rstn_i = '0'; Line 55: state <= state_nxt (clocked update on rising_edge(clk_i)); state_nxt assignments (combinational) at lines 91, 94, 103, 106, 116, 120, 126 and 130 are written by the arbiter_fsm (guards shown in those lines).",
+      "observers": "Line 158: state determines stb and thus x_req_o.stb visible externally; Line 140/163-169: state drives sel/sel_q that gate which response port sees ack/err (a_rsp_o.ack at 164, b_rsp_o.ack at 168), so external timing/acks reveal the grant.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 164,
+          "via": "a_rsp_o.ack (output)",
+          "reason": "The arbitration state controls sel which gates a_rsp_o.ack (line 164) so an external observer can infer which master is currently granted and the integrator may treat that status as sensitive."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 55,
+          "via": "state_nxt (arbiter_fsm)",
+          "reason": "The state register (which determines grants) is updated unconditionally from the combinational state_nxt on each clock (state <= state_nxt at line 55) and that state decides resource grants, so external inputs feeding the FSM can change the arbitration decision."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 93,
+          "via": "x_rsp_i.ack (input)",
+          "reason": "The FSM remains in busy states until the external x_rsp_i.ack is seen (checked at line 93), so lack of external acknowledgement can freeze the arbitration state and prevent progress."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 55,
+          "via": null,
+          "reason": "The arbitration state has a single register update path (state <= state_nxt at line 55) driven by the FSM and there is no alternate debug/test override in the RTL."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Transaction start (internal strobe decision that begins a transfer)",
+      "kind": "event",
+      "writers": "Line 79: default stb <= '0'; Line 89: in S_BUSY_A when locked(0) = '1' then stb <= a_req_i.stb; Line 101: in S_BUSY_B when locked(1) = '1' then stb <= b_req_i.stb; Lines 115, 119, 125, 129: in the idle case stb <= '1' when a/b selection starts a transfer; Line 158: x_req_o.stb <= stb (copied to external).",
+      "observers": "Line 158: x_req_o.stb is driven from stb and is an external output that indicates transaction start.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 158,
+          "via": "x_req_o.stb (output port)",
+          "reason": "The internal start strobe is copied to the external port x_req_o.stb at line 158, so an external agent can observe transaction start events and the integrator may treat those events as sensitive."
+        },
+        "integrity": {
+          "answer": "yes-assumed",
+          "line": 89,
+          "via": "a_req_i.stb / b_req_i.stb (input ports)",
+          "reason": "stb is driven from masters' strobe inputs in the busy cases (e.g. line 89) and from the FSM in start conditions (lines 115/119/etc.), so external masters can influence the start decision and trust depends on integration."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 93,
+          "via": "x_rsp_i.ack (input)",
+          "reason": "The FSM waits for external x_rsp_i.ack to leave BUSY and allow new starts (checked at line 93), so withholding ack externally prevents new stb assertions and stalls transactions."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 115,
+          "via": null,
+          "reason": "stb assignments occur only in the arbiter_fsm arms (example line 115) and there is no separate debug/test override that replaces or bypasses stb in the RTL."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Request lock state (per-master lock bits that hold a busy grant)",
+      "kind": "state",
+      "writers": "Line 51: locked <= \"00\" on reset; Line 57: locked <= locked_nxt (clocked update on rising_edge(clk_i)); Line 78: locked_nxt <= locked (default copy); Line 111: in idle arm locked_nxt <= b_req_i.lock & a_req_i.lock (captures master lock inputs when arbiter is idle).",
+      "observers": "Line 88: locked(0) is tested in the S_BUSY_A arm to decide whether to follow a_req_i.stb (affecting stb and thus x_req_o.stb at line 158), so external behavior (stb/ack timing) can reveal lock state.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 88,
+          "via": "x_req_o.stb / a_rsp_o (outputs)",
+          "reason": "The locked bits are captured from masters and are used to alter FSM behavior (locked(0) gates stb in line 88), which changes externally visible transaction timing, so an external observer can infer lock state and integrator may consider it sensitive."
+        },
+        "integrity": {
+          "answer": "yes-assumed",
+          "line": 111,
+          "via": "a_req_i.lock and b_req_i.lock (input ports)",
+          "reason": "locked is derived from master lock inputs at line 111 (locked_nxt <= b_req_i.lock & a_req_i.lock) and then latched at line 57, so external masters write the lock bits and whether those writers are trusted depends on integration."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 90,
+          "via": "a_req_i.lock (input)",
+          "reason": "While busy the FSM checks a_req_i.lock = '0' to return to idle (line 90), so an external master holding its lock bit prevents the arbiter from returning to idle and can block further progress."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 57,
+          "via": null,
+          "reason": "The locked register is only updated via locked <= locked_nxt on the clock (line 57) with locked_nxt computed by the FSM and there is no alternate debug/test bypass in the RTL."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Address decode result (destination port selection: port_sel)",
+      "kind": "decision",
+      "writers": "Line 356: port_sel(0) <= '1' when A_EN and (req_i.addr(31 downto a_lo_c) = A_BASE(31 downto a_lo_c)) else '0'; Line 357: port_sel(1) <= '1' when B_EN and address matches B_BASE; Line 358: port_sel(2) <= '1' when C_EN and address matches C_BASE; Line 361: port_sel(3) <= '1' when X_EN and (port_sel(2 downto 0) = \"000\").",
+      "observers": "Line 366-369: port_req entries are routed to a_req_o/b_req_o/c_req_o/x_req_o (e.g. a_req_o <= port_req(0) at line 366) so external devices on those ports can observe the decode choice in which port receives the request.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 366,
+          "via": "a_req_o / b_req_o / c_req_o / x_req_o (output ports)",
+          "reason": "port_sel is computed from req_i.addr and EN flags (line 356) and determines which per-port request is driven out (lines 366-369), so external recipients and timing reveal the decoded destination and integrator may treat that as sensitive."
+        },
+        "integrity": {
+          "answer": "yes-assumed",
+          "line": 356,
+          "via": "req_i.addr (input)",
+          "reason": "port_sel is computed directly from the incoming request address and EN generics at line 356, so an external requester controlling req_i.addr can change the destination selected and trust depends on integration."
+        },
+        "availability": {
+          "answer": "no",
+          "line": 356,
+          "via": null,
+          "reason": "port_sel is a combinational decode computed from req_i.addr and compile-time EN/Base configuration (line 356) and is not gated by a runtime enable that an external actor can use to freeze updates."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 356,
+          "via": null,
+          "reason": "port_sel has a single combinational definition (lines 356-361) and the RTL contains no runtime debug/test override to substitute a different selection."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Timeout/error indicator (keeper.err) that signals request failure/unavailability",
+      "kind": "state",
+      "writers": "Line 412: keeper.err <= '0' on reset; Line 415: keeper.err <= '0' at each rising edge start of bus_monitor; Line 424: keeper.err <= '1' when the timeout condition ((keeper.cnt(keeper.cnt'left) = '1') and (keeper.halt = '0')) is reached inside bus_monitor.",
+      "observers": "Line 399-401: int_rsp is combined into rsp_o and keeper.err is ORed into rsp_o.ack and rsp_o.err (rsp_o.ack <= int_rsp.ack or keeper.err at line 400 and rsp_o.err <= int_rsp.err or keeper.err at line 401) so external requesters see keeper.err via the response outputs.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 400,
+          "via": "rsp_o.ack / rsp_o.err (output ports)",
+          "reason": "keeper.err is ORed into the external response signals rsp_o.ack and rsp_o.err (line 400-401) so an external observer can detect a timeout/error condition and integrator may treat that information as sensitive."
+        },
+        "integrity": {
+          "answer": "yes-assumed",
+          "line": 424,
+          "via": "keeper.cnt / keeper.halt (internal counters influenced by req_i.stb and port_sel)",
+          "reason": "keeper.err is driven by internal timeout logic at line 424 when the counter and halt conditions are met, and those internal conditions are influenced by external inputs (e.g. req_i.stb or lack of int_rsp.ack), so external actors can cause the error indicator to change and trust depends on integration."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 424,
+          "via": "keeper.cnt / keeper.halt (driven by req_i.stb and port_sel)",
+          "reason": "The RTL sets keeper.err when the timeout counter overflows while halt is clear (assignment at line 424), and an external lack of response (or repeated requests) can force this condition and thus disrupt normal response availability."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 424,
+          "via": null,
+          "reason": "keeper.err is updated only by the bus_monitor process (assignment at line 424) according to the timeout condition and there is no alternate debug/test override in the RTL."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "AMO computed write data (alu_res) and its delivery to the system request (sys_req_o.data)",
+      "kind": "data",
+      "writers": "Line 836: alu_res reset to zeros on rstn_i = '0'; Lines 833-846: amo_alu process computes and updates alu_res on rising_edge(clk_i) with assignments at lines 839-844 for the various amo operations (alu_res <= arbiter.wdata / sum / xor / and / or / cmp_res as selected by arbiter.cmd). Line 813: sys_req_o.data <= alu_res when (arbiter.state = S_WRITE) or (arbiter.state = S_WRITE_WAIT) else core_req_i.data (alu_res forwarded to external sys_req_o under write states).",
+      "observers": "Line 813: sys_req_o.data is an output port driven from alu_res when the arbiter is in the write states, so the external system sees the computed AMO write payload.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 813,
+          "via": "sys_req_o.data (output port)",
+          "reason": "The ALU result alu_res is selected and driven onto the external sys_req_o.data when the arbiter is in the write phase (line 813), so the computed write payload is visible outside and may be considered secret by an integrator."
+        },
+        "integrity": {
+          "answer": "yes-assumed",
+          "line": 839,
+          "via": "amo_alu (arbiter.wdata/arbiter.rdata derived from core_req_i and sys_rsp_i)",
+          "reason": "alu_res is computed in the amo_alu process (assignments at lines 839-844) from arbiter.rdata/arbiter.wdata which derive from external core and system inputs, so external inputs can influence the computed write and trust depends on integration."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 813,
+          "via": "arbiter.state and sys_rsp_i.ack (inputs affecting arbiter progression)",
+          "reason": "sys_req_o.data forwards alu_res only when the arbiter is in S_WRITE or S_WRITE_WAIT (guard at line 813), and arbiter state progression depends on external acknowledgements (sys_rsp_i.ack), so external actors can block delivery of the ALU result."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 839,
+          "via": null,
+          "reason": "alu_res is produced only by the amo_alu process (writers at lines 839-844) and there is no debug/test override in the RTL that substitutes a different payload at runtime."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "RVS store-conditional failure flag (sc_fail) used to modify the core's response",
+      "kind": "state",
+      "writers": "Line 955: sc_fail <= '0' on reset; Lines 952-957 (sc_result process): at rising_edge(clk_i) sc_fail <= rvso and core_req_i.stb and core_req_i.rw and (not state(1)) (assignment at line 957) which latches a store-conditional failure condition.",
+      "observers": "Line 963-964: core_rsp_o.ack <= sys_rsp_i.ack or sc_fail (line 963) and core_rsp_o.data <= sys_rsp_i.data(31 downto 1) & (sys_rsp_i.data(0) or sc_fail) (line 964), so the core sees sc_fail via its response outputs.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 963,
+          "via": "core_rsp_o.ack / core_rsp_o.data (output ports)",
+          "reason": "sc_fail is latched in the sc_result process and is ORed into the core response outputs (lines 963-964) so the core observing its response can learn the flag and integrator may treat that as sensitive."
+        },
+        "integrity": {
+          "answer": "yes-assumed",
+          "line": 957,
+          "via": "sc_result process (uses rvso and core_req_i signals)",
+          "reason": "sc_fail is driven by the sc_result clocked logic at line 957 based on rvso and core_req_i signals (which come from the core), so external requesters (the core) can cause sc_fail to change and whether that writer is trusted depends on integration."
+        },
+        "availability": {
+          "answer": "no",
+          "line": 957,
+          "via": null,
+          "reason": "sc_fail is updated only by the clocked sc_result process (assignment at line 957) and there is no external enable that can freeze its update beyond normal request sequencing, so it does not present an external-blocking availability condition in the RTL."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 957,
+          "via": null,
+          "reason": "sc_fail has a single clocked update path (sc_result at line 957) and the RTL contains no debug/test override to replace or bypass this flag."
+        }
+      },
+      "security objective": "Confidentiality"
+    }
+  ]
+}

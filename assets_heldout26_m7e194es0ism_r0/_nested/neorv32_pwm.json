@@ -1,0 +1,167 @@
+{
+  "module name": "neorv32_pwm",
+  "conceptual assets": [
+    {
+      "concept": "Per-channel configuration registers (enable, prescaler, polarity, clock-divider, duty)",
+      "security objective": "Integrity",
+      "reasoning": "Each channel stores configuration on a bus write and uses it for PWM behaviour and readback: the config_write process updates cfg_en, cfg_prsc, cfg_pol, cfg_cdiv and cfg_duty when we_i = '1' (cfg_en <= wdata_i(31); cfg_prsc <= wdata_i(30 downto 28); cfg_pol <= wdata_i(27); cfg_cdiv <= wdata_i(17 downto 8); cfg_duty <= wdata_i(7 downto 0)). The same fields are returned on read (rdata_o is formed from those fields when re_i = '1') and are consumed by pwm_core to control timing and output. Corrupting or incorrectly setting these stored configuration values violates the implemented update/use/readback relations; Integrity is therefore established. Structural realization: the channel cfg_* signals store the config and the channel ports wdata_i and we_i/re_i are the declared setting/read points the entity reads to update/report them.",
+      "related structural assets": [
+        {
+          "asset rtl": "cfg_en",
+          "entity": "neorv32_pwm_channel",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cfg_prsc",
+          "entity": "neorv32_pwm_channel",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cfg_pol",
+          "entity": "neorv32_pwm_channel",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cfg_cdiv",
+          "entity": "neorv32_pwm_channel",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cfg_duty",
+          "entity": "neorv32_pwm_channel",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "wdata_i",
+          "entity": "neorv32_pwm_channel",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "we_i",
+          "entity": "neorv32_pwm_channel",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "re_i",
+          "entity": "neorv32_pwm_channel",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Bus-request decode and per-channel read/write gating (sel, we, re)",
+      "security objective": "Integrity",
+      "reasoning": "Top-level generate computes channel selection and gates reads/writes: sel(i) <= '1' when bus_req_i.addr(5 downto 2) = to_unsigned(i,4); we(i) <= sel(i) and bus_req_i.stb and bus_req_i.rw; re(i) <= sel(i) and bus_req_i.stb and not bus_req_i.rw. These computed predicates determine which channel receives wdata or supplies rdata; incorrect decode or gating would misdirect bus accesses, violating the implemented access policy and read/write correctness (Integrity). Structural realizations: the top-level internal vectors sel, we and re compute these decisions and drive the channel ports.",
+      "related structural assets": [
+        {
+          "asset rtl": "sel",
+          "entity": "neorv32_pwm",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "we",
+          "entity": "neorv32_pwm",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "re",
+          "entity": "neorv32_pwm",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Aggregated per-channel readback value used for bus responses (rdata_sum)",
+      "security objective": "Integrity",
+      "reasoning": "The read_back process combines per-channel rdata into rdata_sum by OR across channels (tmp_v := tmp_v or rdata(i); rdata_sum <= tmp_v). The bus_access process then assigns that aggregated value onto the bus response data field when a request is present. Therefore rdata_sum (and the per-channel rdata sources) determine the data returned to the bus; corruption of this aggregated value violates readback correctness (Integrity). Structural realizations: rdata_sum stores the aggregated response, rdata is the per-channel collection, and channels produce their contributions via their rdata_o ports.",
+      "related structural assets": [
+        {
+          "asset rtl": "rdata_sum",
+          "entity": "neorv32_pwm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rdata",
+          "entity": "neorv32_pwm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rdata_o",
+          "entity": "neorv32_pwm_channel",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "PWM output signals (per-channel pwm and top-level pwm_o)",
+      "security objective": "Integrity",
+      "reasoning": "Each channel's pwm_core drives its pwm_o from configuration and counters: when cfg_en='0' or unsigned(cnt_duty) >= unsigned(cfg_duty) then pwm_o <= cfg_pol else pwm_o <= not cfg_pol. Top-level maps each channel output into the internal pwm vector and assigns those bits onto the external pwm_o output (pwm_channel_connect: top-level pwm_o(pwm'range) <= pwm(pwm'range)). Thus top-level pwm_o reflects each channel's computed PWM waveform; incorrect configuration, counters or routing changes the external waveform, establishing Integrity. Structural realizations: the per-channel pwm_o port is the channel-level exit, the top-level internal pwm signal stores the collected per-channel bits, and the top-level pwm_o port is the external exit.",
+      "related structural assets": [
+        {
+          "asset rtl": "pwm_o",
+          "entity": "neorv32_pwm_channel",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "pwm",
+          "entity": "neorv32_pwm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "pwm_o",
+          "entity": "neorv32_pwm",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Clock-generator enable summary (top-level clkgen_en_o derived from per-channel enables)",
+      "security objective": "Integrity",
+      "reasoning": "Each channel drives its clkgen_en_o from its enable register (clkgen_en_o <= cfg_en). Top-level gathers those per-channel flags into ce via the component port connections and computes clkgen_en_o <= or_reduce_f(ce). Therefore the external clkgen_en_o output is the OR of per-channel cfg_en values; incorrect cfg_en or ce aggregation changes the clkgen enable signal and thus system behaviour, establishing Integrity. Structural realizations: the top-level clkgen_en_o port is the external exit, the top-level ce vector stores the per-channel flags, and the channel clkgen_en_o port and cfg_en register realize the per-channel contribution.",
+      "related structural assets": [
+        {
+          "asset rtl": "clkgen_en_o",
+          "entity": "neorv32_pwm",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "ce",
+          "entity": "neorv32_pwm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "clkgen_en_o",
+          "entity": "neorv32_pwm_channel",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "cfg_en",
+          "entity": "neorv32_pwm_channel",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "PWM runtime counters and tick state per channel (cnt_cdiv, cnt_tick, cnt_duty)",
+      "security objective": "Integrity",
+      "reasoning": "The pwm_core clocked process stores and updates runtime state: cnt_cdiv, cnt_tick and cnt_duty are reset when rstn_i='0' and otherwise updated (cnt_cdiv increments until it equals cfg_cdiv, then cnt_tick is asserted and cnt_cdiv resets; cnt_duty increments on cnt_tick). pwm_o is driven from the relation between cnt_duty and cfg_duty. These stored counters and the tick decision implement the timing of the PWM waveform; their corruption or prevention would alter waveform timing and duty, establishing Integrity (and demonstrating their role as stored state). Structural realizations: the channel-local registers cnt_cdiv, cnt_tick and cnt_duty store this runtime state.",
+      "related structural assets": [
+        {
+          "asset rtl": "cnt_cdiv",
+          "entity": "neorv32_pwm_channel",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cnt_tick",
+          "entity": "neorv32_pwm_channel",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cnt_duty",
+          "entity": "neorv32_pwm_channel",
+          "realization": "stores"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,216 @@
+{
+ "module name": "neorv32_xbus",
+ "module purpose": "neorv32_xbus passes a bus request (bus_req_i, through the register-stage sub-unit reg_stage_inst) onto a scalar external bus interface (xbus_adr_o, xbus_dat_o, xbus_we_o, xbus_sel_o, xbus_stb_o, xbus_cyc_o, xbus_tag_o), tracks the outstanding access in the pending and locked registers with an optional timeout counter (timecnt, timeout), and forms the response (acknowledge, error, read data) from xbus_ack_i, xbus_err_i, xbus_dat_i and the timeout, returned through the register stage on bus_rsp_o.",
+ "use-case flows": [
+  {
+   "flow": "start",
+   "value": "a new access is accepted only when no access is pending: the request strobe is captured into pending and the strobe-and-lock request into locked",
+   "lines": [86, 87, 88, 89]
+  },
+  {
+   "flow": "operate",
+   "value": "request fields driven onto the external bus: address, write data, direction, byte enables, strobe, cycle-active indication and attribute tag",
+   "lines": [72, 74, 141, 142, 143, 144, 145, 146, 149, 150, 151]
+  },
+  {
+   "flow": "operate",
+   "value": "termination of an unlocked access: pending cleared on timeout, external error or external acknowledge",
+   "lines": [91, 92, 93]
+  },
+  {
+   "flow": "lock",
+   "value": "locked-access state that keeps pending (and xbus_cyc_o) set, ignoring the external acknowledge, until the lock request is withdrawn or the timeout fires",
+   "lines": [88, 91, 95, 96, 97, 146]
+  },
+  {
+   "flow": "operate",
+   "value": "timeout countdown (TIMEOUT_VAL /= 0): timecnt reloaded while idle, decremented while pending, timeout raised at zero; tied to zero when TIMEOUT_VAL = 0",
+   "lines": [108, 115, 116, 117, 119, 120, 122, 130, 131, 132]
+  },
+  {
+   "flow": "report",
+   "value": "completion status returned to the requester: acknowledge on acknowledge, error or timeout; error on error or timeout; both only while pending",
+   "lines": [75, 155, 156]
+  },
+  {
+   "flow": "read out",
+   "value": "external read data returned to the requester while an access is pending, zero otherwise",
+   "lines": [75, 154]
+  },
+  {
+   "flow": "reset",
+   "value": "locked, pending, timecnt and timeout cleared while rstn_i = '0'",
+   "lines": [83, 84, 85, 111, 112, 113]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Outstanding-access state -- whether an external-bus access is in progress",
+   "security objective": "Integrity",
+   "reasoning": "The arbiter accepts a request only when `if (pending = '0') then` (line 87) by `pending <= bus_req.stb;` (line 89) and clears it on termination (lines 92-93, 96-97). Its value qualifies the whole response: `bus_rsp.ack <= pending and (timeout or xbus_err_i or xbus_ack_i);` (line 155), the error at line 156 and the read data at line 154; it reloads the timeout counter while idle (line 115) and drives the cycle indication `xbus_cyc_o <= bus_req.stb or pending;` (line 146). A wrong value accepts a request during an access, drops an access's response, or returns a response with no access, so Integrity is Established (lines 87-89, 154-156). Availability holds under the implemented conditions: a pending access ends when the condition of line 92 (unlocked) or line 96 (locked) holds. pending stores (occurrence 4, CLOCKED_BY clk_i, line 89). xbus_cyc_o is an exit port: the cycle-active value computed from this state leaves the entity through it (occurrence 2, GATED_BY pending, line 146). xbus_ack_i and xbus_err_i set the termination decision: this entity reads them in the condition that clears pending (occurrence 2 of each, GATES pending, line 92). bus_req.stb (line 89) is a field of the transport record bus_req and is not reported. No line restricts observation of the state, so confidentiality is not established.",
+   "related structural assets": [
+    {
+     "asset rtl": "pending",
+     "entity": "neorv32_xbus",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "xbus_cyc_o",
+     "entity": "neorv32_xbus",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "GATED_BY", "partner": "pending"}
+    },
+    {
+     "asset rtl": "xbus_ack_i",
+     "entity": "neorv32_xbus",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "GATES", "partner": "pending"}
+    },
+    {
+     "asset rtl": "xbus_err_i",
+     "entity": "neorv32_xbus",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "GATES", "partner": "pending"}
+    }
+   ]
+  },
+  {
+   "concept": "Locked-access state -- whether the current access is a locked sequence whose end ignores the external acknowledge and error",
+   "security objective": "Integrity",
+   "reasoning": "At acceptance `locked <= bus_req.stb and bus_req.lock;` (line 88) records the lock request, and `if (locked = '0') then` (line 91) chooses the termination rule: an unlocked access ends on timeout, error or acknowledge (line 92), a locked one only on timeout or lock withdrawal (`if (timeout = '1') or (bus_req.lock = '0') then`, line 96). A wrong value ends a locked sequence on an acknowledge or keeps an unlocked access open, so Integrity is Established (lines 88, 91-97). Availability: while locked, pending and therefore xbus_cyc_o (line 146) stay set until the lock is withdrawn or timeout fires; with TIMEOUT_VAL = 0 (lines 130-132) only the withdrawal ends it. locked stores (occurrence 3, CLOCKED_BY clk_i, line 88). bus_req.lock is tested in an if condition (line 96), but it is a field of bus_req, a record carrying complete transactions wired from reg_stage_inst.device_req_o (line 74); transport records are excluded whole and by field, so it is not reported.",
+   "related structural assets": [
+    {
+     "asset rtl": "locked",
+     "entity": "neorv32_xbus",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Bus-timeout countdown -- the remaining cycles before an outstanding access is forced to end",
+   "security objective": "Integrity",
+   "reasoning": "In builds with TIMEOUT_VAL /= 0 (line 108) the counter is reloaded while idle by `timecnt <= timeout_c;` (line 116), decremented while pending by `timecnt <= std_ulogic_vector(unsigned(timecnt) - 1);` (lines 119-120), and when it reaches zero `timeout <= '1';` (line 122). A corrupted count moves or suppresses the expiry, so Integrity is Established on lines 119-122. Availability is Established for these builds: the countdown bounds how long a pending access can hold the bus, through lines 92 and 96. With TIMEOUT_VAL = 0 the counter is tied to zero (line 131) and line 136 only warns. The map gives storage mixed because it merges the two generate alternatives; each build has one driver. timecnt stores (occurrence 5, CLOCKED_BY clk_i, line 120); it is the map's self-updating element.",
+   "related structural assets": [
+    {
+     "asset rtl": "timecnt",
+     "entity": "neorv32_xbus",
+     "realization": "stores",
+     "occurrence": 5,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Timeout expiry decision -- that an outstanding access has exceeded its allowed cycles",
+   "security objective": "Integrity",
+   "reasoning": "With TIMEOUT_VAL /= 0, `timeout <= '1';` is set when the count is zero during an access (lines 119, 122) and cleared while idle (line 117). The decision ends the access (lines 92, 96) and turns the response into an acknowledge with error: `bus_rsp.err <= pending and (timeout or xbus_err_i);` (line 156) and line 155. A false expiry aborts an access with an error, and a missing one leaves an unanswered access pending, so Integrity is Established. Availability is Established for these builds: it is the only end of a locked access whose lock is not withdrawn and of an access whose device never answers (lines 92, 96). With TIMEOUT_VAL = 0 it is tied to '0' (line 132). timeout stores (occurrence 6, CLOCKED_BY clk_i, line 122); its value is also a decision, and stores takes precedence over computes.",
+   "related structural assets": [
+    {
+     "asset rtl": "timeout",
+     "entity": "neorv32_xbus",
+     "realization": "stores",
+     "occurrence": 6,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Access completion status returned to the requester -- acknowledge and error",
+   "security objective": "Integrity",
+   "reasoning": "The status is computed by `bus_rsp.ack <= pending and (timeout or xbus_err_i or xbus_ack_i);` (line 155) and `bus_rsp.err <= pending and (timeout or xbus_err_i);` (line 156) and delivered to reg_stage_inst through device_rsp_i (line 75, connection mode in), whose internals are not supplied; the consumer must receive exactly these values, so Integrity is Established from lines 155-156 and 75. bus_rsp.ack and bus_rsp.err compute the status but are fields of bus_rsp, a record carrying complete responses, and bus_rsp_o is a transport port, so neither is reported. The eligible references are the inputs this entity reads to compute the status: xbus_ack_i (occurrence 3, SOURCES bus_rsp.ack, line 155) and xbus_err_i (occurrence 4, SOURCES bus_rsp.err, line 156). pending and timeout are operands here and are reported under their own concepts.",
+   "related structural assets": [
+    {
+     "asset rtl": "xbus_ack_i",
+     "entity": "neorv32_xbus",
+     "realization": "sets",
+     "occurrence": 3,
+     "edge": {"type": "SOURCES", "partner": "bus_rsp.ack"}
+    },
+    {
+     "asset rtl": "xbus_err_i",
+     "entity": "neorv32_xbus",
+     "realization": "sets",
+     "occurrence": 4,
+     "edge": {"type": "SOURCES", "partner": "bus_rsp.err"}
+    }
+   ]
+  },
+  {
+   "concept": "Read data returned from the external bus to the requester",
+   "security objective": "Integrity",
+   "reasoning": "`bus_rsp.data <= xbus_dat_i when (pending = '1') else (others => '0');` (line 154) forms the response data from the external read data during an access and zero otherwise, and delivers it to reg_stage_inst through device_rsp_i (line 75), whose consumer is not supplied; the consumer must receive exactly this value, so Integrity is Established. xbus_dat_i sets it (occurrence 2, SOURCES bus_rsp.data, line 154): this entity reads it to form the qualified response, not as an unchanged copy. bus_rsp.data is a transport field and bus_rsp_o a transport port, and no element of this entity stores the data, so xbus_dat_i is the only eligible reference. No line restricts who observes the data, so confidentiality is not established.",
+   "related structural assets": [
+    {
+     "asset rtl": "xbus_dat_i",
+     "entity": "neorv32_xbus",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "SOURCES", "partner": "bus_rsp.data"}
+    }
+   ]
+  },
+  {
+   "concept": "Outgoing external-bus access request -- address, write data, direction, byte enables and request strobe presented to the external device",
+   "security objective": "Integrity",
+   "reasoning": "Lines 141-145 drive the request onto the external bus: `xbus_adr_o <= bus_req.addr;` (line 141), `xbus_dat_o <= bus_req.data;` (line 142), `xbus_we_o <= bus_req.rw;` (line 143), `xbus_sel_o <= bus_req.ben;` (line 144) and `xbus_stb_o <= bus_req.stb;` (line 145). bus_req receives the request from reg_stage_inst.device_req_o (line 74). The external device is not supplied, so its integrity property is that it receives exactly these fields: Established from lines 141-145. The bus_req fields are transport fields and sub-unit carriers and are not reported; the scalar output ports are not records, so the transport rule does not remove them, and each is an exit port (occurrence 2, COPIES of its bus_req field). Confidentiality is not established from any line.",
+   "related structural assets": [
+    {
+     "asset rtl": "xbus_adr_o",
+     "entity": "neorv32_xbus",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "COPIES", "partner": "bus_req.addr"}
+    },
+    {
+     "asset rtl": "xbus_dat_o",
+     "entity": "neorv32_xbus",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "COPIES", "partner": "bus_req.data"}
+    },
+    {
+     "asset rtl": "xbus_we_o",
+     "entity": "neorv32_xbus",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "COPIES", "partner": "bus_req.rw"}
+    },
+    {
+     "asset rtl": "xbus_sel_o",
+     "entity": "neorv32_xbus",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "COPIES", "partner": "bus_req.ben"}
+    },
+    {
+     "asset rtl": "xbus_stb_o",
+     "entity": "neorv32_xbus",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "COPIES", "partner": "bus_req.stb"}
+    }
+   ]
+  },
+  {
+   "concept": "Access attribute tag -- requester source bit and combined privileged-or-debug bit presented to the external device",
+   "security objective": "Integrity",
+   "reasoning": "The tag is formed in this entity: `xbus_tag_o(2) <= bus_req.src;` (line 149), `xbus_tag_o(1) <= '0';` (line 150) and `xbus_tag_o(0) <= bus_req.priv or bus_req.debug;` (line 151), so bit 0 is computed here from two request attributes. The external consumer is not supplied, so it must receive exactly this tag: Integrity is Established from lines 149-151. xbus_tag_o is the exit port (occurrence 4, GATED_BY bus_req.priv, line 151); the bus_req fields it reads are transport fields and are not reported.",
+   "related structural assets": [
+    {
+     "asset rtl": "xbus_tag_o",
+     "entity": "neorv32_xbus",
+     "realization": "exit port",
+     "occurrence": 4,
+     "edge": {"type": "GATED_BY", "partner": "bus_req.priv"}
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,355 @@
+{
+  "module name": "neorv32_fifo",
+  "module purpose": "A parameterizable FIFO buffer: it accepts write data and write-enable inputs, stores entries in an internal register or memory depending on FIFO_DEPTH, updates write/read pointers on clk_i, and presents read data and occupancy/status outputs (free_o, avail_o, half_o, level_o). Behavior is configurable by generics FIFO_RSYNC (synchronous read), FIFO_SAFE (gate enables) and FULL_RESET (memory reset).",
+  "use-case flows": [
+    {
+      "flow": "start",
+      "value": "Write: a write request (we_i) causes wdata_i to be written into FIFO storage and advances the write pointer",
+      "lines": [
+        65,
+        82,
+        135,
+        150,
+        171,
+        184
+      ]
+    },
+    {
+      "flow": "start",
+      "value": "Read: a read request (re_i) causes the read pointer to advance and the selected stored entry to be presented on rdata_o",
+      "lines": [
+        64,
+        83,
+        207,
+        210,
+        213,
+        238,
+        240,
+        241
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "Pointer and occupancy update: w_pnt/r_pnt are clocked, w_nxt/r_nxt are computed (including clear_i), and level/match/full/empty/half are derived from the pointers",
+      "lines": [
+        70,
+        73,
+        76,
+        77,
+        82,
+        83,
+        92,
+        95,
+        96
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "Stored entry returned on rdata_o: read logic selects fifo_mem or fifo_reg at the current read index and drives rdata_o (sync or async depending on FIFO_RSYNC)",
+      "lines": [
+        201,
+        213,
+        232,
+        241
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "Status reporting: free/avail/half are produced and copied to free_o/avail_o/half_o, and level is extended to level_o (synchronously or combinationally depending on FIFO_RSYNC)",
+      "lines": [
+        95,
+        96,
+        110,
+        111,
+        114,
+        116,
+        117,
+        217,
+        218,
+        219,
+        247,
+        254,
+        255,
+        256
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "Reset clears pointer registers (and, when FULL_RESET is true, clears the memory/register contents and resets status outputs)",
+      "lines": [
+        72,
+        73,
+        74,
+        75,
+        131,
+        132,
+        147,
+        249,
+        250,
+        251,
+        252
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "FIFO stored entries (the data values held in the FIFO memory or single-entry register that must be delivered unchanged on read)",
+      "security objective": "Integrity",
+      "reasoning": "Writes copy wdata_i into storage and later the same storage drives rdata_o: write processes assign fifo_reg/fifo_mem from wdata_i (RTL lines 135, 150, 171, 184) and read paths drive rdata_o from the same storage (RTL lines 201, 213, 232, 241). The relationship map shows wdata_i CARRIES into fifo_mem at occurrence 3 (line 150) and fifo_mem is CLOCKED_BY clk_i at occurrence 3 (line 150); rdata_o DERIVES_FROM fifo_mem at occurrence 3 (line 213). Corrupting these stored values would make rdata_o differ from prior writes, so integrity of the stored entries is established by these assignments and connections.",
+      "related structural assets": [
+        {
+          "asset rtl": "fifo_mem",
+          "entity": "neorv32_fifo",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "fifo_reg",
+          "entity": "neorv32_fifo",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "wdata_i",
+          "entity": "neorv32_fifo",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "fifo_mem"
+          }
+        },
+        {
+          "asset rtl": "rdata_o",
+          "entity": "neorv32_fifo",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "fifo_mem"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Effective write-enable decision (the internal write-permit that actually gates storing an entry)",
+      "security objective": "Integrity",
+      "reasoning": "The internal write decision 'we' determines whether storage processes take wdata_i: the RTL assigns we from we_i (and free when FIFO_SAFE=true) (line 65) and the write processes are gated by we (e.g. 'if (we = '1') then fifo_reg/fifo_mem <= wdata_i' at lines 135, 150, 171, 184). The map records show we DERIVES_FROM we_i (occurrence 2, line 65) and we_i SOURCES we (occurrence 2, line 65), establishing the effective write enable as a computed decision the module depends on.",
+      "related structural assets": [
+        {
+          "asset rtl": "we",
+          "entity": "neorv32_fifo",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "we_i"
+          }
+        },
+        {
+          "asset rtl": "we_i",
+          "entity": "neorv32_fifo",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "we"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Effective read-enable decision (the internal read-permit that actually advances the read side and enables delivery)",
+      "security objective": "Integrity",
+      "reasoning": "The internal read decision 're' controls pointer advancement and which entry is presented: RTL assigns re from re_i (and avail when FIFO_SAFE=true) (line 64) and r_nxt/pointer advances and rdata_o use that decision (lines 77, 83, 207-213, 238-241). The map shows re DERIVES_FROM re_i at occurrence 2 (line 64) and re_i SOURCES re (occurrence 2, line 64), establishing the effective read enable as the decision the module uses.",
+      "related structural assets": [
+        {
+          "asset rtl": "re",
+          "entity": "neorv32_fifo",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "re_i"
+          }
+        },
+        {
+          "asset rtl": "re_i",
+          "entity": "neorv32_fifo",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "re"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "FIFO pointer state (the write and read pointers that determine which locations are written and read)",
+      "security objective": "Integrity",
+      "reasoning": "The stored-entry indexing and read/write behavior depend on the pointer registers: pointer_reg resets w_pnt/r_pnt and on clk_i updates w_pnt<=w_nxt and r_pnt<=r_nxt (lines 70-78); the write processes index fifo_mem using w_pnt (lines 150, 184) and read processes select fifo_mem using r_pnt or the registered r_pnt_ff (lines 213, 241). The map records show w_pnt CLOCKED_BY clk_i at occurrence 3 (line 76) and r_pnt CLOCKED_BY clk_i at occurrence 3 (line 77); r_pnt_ff is a stored delayed read pointer (CLOCKED_BY clk_i at occurrence 2, line 210) used by async read. The pointer registers therefore realize the pointer-state concept whose integrity the FIFO relies on.",
+      "related structural assets": [
+        {
+          "asset rtl": "w_pnt",
+          "entity": "neorv32_fifo",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "r_pnt",
+          "entity": "neorv32_fifo",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "r_pnt_ff",
+          "entity": "neorv32_fifo",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Occupancy/status indicators (free, avail, half) and their exported ports that gate operations and report FIFO state",
+      "security objective": "Integrity",
+      "reasoning": "Occupancy signals determine permitted operations and are exported to other blocks: free is computed as not full (line 110) and copied to free_o (line 217); avail is computed as not empty (line 111) and copied to avail_o (line 218); half is computed from level or full (line 96) and copied to half_o (lines 219/256). The map records show free DERIVES_FROM full at occurrence 3 (line 110) and free_o COPIES free at occurrence 2 (line 217); avail DERIVES_FROM empty at occurrence 3 (line 111) and avail_o COPIES avail at occurrence 2 (line 218); half is GATED_BY the 'level(...) or full' guard at occurrence 2 (line 96) and half_o COPIES half at occurrence 2 (line 219). Because writes/reads are gated by these signals (we uses free; re uses avail), their integrity is established by the RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "free",
+          "entity": "neorv32_fifo",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "full"
+          }
+        },
+        {
+          "asset rtl": "free_o",
+          "entity": "neorv32_fifo",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "free"
+          }
+        },
+        {
+          "asset rtl": "avail",
+          "entity": "neorv32_fifo",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "empty"
+          }
+        },
+        {
+          "asset rtl": "avail_o",
+          "entity": "neorv32_fifo",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "avail"
+          }
+        },
+        {
+          "asset rtl": "half",
+          "entity": "neorv32_fifo",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "full"
+          }
+        },
+        {
+          "asset rtl": "half_o",
+          "entity": "neorv32_fifo",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "half"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Level count (number of entries currently stored) and its exported readback",
+      "security objective": "Integrity",
+      "reasoning": "The module computes a numeric occupancy level (level <= unsigned(w_pnt) - unsigned(r_pnt), line 95) and extends that value to the 32-bit level_o output (process level_extend lines 114-118). The map shows level DERIVES_FROM w_pnt (occurrence 2, line 95) and level_o DERIVES_FROM level (occurrence 3, line 117). The correctness of the level value matters to consumers and is established by these RTL computations and connections.",
+      "related structural assets": [
+        {
+          "asset rtl": "level",
+          "entity": "neorv32_fifo",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "w_pnt"
+          }
+        },
+        {
+          "asset rtl": "level_o",
+          "entity": "neorv32_fifo",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "level"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Clear request (the external clear_i input that forces pointers to zero and empties the FIFO)",
+      "security objective": "Availability",
+      "reasoning": "clear_i, when asserted, forces w_nxt and r_nxt to (others => '0') (RTL lines 82-83). The map records clear_i GATES w_nxt at occurrence 2 (line 82) and GATES r_nxt at occurrence 3 (line 83); w_nxt/r_nxt are then carried into the pointer registers on the next clk edge (pointer_reg lines 70-78). Because clear_i directly empties the pointer state used to select memory entries, it is an availability-relevant control input established by the RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "clear_i",
+          "entity": "neorv32_fifo",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATES",
+            "partner": "w_nxt"
+          }
+        },
+        {
+          "asset rtl": "w_nxt",
+          "entity": "neorv32_fifo",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "w_pnt"
+          }
+        }
+      ]
+    }
+  ]
+}

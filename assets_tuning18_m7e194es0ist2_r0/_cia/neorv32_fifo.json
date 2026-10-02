@@ -1,0 +1,173 @@
+{
+ "module name": "neorv32_fifo",
+ "concepts": [
+  {
+   "concept": "Stored FIFO payload (the data words held in the FIFO memory or single-word register and delivered on read)",
+   "kind": "data",
+   "writers": "Written from input wdata_i into the on-chip storage: fifo_reg <= wdata_i (write_reset_small) at line 135 (guarded by we='1', reset path writes zeros at line 132) and fifo_mem(to_integer(unsigned(w_pnt(...)))) <= wdata_i (write_reset_large) at line 150 (guarded by we='1', reset path zeros at line 147) when FULL_RESET; and fifo_reg <= wdata_i at line 171 and fifo_mem(...) <= wdata_i at line 184 (guarded by we='1') when not FULL_RESET. All writes happen in clocked processes (rising_edge(clk_i)). The write data source is wdata_i and the writes are gated by internal we which is derived from we_i (line 65) and by the write pointer w_pnt (lines 150/184) for addressing.",
+   "observers": "Exported on the module output rdata_o: rdata_o <= fifo_reg at line 201 (async, depth=1) and line 232 (sync, depth=1), and rdata_o <= fifo_mem(...) at line 213 (async, depth>1) and line 241 (sync, depth>1); rdata_o is the external exit port carrying the stored word.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 213,
+     "via": "rdata_o",
+     "reason": "Words written from wdata_i into fifo_reg/fifo_mem (writes at lines 135/150/171/184) are later driven out on rdata_o (reads at lines 201/213/232/241), so an external observer can read the stored payload."
+    },
+    "integrity": {
+     "answer": "no",
+     "line": 184,
+     "via": "fifo_mem/fifo_reg",
+     "reason": "Stored payload is updated only by the FIFO's intended clocked write processes (writes guarded by we = '1' at lines 135/150/171/184), i.e. normal operation replaces stored words as designed."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 82,
+     "via": "clear_i",
+     "reason": "clear_i forces w_nxt and r_nxt to zeros (line 82/83) so on the next clock the pointer registers are reset and previously stored words become inaccessible or will be overwritten, allowing an external input to prevent progress or access to stored payload."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 184,
+     "via": "fifo_mem",
+     "reason": "There is a single class of drivers for stored payload (clocked write processes at lines 135/150/171/184); no runtime debug/test override or alternate driver is present in the RTL."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Pointer state (write and read pointers w_pnt, r_pnt, and the captured read-pointer r_pnt_ff) that index the storage and determine full/empty conditions",
+   "kind": "state",
+   "writers": "Pointer registers updated in pointer_reg: w_pnt <= w_nxt at line 76 and r_pnt <= r_nxt at line 77 (reset to zeros at lines 73/74 on rstn_i); r_pnt_ff <= r_nxt is captured in async read path at line 210. The next-pointer signals w_nxt/r_nxt are computed at lines 82/83 (clear_i -> zeros, else increment on we/re), so pointer values are driven by w_nxt/r_nxt which are influenced by clear_i, we/re (we/re derive from we_i/re_i at lines 65/64) and by the current registers.",
+   "observers": "Pointer-derived status and addresses are visible externally: level is computed from pointers at line 95 and exported via level_o (level_extend lines 116-117); full/empty are computed at lines 92-94 and free/avail/half are copied to outputs at lines 217-219 (async) or 254-256 (sync); read addressing uses r_pnt_ff at line 213 (async) or r_pnt at line 241 (sync), which affects rdata_o.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 117,
+     "via": "level_o",
+     "reason": "The difference of pointers is presented externally (level computed at line 95 and assigned to level_o at line 117) and full/empty/half are copied to output ports (lines 217-219/254-256), so external observers can infer pointer-derived state."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 76,
+     "via": "clear_i",
+     "reason": "Pointer registers are updated from w_nxt/r_nxt at line 76/77 and w_nxt/r_nxt can be forced to zeros or advanced by external-controllable inputs (clear_i at line 82 and we_i/re_i via we/re at lines 65/64), so external inputs can change pointer state while it is in use."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 82,
+     "via": "clear_i",
+     "reason": "clear_i drives w_nxt/r_nxt to zeros (line 82/83) so an external clear_i asserted continuously will reset pointers at each clock (pointer_reg lines 76/77) and can halt or prevent forward progress that depends on pointer movement."
+    },
+    "undermined behavior": {
+     "answer": "yes-RTL",
+     "line": 213,
+     "via": "FIFO_RSYNC",
+     "reason": "The read-address source is selected by mode: in async mode rdata_o uses r_pnt_ff (line 213) while in sync mode it uses r_pnt (line 241); the FIFO_RSYNC configuration therefore changes which captured pointer is used for reads."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Write and read enable decisions (we and re) that gate whether writes and reads occur",
+   "kind": "decision",
+   "writers": "Internal enable signals assigned from external strobes and status: re <= re_i when (FIFO_SAFE = false) else (re_i and avail) at line 64; we <= we_i when (FIFO_SAFE = false) else (we_i and free) at line 65. These signals gate pointer increments (w_nxt/r_nxt at lines 82/83) and memory/register writes (write processes at lines 135/150/171/184).",
+   "observers": "Effects of enables are observable externally via rdata_o (lines 201/213/232/241) and via status outputs free_o/avail_o/half_o/level_o (lines 116-117, 217-219, 254-256) which change when reads/writes occur, but we/re themselves are not exposed as direct ports.",
+   "answers": {
+    "confidentiality": {
+     "answer": "no",
+     "line": 65,
+     "via": "we_i / re_i",
+     "reason": "we and re are derived directly from the external strobes we_i and re_i (lines 65/64) and do not hide information beyond what the writer already knows."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 65,
+     "via": "we_i",
+     "reason": "we is assigned from we_i (line 65) and, when FIFO_SAFE = false, is unguarded, and this we signal directly gates writes (lines 135/150/171/184), so an external writer can change the write-enable while operations run."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 65,
+     "via": "we_i/re_i",
+     "reason": "Progress (writes/reads and pointer advancement) depends on we/re being asserted (we/re drive writes at lines 135/150/171/184 and pointer increments at lines 82/83), so external control of we_i/re_i can stall or force progress."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 65,
+     "via": "we_i",
+     "reason": "There is a single assignment form for the enables in the RTL (we/re assigned at lines 65/64, with the only variant being the compile-time FIFO_SAFE gating); no runtime debug/test override is present."
+    }
+   },
+   "security objective": "Integrity"
+  },
+  {
+   "concept": "Occupancy and status (level, full/empty/half and the exported status ports free_o, avail_o, half_o, level_o) that report FIFO fullness and availability",
+   "kind": "state",
+   "writers": "Status signals are computed from pointers and fullness logic: match/full/empty are computed in check_large/check_small (lines 92-94 and 102-104), level <= unsigned(w_pnt) - unsigned(r_pnt) at line 95, half <= level(level'left-1) or full at line 96, free <= not full at line 110 and avail <= not empty at line 111. level_o is assigned in level_extend at lines 116-117; status outputs are copied combinationally in async mode at lines 217-219 and synchronously updated in sync_status at lines 247-256 (reset to '0' at lines 249-253 and updated at lines 254-256).",
+   "observers": "All four status outputs are external ports: level_o (assigned at lines 116-117) and free_o/avail_o/half_o (driven at lines 217-219 in async mode or updated in sync_status at lines 247-256), so external logic can read occupancy and status.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 217,
+     "via": "free_o",
+     "reason": "Occupancy/status signals (level, full/empty/half) are driven to external ports (level_o at lines 116-117 and free_o/avail_o/half_o at lines 217-219 or 254-256), so an external observer can learn FIFO occupancy and activity."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 95,
+     "via": "clear_i",
+     "reason": "Status (level at line 95 and full/empty at lines 92-94) is computed from pointer registers which can be forced or altered by external-controllable inputs (e.g. clear_i at lines 82/83 and we_i/re_i via we/re at lines 65/64), so external inputs can change status while it is in use."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 82,
+     "via": "clear_i",
+     "reason": "An external clear_i asserted to force w_nxt/r_nxt to zeros (line 82/83) will reset pointers and thus status outputs at the next clock, enabling an external input to freeze or force status and block progress."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 217,
+     "via": "free_o",
+     "reason": "Status outputs have a single RTL-driven source (combinational copies at lines 217-219 or the sync update at 254-256 depending on FIFO_RSYNC), and there is no runtime debug/test bypass present."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Synchronous clear request (clear_i) that forces pointer next-values to zero and thus clears FIFO pointers at the next clock)",
+   "kind": "event",
+   "writers": "clear_i is an input port (line 30) and is not written internally; it is used to compute w_nxt and r_nxt at lines 82-83 ('(others => '0') when (clear_i = '1')'), which in turn cause pointer_reg (lines 76-77) to write zeros into w_pnt/r_pnt on the next rising clock.",
+   "observers": "The effect of clear_i is observable externally via outputs influenced by pointers: level_o (lines 116-117) and free_o/avail_o/half_o (lines 217-219 or 254-256) and via changes to rdata_o (lines 201/213/232/241) as pointers are reset.",
+   "answers": {
+    "confidentiality": {
+     "answer": "no",
+     "line": 30,
+     "via": "clear_i",
+     "reason": "clear_i is an external input port (line 30) whose value is known to its writer; it does not carry secret data internal to the FIFO."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 82,
+     "via": "clear_i",
+     "reason": "clear_i directly forces w_nxt/r_nxt to zeros (line 82/83) so an external assertion of clear_i will change pointer values on the next clock (pointer_reg lines 76/77) with no internal lock, allowing external modification of pointer state while operations may be in progress."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 82,
+     "via": "clear_i",
+     "reason": "Because clear_i drives w_nxt/r_nxt to zeros (line 82/83), an external agent holding clear_i asserted can continuously reset pointers at each clock and prevent forward progress, so availability can be blocked by this input."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 82,
+     "via": "clear_i",
+     "reason": "There is no alternate runtime override or debug mode in the RTL that replaces or bypasses clear_i's effect; clear_i gates w_nxt/r_nxt only at lines 82/83."
+    }
+   },
+   "security objective": "Integrity"
+  }
+ ],
+ "_problems": [
+  "concept answered 0 times: Synchronous clear request (clear_i) that forces pointer next"
+ ]
+}

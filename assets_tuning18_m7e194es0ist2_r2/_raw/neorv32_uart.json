@@ -1,0 +1,547 @@
+{
+  "module name": "neorv32_uart",
+  "module purpose": "UART peripheral that services a bus: it decodes bus read/write accesses to control and data registers, provides TX and RX FIFOs, runs transmit and receive engines driven by a selected uart clock, presents status and interrupts (irq_tx_o, irq_rx_o), and supports hardware flow-control (CTS/RTS).",
+  "use-case flows": [
+    {
+      "flow": "configure",
+      "value": "control register values written from the bus (enable, sim_mode, hwfc_en, prsc, baud, IRQ masks, clr_rx, clr_tx)",
+      "lines": [
+        176,
+        177,
+        178,
+        179,
+        180,
+        181,
+        182,
+        183,
+        185,
+        186,
+        187,
+        188,
+        189,
+        190,
+        191
+      ]
+    },
+    {
+      "flow": "start",
+      "value": "host write of a transmit byte into the TX FIFO (bus -> tx_fifo.wdata and tx_fifo.we)",
+      "lines": [
+        259,
+        260,
+        261
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "transmit operation: tx_engine loads a FIFO byte into sreg, clocks bits out with uart_clk and drives uart_txd_o",
+      "lines": [
+        325,
+        344,
+        351,
+        352,
+        353,
+        359,
+        365,
+        368,
+        370,
+        376,
+        377,
+        392
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "receive operation: uart_rxd sampled into rx_engine.sreg, assembled into a byte and pushed into RX FIFO",
+      "lines": [
+        397,
+        408,
+        410,
+        422,
+        433,
+        434,
+        439,
+        440,
+        441,
+        304,
+        305,
+        306
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "interrupt outputs and bus-status reporting (irq_tx_o, irq_rx_o and bus_rsp_o.data status fields)",
+      "lines": [
+        265,
+        270,
+        271,
+        272,
+        273,
+        310,
+        315,
+        316,
+        317,
+        318,
+        319,
+        194,
+        201,
+        202,
+        203,
+        204,
+        205,
+        206
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "bus read returns: control/status fields or RX FIFO readback (rx_fifo.rdata -> bus_rsp_o.data) and rx_fifo.re",
+      "lines": [
+        194,
+        195,
+        196,
+        197,
+        198,
+        201,
+        202,
+        203,
+        204,
+        205,
+        206,
+        217,
+        218,
+        219,
+        307
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "reset forces control registers, engine state and FIFOs to known values (rstn_i = '0' arms in processes)",
+      "lines": [
+        154,
+        155,
+        156,
+        157,
+        158,
+        159,
+        160,
+        161,
+        162,
+        163,
+        164,
+        165,
+        166,
+        167,
+        168,
+        327,
+        328,
+        329,
+        330,
+        331,
+        332,
+        333,
+        334,
+        335,
+        397,
+        399,
+        400,
+        401,
+        402,
+        403,
+        404,
+        405,
+        406,
+        456,
+        459,
+        461
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Bus access predicates that decide which internal register or FIFO field a bus transaction addresses (strobe, read/write, addr[2])",
+      "security objective": "Integrity",
+      "reasoning": "The bus-access process reads bus_req_i.stb, bus_req_i.rw and bus_req_i.addr(2) to choose writes or reads and to route data: see the bus_access process's tests and assignments (RTL lines 176-183, 260-261, 307). The relationship map records these inputs gating the assignments: bus_req_i.addr occurrence 2 (line 178) is recorded GATES the control fields (map GATES targets include ctrl.enable), bus_req_i.rw occurrence 2 (line 177) is recorded GATES the control-data path, and bus_req_i.stb occurrence 2 (line 170) CARRIES the ack (bus_rsp_o.ack). Because these predicates directly determine where bus data lands and which reads occur, their integrity is required for correct configuration and data flow (map evidence: the cited occurrences and their GATES / CARRIES records).",
+      "related structural assets": [
+        {
+          "asset rtl": "bus_req_i.addr",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATES",
+            "partner": "ctrl.enable"
+          }
+        },
+        {
+          "asset rtl": "bus_req_i.rw",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATES",
+            "partner": "ctrl.baud"
+          }
+        },
+        {
+          "asset rtl": "bus_req_i.stb",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "bus_rsp_o.ack"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Control-register configuration (enable, sim_mode, hwfc_en, prsc, baud, IRQ mask bits, clr_rx, clr_tx) that defines UART operating mode, clock selection, flow-control and IRQ policy",
+      "security objective": "Integrity",
+      "reasoning": "Bus writes store the configuration fields (RTL lines 176-183, 185-191); those fields are then read and used throughout the design (clkgen_en_o <= ctrl.enable at line 228; uart_clk selection at line 229; tx/rx counters load ctrl.baud at lines 349, 368, 432; fifo clears at lines 259 and 304). The map shows each control field is written from bus_req_i.data (each register has a DERIVES_FROM / CLOCKED_BY record where the receiving occurrence cites bus_req_i.data): e.g. ctrl.enable occurrence 3 (line 179) DERIVES_FROM bus_req_i.data, ctrl.prsc occurrence 3 (line 182) DERIVES_FROM bus_req_i.data, ctrl.baud occurrence 3 (line 183) DERIVES_FROM bus_req_i.data, and clr_rx/clr_tx occurrences (line 190/191) DERIVE from bus_req_i.data. These RTL lines and map records establish that these stored configuration values determine core behavior and thus require integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.enable",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "bus_req_i.data"
+          }
+        },
+        {
+          "asset rtl": "ctrl.sim_mode",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "bus_req_i.data"
+          }
+        },
+        {
+          "asset rtl": "ctrl.hwfc_en",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "bus_req_i.data"
+          }
+        },
+        {
+          "asset rtl": "ctrl.prsc",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "bus_req_i.data"
+          }
+        },
+        {
+          "asset rtl": "ctrl.baud",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "bus_req_i.data"
+          }
+        },
+        {
+          "asset rtl": "ctrl.clr_rx",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 4,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "bus_req_i.data"
+          }
+        },
+        {
+          "asset rtl": "ctrl.clr_tx",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 4,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "bus_req_i.data"
+          }
+        },
+        {
+          "asset rtl": "ctrl.irq_rx_nempty",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "bus_req_i.data"
+          }
+        },
+        {
+          "asset rtl": "ctrl.irq_tx_empty",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "bus_req_i.data"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Transmit data bytes (host-supplied bytes written into the TX FIFO and consumed by the transmitter to produce uart_txd_o)",
+      "security objective": "Integrity",
+      "reasoning": "A host write places an 8-bit value on tx_fifo.wdata (RTL line 260) gated by the bus write condition (tx_fifo.we at line 261). The transmitter loads FIFO data into tx_engine.sreg (RTL line 351) and shifts bits to uart_txd_o (RTL lines 365, 392). The map records the bus source-to-FIFO link (bus_req_i.data occurrence 14, line 260, SOURCES -> tx_fifo.wdata), the FIFO write-enable gating (tx_fifo.we occurrence 3, line 261, GATED_BY the bus predicates), the FIFO input signal set (tx_fifo.wdata occurrence 3, line 260, DERIVES_FROM bus_req_i.data) and the transmitter storage edge (tx_engine.sreg occurrence 3, line 351, CLOCKED_BY clk_i). The port uart_txd_o is driven by tx_engine.txd (uart_txd_o occurrence 2, line 392, COPIES tx_engine.txd). These RTL lines and map records establish the integrity property that bytes written by the bus are the exact bytes forwarded to the transmitter and out the pin.",
+      "related structural assets": [
+        {
+          "asset rtl": "bus_req_i.data",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 14,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "tx_fifo.wdata"
+          }
+        },
+        {
+          "asset rtl": "tx_fifo.wdata",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "bus_req_i.data"
+          }
+        },
+        {
+          "asset rtl": "tx_fifo.we",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "bus_req_i.stb"
+          }
+        },
+        {
+          "asset rtl": "tx_engine.sreg",
+          "entity": "neorv32_uart",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "uart_txd_o",
+          "entity": "neorv32_uart",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "tx_engine.txd"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Received data bytes (serial input sampled and assembled by rx_engine then stored into RX FIFO for bus readout)",
+      "security objective": "Integrity",
+      "reasoning": "The receiver samples uart_rxd_i into rx_engine.sync and shifts bits into rx_engine.sreg (RTL lines 408, 410, 434); when a byte completes rx_engine.done is asserted and rx_fifo.wdata/rx_fifo.we are used to store the byte (RTL lines 305-306). The map records uart_rxd_i occurrence 2 (line 408) CARRIES -> rx_engine.sync, rx_engine.sreg occurrence 4 (line 434) CLOCKED_BY clk_i and SOURCES rx_fifo.wdata (line 305), rx_engine.done occurrence 2 (line 306) CARRIES -> rx_fifo.we, and bus readout copies rx_fifo.rdata into bus_rsp_o.data (bus_rsp_o.data occurrence 21, line 217, COPIES rx_fifo.rdata). These RTL lines and map edges establish the integrity property that a received serial byte is the value delivered to the FIFO and presented on reads.",
+      "related structural assets": [
+        {
+          "asset rtl": "uart_rxd_i",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "rx_engine.sync"
+          }
+        },
+        {
+          "asset rtl": "rx_engine.sreg",
+          "entity": "neorv32_uart",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "rx_fifo.wdata",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "rx_engine.sreg"
+          }
+        },
+        {
+          "asset rtl": "rx_engine.done",
+          "entity": "neorv32_uart",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "rx_fifo.we"
+          }
+        },
+        {
+          "asset rtl": "bus_rsp_o.data",
+          "entity": "neorv32_uart",
+          "realization": "exit port",
+          "occurrence": 21,
+          "edge": {
+            "type": "COPIES",
+            "partner": "rx_fifo.rdata"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Interrupt-decision (IRQ mask bits and the irq_tx_o / irq_rx_o outputs) that reports TX/RX conditions to the system",
+      "security objective": "Integrity",
+      "reasoning": "IRQ outputs are computed from control mask bits and FIFO status: see tx_irq_generator and rx_irq_generator (RTL lines 265-273 and 310-319). The map records the mask bits written from the bus (e.g. ctrl.irq_tx_empty occurrence 3, line 188 DERIVES_FROM bus_req_i.data; ctrl.irq_rx_nempty occurrence 3, line 185 DERIVES_FROM bus_req_i.data) and the IRQ outputs driven from those fields and FIFO status (irq_tx_o occurrence 3, line 270 DERIVES_FROM ctrl.irq_tx_empty and related signals; irq_rx_o occurrence 3, line 315 DERIVES_FROM ctrl.irq_rx_nempty and rx_fifo signals). Because these decisions determine externally-observed interrupt signals, their integrity is established by the RTL lines and the cited map records.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.irq_tx_empty",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "bus_req_i.data"
+          }
+        },
+        {
+          "asset rtl": "ctrl.irq_tx_nhalf",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "bus_req_i.data"
+          }
+        },
+        {
+          "asset rtl": "irq_tx_o",
+          "entity": "neorv32_uart",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "ctrl.irq_tx_empty"
+          }
+        },
+        {
+          "asset rtl": "ctrl.irq_rx_nempty",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "bus_req_i.data"
+          }
+        },
+        {
+          "asset rtl": "irq_rx_o",
+          "entity": "neorv32_uart",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "ctrl.irq_rx_nempty"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Hardware flow-control policy and handshake (CTS input and RTS output) that permits or blocks transmission",
+      "security objective": "Integrity",
+      "reasoning": "The transmitter checks CTS and ctrl.hwfc_en before advancing (RTL lines 359-360) and the rtr_control process drives uart_rtsn_o depending on ctrl.hwfc_en, ctrl.enable and rx_fifo.half (RTL lines 467-477). The map records ctrl.hwfc_en written from the bus (ctrl.hwfc_en occurrence 3, line 181 DERIVES_FROM bus_req_i.data), the CTS input propagation (uart_ctsn_i occurrence 2, line 337 SOURCES -> tx_engine.cts), tx_engine.cts derived from uart_ctsn_i (tx_engine.cts occurrence 3, line 337 DERIVES_FROM uart_ctsn_i), and the RTS output gated by FIFO fullness and enable (uart_rtsn_o occurrence 3, line 475 GATED_BY includes rx_fifo.half). These RTL lines and map edges establish that flow-control settings and the CTS/RTS signals determine whether transmission proceeds, so their integrity is material to operation.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.hwfc_en",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "bus_req_i.data"
+          }
+        },
+        {
+          "asset rtl": "uart_ctsn_i",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "tx_engine.cts"
+          }
+        },
+        {
+          "asset rtl": "tx_engine.cts",
+          "entity": "neorv32_uart",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "uart_ctsn_i"
+          }
+        },
+        {
+          "asset rtl": "uart_rtsn_o",
+          "entity": "neorv32_uart",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "rx_fifo.half"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "RX FIFO overrun flag (rx_engine.over) that records an overflow event and is reported to the bus",
+      "security objective": "Integrity",
+      "reasoning": "The fifo_overrun process sets rx_engine.over when a write occurs while the FIFO is full (RTL lines 453-461), and the value is reported on bus reads (bus_rsp_o.data includes ctrl_rx_over at line 214). The map records rx_engine.over occurrence 2 (line 214) CARRIES -> bus_rsp_o.data so the overrun bit is explicitly produced and exported: its integrity matters to correct reporting of overflow events.",
+      "related structural assets": [
+        {
+          "asset rtl": "rx_engine.over",
+          "entity": "neorv32_uart",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "bus_rsp_o.data"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Selected UART sampling/bit clock (uart_clk) derived from clkgen_i and ctrl.prsc that times bit sampling and shifting",
+      "security objective": "Integrity",
+      "reasoning": "The uart clock used by the TX/RX engines is selected from clkgen_i by index ctrl.prsc (RTL line 229: uart_clk <= clkgen_i(to_integer(unsigned(ctrl.prsc)))). The map records this as uart_clk occurrence 2 (line 229) SELECTED_BY ctrl.prsc and DERIVES_FROM clkgen_i. Because uart_clk gating controls baud sampling and the state machines' progress (map GATES and SELECTED_BY records at occurrences used by tx_engine and rx_engine), correctness of the selected clock (and of ctrl.prsc which sets it) is required for correct transmit/receive timing.",
+      "related structural assets": [
+        {
+          "asset rtl": "uart_clk",
+          "entity": "neorv32_uart",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "SELECTED_BY",
+            "partner": "ctrl.prsc"
+          }
+        }
+      ]
+    }
+  ]
+}

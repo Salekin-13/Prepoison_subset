@@ -1,0 +1,146 @@
+{
+  "module name": "neorv32_trng",
+  "conceptual assets": [
+    {
+      "concept": "TRNG enable configuration (controls whether samples are collected)",
+      "security objective": "Integrity",
+      "reasoning": "Bus write stores the control bit into signal `enable` (`if (bus_req_i.rw = '1') then enable <= bus_req_i.data(ctrl_en_c);`). The neoTRNG instance receives that signal (`... enable_i => enable`) and neoTRNG uses it to gate sampling (`sample_en <= enable_i;` and sampling_control uses sample_en to enable/disable accumulation). Corruption of this configuration bit changes whether the neoTRNG collects/debiases samples, violating the implemented sampling control flow (Integrity).",
+      "related structural assets": [
+        {
+          "asset rtl": "enable",
+          "entity": "neorv32_trng",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "enable_i",
+          "entity": "neoTRNG",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "FIFO clear decision (when the FIFO is cleared)",
+      "security objective": "Availability",
+      "reasoning": "The FIFO-clear signal is computed and driven from enable and the software-clear bit (`fifo.clear <= '1' when (enable = '0') or (fifo_clr = '1') else '0';`) and that signal is connected to the instantiated FIFO's clear input (port map `clear_i => fifo.clear`). The software-clear bit is written on bus writes (`fifo_clr <= bus_req_i.data(ctrl_fifo_clr_c)`). Asserting clear empties the FIFO and prevents stored entropy from being delivered; preventing or forcing clears therefore violates the module's availability of FIFO-stored random bytes (Availability).",
+      "related structural assets": [
+        {
+          "asset rtl": "fifo.clear",
+          "entity": "neorv32_trng",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "fifo_clr",
+          "entity": "neorv32_trng",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "FIFO available flag (reported availability used to decide reads)",
+      "security objective": "Integrity",
+      "reasoning": "The bus read path returns the FIFO-availability bit into the control read (`bus_rsp_o.data(ctrl_avail_c) <= fifo.avail;`) and the data-read branch uses `if (fifo.avail = '0') then ... else bus_rsp_o.data(...) <= fifo.rdata;`. The FIFO drives this signal (rnd_pool_fifo_inst maps `avail_o => fifo.avail`). If `fifo.avail` is incorrect the entity will return wrong status or wrong data-selection, violating the integrity of reported availability/read behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "fifo.avail",
+          "entity": "neorv32_trng",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "FIFO read request decision (pop-on-read)",
+      "security objective": "Integrity",
+      "reasoning": "The module computes the FIFO read strobe from the bus request (`fifo.re <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(2) = '1') else '0';`) and passes it to the FIFO re input (re_i => fifo.re). That decision causes the FIFO to pop a word on a bus read; incorrect fifo.re assertions or omissions break the implemented read/pop semantics and thus violate integrity of delivered data.",
+      "related structural assets": [
+        {
+          "asset rtl": "fifo.re",
+          "entity": "neorv32_trng",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Random output data returned to the bus (FIFO read data)",
+      "security objective": "Integrity",
+      "reasoning": "On a data read the process assigns FIFO output to the bus data field (`bus_rsp_o.data(ctrl_data_msb_c downto ctrl_data_lsb_c) <= fifo.rdata;`) and the FIFO instance drives that signal (`rdata_o => fifo.rdata`). Corruption of `fifo.rdata` causes incorrect values to be returned on reads, violating the integrity of the module's reported random bytes.",
+      "related structural assets": [
+        {
+          "asset rtl": "fifo.rdata",
+          "entity": "neorv32_trng",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "TRNG sample write interface (neoTRNG outputs that write samples into the FIFO)",
+      "security objective": "Integrity",
+      "reasoning": "The neoTRNG instance drives the FIFO write interface by port mapping its outputs to the FIFO inputs (`valid_o => fifo.we, data_o => fifo.wdata`). The FIFO uses `we`/`wdata` to store samples provided by neoTRNG. Therefore the neoTRNG outputs define what is stored; incorrect write strobes or data values corrupt the samples that the FIFO holds and later returns, violating sample integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "fifo.we",
+          "entity": "neorv32_trng",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "fifo.wdata",
+          "entity": "neorv32_trng",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "valid_o",
+          "entity": "neoTRNG",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "data_o",
+          "entity": "neoTRNG",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Debiased entropy bit and its validity (neoTRNG internal de-bias output)",
+      "security objective": "Integrity",
+      "reasoning": "neoTRNG computes debias outputs (`debias_valid <= debias_state and (debias_sreg(1) xor debias_sreg(0));` and `debias_data <= debias_sreg(0);`) and sampling_control consumes them (`elsif (debias_valid = '1') then sample_cnt <= ...; sample_sreg <= sample_sreg(6 downto 0) & (sample_sreg(7) xor debias_data);`). The debiased bit and its validity directly drive sample accumulation; their corruption changes the bits accumulated into samples and so violates the integrity of produced samples.",
+      "related structural assets": [
+        {
+          "asset rtl": "debias_valid",
+          "entity": "neoTRNG",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "debias_data",
+          "entity": "neoTRNG",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Sample-byte register and ready indicator inside neoTRNG (determines the byte and when it is exported)",
+      "security objective": "Integrity",
+      "reasoning": "The sampling process updates `sample_sreg` and `sample_cnt` on clock edges (sampling_control process) and the entity assigns them to the outputs (`data_o <= sample_sreg;` and `valid_o <= sample_cnt(sample_cnt'left);`). These registers determine both the sample byte and when it is flagged valid; corruption of `sample_sreg` or `sample_cnt` alters the exported byte or its timing, violating integrity of the module's output.",
+      "related structural assets": [
+        {
+          "asset rtl": "sample_sreg",
+          "entity": "neoTRNG",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "sample_cnt",
+          "entity": "neoTRNG",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "data_o",
+          "entity": "neoTRNG",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "valid_o",
+          "entity": "neoTRNG",
+          "realization": "exit port"
+        }
+      ]
+    }
+  ]
+}

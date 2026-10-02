@@ -1,0 +1,157 @@
+{
+  "module name": "neorv32_cpu_cp_muldiv",
+  "conceptual assets": [
+    {
+      "concept": "Instruction-accept decision for multiply/divide (valid_cmd)",
+      "security objective": "Integrity",
+      "reasoning": "The module computes a single combinational decision that enables multiply/divide handling: \"valid_cmd <= '1' when (ctrl_i.alu_cp_alu = '1') and (ctrl_i.ir_opcode(5) = '1') and (ctrl_i.ir_funct12(11 downto 5) = \\\"0000001\\\") and ((ctrl_i.ir_funct3(2) = '0') or ((ctrl_i.ir_funct3(2) = '1') and DIVISION_EN)) else '0';\" The control process tests valid_cmd in S_IDLE to start operations (`if (valid_cmd = '1') then ...`), so integrity of this computed decision determines whether the unit begins an operation. The decision is computed from the input control port.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "valid_cmd",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Operation start decisions (mul.start and div.start) that capture operands and launch cores",
+      "security objective": "Integrity",
+      "reasoning": "Start signals are computed from valid_cmd and the funct3 opcode bit and directly gate operand capture and core initialization: \"mul.start <= '1' when (valid_cmd = '1') and (ctrl_i.ir_funct3(2) = '0') else '0';\" and \"div.start <= '1' when (valid_cmd = '1') and (ctrl_i.ir_funct3(2) = '1') else '0';\". The multiplier process uses mul.start to sample operands (`if (mul.start = '1') then mul.dsp_x <= ...; mul.dsp_y <= ...`), and the divider process uses div.start to initialize quotient/rs2_abs/sign_mod and remainder. Incorrect start signals change whether/when work begins.",
+      "related structural assets": [
+        {
+          "asset rtl": "mul.start",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "div.start",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "valid_cmd",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Control FSM state, progress counter and output-enable that govern operation progression and result exposure (ctrl.state, ctrl.cnt, ctrl.out_en)",
+      "security objective": "Integrity",
+      "reasoning": "The clocked control process implements the operation progression: on reset it sets \"ctrl.state <= S_IDLE; ctrl.cnt <= (others => '0'); ctrl.out_en <= '0'\"; on rising edges it decrements ctrl.cnt in S_BUSY and transitions to S_DONE when \"or_reduce_f(ctrl.cnt) = '0' or (ctrl_i.cpu_trap = '1')\"; on the DONE->IDLE transition it sets ctrl.out_en <= '1'. These stored fields determine when work runs, completes and when results are exposed; their corruption violates the implemented progress and output gating rules.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.state",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.cnt",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.out_en",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Computed arithmetic result delivered by the unit (res_o) assembled from multiplier or divider outputs",
+      "security objective": "Integrity",
+      "reasoning": "The operation_result process drives the module output when ctrl.out_en = '1': it selects multiplication low/high halves or the divider result: when op_mul_c => res_o <= mul.prod(31 downto 0); when op_mulh* => res_o <= mul.prod(63 downto 32); when others => res_o <= div.res. Thus correctness of mul.prod or div.res and the gating/selection that exposes them is required for the reported result to match the implemented computation.",
+      "related structural assets": [
+        {
+          "asset rtl": "res_o",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "mul.prod",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "div.res",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.out_en",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Signedness selection for operands (ctrl.rs1_is_signed, ctrl.rs2_is_signed) that control sign-extension and result sign handling",
+      "security objective": "Integrity",
+      "reasoning": "The module derives signedness flags from the opcode: \"ctrl.rs1_is_signed <= '1' when (ctrl_i.ir_funct3 = op_mulh_c) or (ctrl_i.ir_funct3 = op_mulhsu_c) or (ctrl_i.ir_funct3 = op_div_c) or (ctrl_i.ir_funct3 = op_rem_c) else '0';\" and similar for rs2. These flags are used when sampling/transforming operands (multiplier: mul.dsp_x <= signed((rs1_i(...) and ctrl.rs1_is_signed) & rs1_i) ; divider: tests of rs1_i(...) and ctrl.rs1_is_signed decide quotient sign and rs2_abs). Corruption of these flags changes numeric interpretation and thus result integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.rs1_is_signed",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "ctrl.rs2_is_signed",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Operand values as consumed/registered by the unit (rs1_i, rs2_i and their registered/normalized forms)",
+      "security objective": "Integrity",
+      "reasoning": "Input operand ports are read and converted into internal forms used by cores: multiplier input registers assign \"mul.dsp_x <= signed((rs1_i(rs1_i'left) and ctrl.rs1_is_signed) & rs1_i);\" and \"mul.dsp_y <= signed((rs2_i(rs2_i'left) and ctrl.rs2_is_signed) & rs2_i);\". The divider initializes quotient and rs2_abs from rs1_i/rs2_i on start: e.g. \"if (div.start = '1') then if ((rs1_i(rs1_i'left) and ctrl.rs1_is_signed) = '1') then div.quotient <= std_ulogic_vector(0 - unsigned(rs1_i)) else div.quotient <= rs1_i; ... div.rs2_abs <= ...\". Integrity of the input ports and these stored, normalized operand values is required for correct arithmetic.",
+      "related structural assets": [
+        {
+          "asset rtl": "rs1_i",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "rs2_i",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "mul.dsp_x",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "mul.dsp_y",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "div.rs2_abs",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "div.quotient",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        }
+      ]
+    }
+  ]
+}

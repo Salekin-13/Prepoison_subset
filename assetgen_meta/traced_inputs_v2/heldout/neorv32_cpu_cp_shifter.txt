@@ -1,0 +1,336 @@
+TARGET IP MODULE: neorv32_cpu_cp_shifter
+
+=== RTL (comments removed, blank lines left out; each line starts with its line number in the source file) ===
+   21 | entity neorv32_cpu_cp_shifter is
+   22 |   generic (
+   23 |     FAST_SHIFT_EN : boolean
+   24 |   );
+   25 |   port (
+   27 |     clk_i   : in  std_ulogic;
+   28 |     rstn_i  : in  std_ulogic;
+   29 |     ctrl_i  : in  ctrl_bus_t;
+   31 |     rs1_i   : in  std_ulogic_vector(XLEN-1 downto 0);
+   32 |     shamt_i : in  std_ulogic_vector(index_size_f(XLEN)-1 downto 0);
+   34 |     res_o   : out std_ulogic_vector(XLEN-1 downto 0);
+   35 |     valid_o : out std_ulogic
+   36 |   );
+   37 | end neorv32_cpu_cp_shifter;
+
+   39 | architecture neorv32_cpu_cp_shifter_rtl of neorv32_cpu_cp_shifter is
+   42 |   signal valid_cmd : std_ulogic;
+   45 |   type shifter_t is record
+   46 |     busy    : std_ulogic;
+   47 |     run     : std_ulogic;
+   48 |     done    : std_ulogic;
+   49 |     done_ff : std_ulogic;
+   50 |     cnt     : std_ulogic_vector(index_size_f(XLEN)-1 downto 0);
+   51 |     sreg    : std_ulogic_vector(XLEN-1 downto 0);
+   52 |   end record;
+   53 |   signal shifter : shifter_t;
+   56 |   type bs_level_t is array (index_size_f(XLEN) downto 0) of std_ulogic_vector(XLEN-1 downto 0);
+   57 |   signal bs_level  : bs_level_t;
+   58 |   signal bs_sign   : std_ulogic;
+   59 |   signal bs_result : std_ulogic_vector(XLEN-1 downto 0);
+   61 | begin
+   65 |   valid_cmd <= '1' when (ctrl_i.alu_cp_alu = '1') and (
+   66 |                          ((ctrl_i.ir_funct3 = funct3_sll_c) and (ctrl_i.ir_funct12(11 downto 5) = "0000000")) or
+   67 |                          ((ctrl_i.ir_funct3 = funct3_sr_c)  and (ctrl_i.ir_funct12(11 downto 5) = "0000000")) or
+   68 |                          ((ctrl_i.ir_funct3 = funct3_sr_c)  and (ctrl_i.ir_funct12(11 downto 5) = "0100000"))
+   69 |                         ) else '0';
+   74 |   serial_shifter:
+   75 |   if not FAST_SHIFT_EN generate
+   77 |     serial_shifter_core: process(rstn_i, clk_i)
+   78 |     begin
+   79 |       if (rstn_i = '0') then
+   80 |         shifter.busy    <= '0';
+   81 |         shifter.done_ff <= '0';
+   82 |         shifter.cnt     <= (others => '0');
+   83 |         shifter.sreg    <= (others => '0');
+   84 |       elsif rising_edge(clk_i) then
+   86 |         shifter.done_ff <= shifter.busy and shifter.done;
+   87 |         if (valid_cmd = '1') then
+   88 |           shifter.busy <= '1';
+   89 |         elsif (shifter.done = '1') or (ctrl_i.cpu_trap = '1') then
+   90 |           shifter.busy <= '0';
+   91 |         end if;
+   93 |         if (valid_cmd = '1') then
+   94 |           shifter.cnt  <= shamt_i;
+   95 |           shifter.sreg <= rs1_i;
+   96 |         elsif (shifter.run = '1') then
+   97 |           shifter.cnt <= std_ulogic_vector(unsigned(shifter.cnt) - 1);
+   98 |           if (ctrl_i.ir_funct3(2) = '0') then
+   99 |             shifter.sreg <= shifter.sreg(shifter.sreg'left-1 downto 0) & '0';
+  100 |           else
+  101 |             shifter.sreg <= (shifter.sreg(shifter.sreg'left) and ctrl_i.ir_funct12(10)) & shifter.sreg(shifter.sreg'left downto 1);
+  102 |           end if;
+  103 |         end if;
+  104 |       end if;
+  105 |     end process serial_shifter_core;
+  108 |     shifter.run  <= or_reduce_f(shifter.cnt);
+  109 |     shifter.done <= not or_reduce_f(shifter.cnt(shifter.cnt'left downto 1));
+  110 |     valid_o      <= shifter.busy and shifter.done;
+  111 |     res_o        <= shifter.sreg when (shifter.done_ff = '1') else (others => '0');
+  113 |   end generate;
+  118 |   barrel_shifter:
+  119 |   if FAST_SHIFT_EN generate
+  122 |     bs_level(0) <= (others => '0') when (valid_cmd = '0') else bit_rev_f(rs1_i) when (ctrl_i.ir_funct3(2) = '0') else rs1_i;
+  123 |     bs_sign <= rs1_i(XLEN-1) and ctrl_i.ir_funct12(10) and valid_cmd;
+  126 |     barrel_shifter_core:
+  127 |     for i in 0 to index_size_f(XLEN)-1 generate
+  128 |       bs_level(i+1)(XLEN-1 downto XLEN-(2**i)) <= (others => bs_sign)             when (shamt_i(i) = '1') else bs_level(i)(XLEN-1 downto XLEN-(2**i));
+  129 |       bs_level(i+1)((XLEN-(2**i))-1 downto 0)  <= bs_level(i)(XLEN-1 downto 2**i) when (shamt_i(i) = '1') else bs_level(i)((XLEN-(2**i))-1 downto 0);
+  130 |     end generate;
+  133 |     barrel_shifter_buf: process(rstn_i, clk_i)
+  134 |     begin
+  135 |       if (rstn_i = '0') then
+  136 |         bs_result <= (others => '0');
+  137 |       elsif rising_edge(clk_i) then
+  138 |         bs_result <= bs_level(bs_level'left);
+  139 |       end if;
+  140 |     end process barrel_shifter_buf;
+  143 |     res_o   <= bit_rev_f(bs_result) when (ctrl_i.ir_funct3(2) = '0') else bs_result;
+  144 |     valid_o <= valid_cmd;
+  146 |   end generate;
+  149 | end neorv32_cpu_cp_shifter_rtl;
+
+=== RELATIONSHIP MAP: ELEMENTS AND RECORDS ===
+PORT {"name":"clk_i","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":27},{"id":2,"line":77},{"id":3,"line":84},{"id":4,"line":133},{"id":5,"line":137}]}
+    {"type":"SEQUENCES","at":[3],"lines":[84],"targets":["shifter.busy","shifter.cnt","shifter.done_ff","shifter.sreg"]}
+    {"type":"SEQUENCES","at":[5],"lines":[137],"targets":["bs_result"]}
+PORT {"name":"rstn_i","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":28},{"id":2,"line":77},{"id":3,"line":79},{"id":4,"line":133},{"id":5,"line":135}]}
+    {"type":"RESETS","at":[3],"lines":[79],"targets":["shifter.busy","shifter.cnt","shifter.done_ff","shifter.sreg"]}
+    {"type":"RESETS","at":[5],"lines":[135],"targets":["bs_result"]}
+PORT {"name":"ctrl_i","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29},{"id":2,"line":65},{"id":3,"line":66},{"id":4,"line":66},{"id":5,"line":67},{"id":6,"line":67},{"id":7,"line":68},{"id":8,"line":68},{"id":9,"line":89},{"id":10,"line":98},{"id":11,"line":101},{"id":12,"line":122},{"id":13,"line":123},{"id":14,"line":143}]}
+PORT {"name":"ctrl_i.if_fence","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.if_reset","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.if_ack","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.pc_cur","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.pc_nxt","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.pc_ret","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.rf_wb_en","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.rf_rs1","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.rf_rs2","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.rf_rd","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.rf_zero_we","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.alu_op","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.alu_sub","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.alu_opa_mux","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.alu_opb_mux","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.alu_unsigned","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.alu_imm","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.alu_cp_alu","entity":"neorv32_cpu_cp_shifter","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29},{"id":2,"line":65}]}
+    {"type":"GATES","at":[2],"guard":"(ctrl_i.alu_cp_alu = '1') and (","lines":[65],"targets":["valid_cmd"]}
+PORT {"name":"ctrl_i.alu_cp_cfu","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.alu_cp_fpu","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.lsu_req","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.lsu_rw","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.lsu_amo","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.lsu_mo_we","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.lsu_fence","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.lsu_priv","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.csr_we","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.csr_re","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.csr_addr","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.csr_wdata","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.cnt_halt","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.cnt_event","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.ir_funct3","entity":"neorv32_cpu_cp_shifter","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29},{"id":2,"line":66},{"id":3,"line":67},{"id":4,"line":68},{"id":5,"line":98},{"id":6,"line":122},{"id":7,"line":143}]}
+    {"type":"GATES","at":[2,3,4],"guard":"'1' when (ctrl_i.alu_cp_alu = '1') and (","lines":[66,67,68],"targets":["valid_cmd"]}
+    {"type":"GATES","at":[5],"guard":"ctrl_i.ir_funct3(2) = '0' | not (ctrl_i.ir_funct3(2) = '0')","lines":[98],"targets":["shifter.sreg"]}
+    {"type":"GATES","at":[6],"guard":"(ctrl_i.ir_funct3(2) = '0')","lines":[122],"targets":["bs_level"]}
+    {"type":"GATES","at":[7],"guard":"(ctrl_i.ir_funct3(2) = '0')","lines":[143],"targets":["res_o"]}
+PORT {"name":"ctrl_i.ir_funct12","entity":"neorv32_cpu_cp_shifter","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29},{"id":2,"line":66},{"id":3,"line":67},{"id":4,"line":68},{"id":5,"line":101},{"id":6,"line":123}]}
+    {"type":"GATES","at":[2,3,4],"guard":"'1' when (ctrl_i.alu_cp_alu = '1') and (","lines":[66,67,68],"targets":["valid_cmd"]}
+    {"type":"GATES","at":[6],"guard":"rs1_i(XLEN-1) and ctrl_i.ir_funct12(10) and valid_cmd","lines":[123],"targets":["bs_sign"]}
+    {"type":"SOURCES","at":[5],"lines":[101],"targets":["shifter.sreg"]}
+PORT {"name":"ctrl_i.ir_opcode","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.cpu_priv","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.cpu_sleep","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"ctrl_i.cpu_trap","entity":"neorv32_cpu_cp_shifter","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29},{"id":2,"line":89}]}
+    {"type":"GATES","at":[2],"guard":"(shifter.done = '1') or (ctrl_i.cpu_trap = '1')","lines":[89],"targets":["shifter.busy"]}
+PORT {"name":"ctrl_i.cpu_debug","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"rs1_i","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":31},{"id":2,"line":95},{"id":3,"line":122},{"id":4,"line":122},{"id":5,"line":123}]}
+    {"type":"GATES","at":[5],"guard":"rs1_i(XLEN-1) and ctrl_i.ir_funct12(10) and valid_cmd","lines":[123],"targets":["bs_sign"]}
+    {"type":"CARRIES","at":[2],"lines":[95],"targets":["shifter.sreg"]}
+    {"type":"SOURCES","at":[3,4],"lines":[122],"targets":["bs_level"]}
+PORT {"name":"shamt_i","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":32},{"id":2,"line":94},{"id":3,"line":128},{"id":4,"line":129}]}
+    {"type":"GATES","at":[3,4],"guard":"(shamt_i(i) = '1')","lines":[128,129],"targets":["bs_level"]}
+    {"type":"CARRIES","at":[2],"lines":[94],"targets":["shifter.cnt"]}
+PORT {"name":"res_o","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":34},{"id":2,"line":111},{"id":3,"line":143}]}
+    {"configuration":[{"condition":"[generic] FAST_SHIFT_EN","at":[3],"lines":[143]},{"condition":"[generic] not FAST_SHIFT_EN","at":[2],"lines":[111]}]}
+    {"type":"GATED_BY","at":[2],"guard":"(shifter.done_ff = '1')","lines":[111],"targets":["shifter.done_ff"]}
+    {"type":"GATED_BY","at":[3],"guard":"(ctrl_i.ir_funct3(2) = '0')","lines":[143],"targets":["ctrl_i.ir_funct3"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[111],"targets":["shifter.sreg"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[143],"targets":["bs_result"]}
+PORT {"name":"valid_o","entity":"neorv32_cpu_cp_shifter","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":35},{"id":2,"line":110},{"id":3,"line":144}]}
+    {"configuration":[{"condition":"[generic] FAST_SHIFT_EN","at":[3],"lines":[144]},{"condition":"[generic] not FAST_SHIFT_EN","at":[2],"lines":[110]}]}
+    {"type":"GATED_BY","at":[2],"guard":"shifter.busy and shifter.done","lines":[110],"targets":["shifter.busy","shifter.done"]}
+    {"type":"COPIES","at":[3],"lines":[144],"targets":["valid_cmd"]}
+SIGNAL {"name":"valid_cmd","entity":"neorv32_cpu_cp_shifter","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":42},{"id":2,"line":65},{"id":3,"line":87},{"id":4,"line":93},{"id":5,"line":122},{"id":6,"line":123},{"id":7,"line":144}]}
+    {"type":"GATES","at":[3],"guard":"not (valid_cmd = '1') | valid_cmd = '1'","lines":[87],"targets":["shifter.busy"]}
+    {"type":"GATES","at":[4],"guard":"not (valid_cmd = '1') | valid_cmd = '1'","lines":[93],"targets":["shifter.cnt","shifter.sreg"]}
+    {"type":"GATES","at":[5],"guard":"(valid_cmd = '0')","lines":[122],"targets":["bs_level"]}
+    {"type":"GATES","at":[6],"guard":"rs1_i(XLEN-1) and ctrl_i.ir_funct12(10) and valid_cmd","lines":[123],"targets":["bs_sign"]}
+    {"type":"CARRIES","at":[7],"lines":[144],"targets":["valid_o"]}
+    {"type":"GATED_BY","at":[2],"guard":"(ctrl_i.alu_cp_alu = '1') and (","lines":[65],"targets":["ctrl_i.alu_cp_alu"]}
+    {"type":"GATED_BY","at":[2],"guard":"'1' when (ctrl_i.alu_cp_alu = '1') and (","lines":[65],"targets":["ctrl_i.ir_funct12","ctrl_i.ir_funct3"]}
+SIGNAL {"name":"shifter","entity":"neorv32_cpu_cp_shifter","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":53},{"id":2,"line":80},{"id":3,"line":81},{"id":4,"line":82},{"id":5,"line":83},{"id":6,"line":86},{"id":7,"line":86},{"id":8,"line":86},{"id":9,"line":88},{"id":10,"line":89},{"id":11,"line":90},{"id":12,"line":94},{"id":13,"line":95},{"id":14,"line":96},{"id":15,"line":97},{"id":16,"line":97},{"id":17,"line":99},{"id":18,"line":99},{"id":19,"line":99},{"id":20,"line":101},{"id":21,"line":101},{"id":22,"line":101},{"id":23,"line":101},{"id":24,"line":101},{"id":25,"line":108},{"id":26,"line":108},{"id":27,"line":109},{"id":28,"line":109},{"id":29,"line":109},{"id":30,"line":110},{"id":31,"line":110},{"id":32,"line":111},{"id":33,"line":111}]}
+SIGNAL {"name":"shifter.busy","entity":"neorv32_cpu_cp_shifter","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":53},{"id":2,"line":80},{"id":3,"line":86},{"id":4,"line":88},{"id":5,"line":90},{"id":6,"line":110}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[80]},{"at":4,"value":"'1'","lines":[88]},{"at":5,"value":"'0'","lines":[90]}]}
+    {"configuration":[{"condition":"[generic] not FAST_SHIFT_EN","at":[2,4,5],"lines":[80,88,90]}]}
+    {"type":"GATES","at":[3],"guard":"shifter.busy and shifter.done","lines":[86],"targets":["shifter.done_ff"]}
+    {"type":"GATES","at":[6],"guard":"shifter.busy and shifter.done","lines":[110],"targets":["valid_o"]}
+    {"type":"CLOCKED_BY","at":[4,5],"lines":[88,90],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[80],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[4],"guard":"valid_cmd = '1'","lines":[88],"targets":["valid_cmd"]}
+    {"type":"GATED_BY","at":[5],"guard":"(shifter.done = '1') or (ctrl_i.cpu_trap = '1')","lines":[90],"targets":["ctrl_i.cpu_trap","shifter.done"]}
+    {"type":"GATED_BY","at":[5],"guard":"not (valid_cmd = '1')","lines":[90],"targets":["valid_cmd"]}
+SIGNAL {"name":"shifter.run","entity":"neorv32_cpu_cp_shifter","kind":"signal","handling":["ORIGINATES","CONSUMES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":53},{"id":2,"line":96},{"id":3,"line":108}]}
+    {"configuration":[{"condition":"[generic] not FAST_SHIFT_EN","at":[3],"lines":[108]}]}
+    {"type":"GATES","at":[2],"guard":"shifter.run = '1'","lines":[96],"targets":["shifter.cnt","shifter.sreg"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[108],"targets":["shifter.cnt"]}
+SIGNAL {"name":"shifter.done","entity":"neorv32_cpu_cp_shifter","kind":"signal","handling":["ORIGINATES","CONSUMES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":53},{"id":2,"line":86},{"id":3,"line":89},{"id":4,"line":109},{"id":5,"line":110}]}
+    {"configuration":[{"condition":"[generic] not FAST_SHIFT_EN","at":[4],"lines":[109]}]}
+    {"type":"GATES","at":[2],"guard":"shifter.busy and shifter.done","lines":[86],"targets":["shifter.done_ff"]}
+    {"type":"GATES","at":[5],"guard":"shifter.busy and shifter.done","lines":[110],"targets":["valid_o"]}
+    {"type":"GATES","at":[3],"guard":"(shifter.done = '1') or (ctrl_i.cpu_trap = '1')","lines":[89],"targets":["shifter.busy"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[109],"targets":["shifter.cnt"]}
+SIGNAL {"name":"shifter.done_ff","entity":"neorv32_cpu_cp_shifter","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":53},{"id":2,"line":81},{"id":3,"line":86},{"id":4,"line":111}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[81]}]}
+    {"configuration":[{"condition":"[generic] not FAST_SHIFT_EN","at":[2,3],"lines":[81,86]}]}
+    {"type":"GATES","at":[4],"guard":"(shifter.done_ff = '1')","lines":[111],"targets":["res_o"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[86],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[81],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"shifter.busy and shifter.done","lines":[86],"targets":["shifter.busy","shifter.done"]}
+SIGNAL {"name":"shifter.cnt","entity":"neorv32_cpu_cp_shifter","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":53},{"id":2,"line":82},{"id":3,"line":94},{"id":4,"line":97},{"id":5,"line":97},{"id":6,"line":108},{"id":7,"line":109},{"id":8,"line":109}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[82]}]}
+    {"configuration":[{"condition":"[generic] not FAST_SHIFT_EN","at":[2,3,4],"lines":[82,94,97]}]}
+    {"type":"SOURCES","at":[5],"lines":[97],"targets":["shifter.cnt"]}
+    {"type":"SOURCES","at":[6],"lines":[108],"targets":["shifter.run"]}
+    {"type":"SOURCES","at":[7],"lines":[109],"targets":["shifter.done"]}
+    {"type":"CLOCKED_BY","at":[3,4],"lines":[94,97],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[82],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"valid_cmd = '1'","lines":[94],"targets":["valid_cmd"]}
+    {"type":"GATED_BY","at":[4],"guard":"shifter.run = '1'","lines":[97],"targets":["shifter.run"]}
+    {"type":"GATED_BY","at":[4],"guard":"not (valid_cmd = '1')","lines":[97],"targets":["valid_cmd"]}
+    {"type":"COPIES","at":[3],"lines":[94],"targets":["shamt_i"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[97],"targets":["shifter.cnt"]}
+SIGNAL {"name":"shifter.sreg","entity":"neorv32_cpu_cp_shifter","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":53},{"id":2,"line":83},{"id":3,"line":95},{"id":4,"line":99},{"id":5,"line":99},{"id":6,"line":99},{"id":7,"line":101},{"id":8,"line":101},{"id":9,"line":101},{"id":10,"line":101},{"id":11,"line":101},{"id":12,"line":111}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[83]}]}
+    {"configuration":[{"condition":"[generic] not FAST_SHIFT_EN","at":[2,3,4,7],"lines":[83,95,99,101]}]}
+    {"type":"SOURCES","at":[5,8,10],"lines":[99,101],"targets":["shifter.sreg"]}
+    {"type":"SOURCES","at":[12],"lines":[111],"targets":["res_o"]}
+    {"type":"CLOCKED_BY","at":[3,4,7],"lines":[95,99,101],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[83],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"valid_cmd = '1'","lines":[95],"targets":["valid_cmd"]}
+    {"type":"GATED_BY","at":[4],"guard":"ctrl_i.ir_funct3(2) = '0'","lines":[99],"targets":["ctrl_i.ir_funct3"]}
+    {"type":"GATED_BY","at":[4,7],"guard":"shifter.run = '1'","lines":[99,101],"targets":["shifter.run"]}
+    {"type":"GATED_BY","at":[4,7],"guard":"not (valid_cmd = '1')","lines":[99,101],"targets":["valid_cmd"]}
+    {"type":"GATED_BY","at":[7],"guard":"not (ctrl_i.ir_funct3(2) = '0')","lines":[101],"targets":["ctrl_i.ir_funct3"]}
+    {"type":"COPIES","at":[3],"lines":[95],"targets":["rs1_i"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[99],"targets":["shifter.sreg"]}
+    {"type":"DERIVES_FROM","at":[7],"lines":[101],"targets":["ctrl_i.ir_funct12","shifter.sreg"]}
+SIGNAL {"name":"bs_level","entity":"neorv32_cpu_cp_shifter","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":57},{"id":2,"line":122},{"id":3,"line":128},{"id":4,"line":128},{"id":5,"line":129},{"id":6,"line":129},{"id":7,"line":129},{"id":8,"line":138},{"id":9,"line":138}]}
+    {"configuration":[{"condition":"[generic] FAST_SHIFT_EN","at":[2,3,5],"lines":[122,128,129]}]}
+    {"type":"SOURCES","at":[4,6,7],"lines":[128,129],"targets":["bs_level"]}
+    {"type":"SOURCES","at":[8],"lines":[138],"targets":["bs_result"]}
+    {"type":"GATED_BY","at":[2],"guard":"(ctrl_i.ir_funct3(2) = '0')","lines":[122],"targets":["ctrl_i.ir_funct3"]}
+    {"type":"GATED_BY","at":[2],"guard":"(valid_cmd = '0')","lines":[122],"targets":["valid_cmd"]}
+    {"type":"GATED_BY","at":[3,5],"guard":"(shamt_i(i) = '1')","lines":[128,129],"targets":["shamt_i"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[122],"targets":["rs1_i"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[128],"targets":["bs_level","bs_sign"]}
+    {"type":"DERIVES_FROM","at":[5],"lines":[129],"targets":["bs_level"]}
+SIGNAL {"name":"bs_sign","entity":"neorv32_cpu_cp_shifter","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":58},{"id":2,"line":123},{"id":3,"line":128}]}
+    {"configuration":[{"condition":"[generic] FAST_SHIFT_EN","at":[2],"lines":[123]}]}
+    {"type":"SOURCES","at":[3],"lines":[128],"targets":["bs_level"]}
+    {"type":"GATED_BY","at":[2],"guard":"rs1_i(XLEN-1) and ctrl_i.ir_funct12(10) and valid_cmd","lines":[123],"targets":["ctrl_i.ir_funct12","rs1_i","valid_cmd"]}
+SIGNAL {"name":"bs_result","entity":"neorv32_cpu_cp_shifter","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":59},{"id":2,"line":136},{"id":3,"line":138},{"id":4,"line":143},{"id":5,"line":143}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[136]}]}
+    {"configuration":[{"condition":"[generic] FAST_SHIFT_EN","at":[2,3],"lines":[136,138]}]}
+    {"type":"SOURCES","at":[4,5],"lines":[143],"targets":["res_o"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[138],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[136],"targets":["rstn_i"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[138],"targets":["bs_level"]}
+
+=== RELATIONSHIP MAP: FLOW GRAPH (computed by a program from the records above) ===
+MAP CHECK {"elements":57,"driving records":47,"receiving records":47,"driving without receiving":0,"receiving without driving":0}
+    {"clock or reset (drive SEQUENCES / RESETS)":["clk_i","rstn_i"]}
+    {"whole records (their fields carry the records)":["ctrl_i","shifter"]}
+    {"self-updating (X is computed from X: counters, state registers)":["bs_level","shifter.cnt","shifter.sreg"]}
+PATH {"from":"ctrl_i.ir_funct12","source":"input"}
+    {"stores":["shifter.sreg"]}
+    {"exits":["res_o"]}
+    {"influence":["ctrl_i.ir_funct3","shifter.done_ff","shifter.run","valid_cmd"]}
+PATH {"from":"rs1_i","source":"input"}
+    {"stores":["bs_result","shifter.sreg"]}
+    {"exits":["res_o"]}
+    {"influence":["ctrl_i.ir_funct3","shamt_i","shifter.done_ff","shifter.run","valid_cmd"]}
+PATH {"from":"shamt_i","source":"input"}
+    {"stores":["shifter.cnt"]}
+    {"influence":["shifter.run","valid_cmd"]}
+CONTROL-ONLY {"from":"ctrl_i.alu_cp_alu","source":"input","gates or selects":["valid_cmd"]}
+CONTROL-ONLY {"from":"ctrl_i.cpu_trap","source":"input","gates or selects":["shifter.busy"]}
+CONTROL-ONLY {"from":"ctrl_i.ir_funct3","source":"input","gates or selects":["bs_level","res_o","shifter.sreg","valid_cmd"]}
+CONTROL-ONLY {"from":"shifter.busy","source":"constant-valued","gates or selects":["shifter.done_ff","valid_o"]}
+CONTROL-ONLY {"from":"shifter.done_ff","source":"constant-valued","gates or selects":["res_o"]}
+    {"no local use (no relationship, connection or constant driver)":["ctrl_i.alu_cp_cfu","ctrl_i.alu_cp_fpu","ctrl_i.alu_imm","ctrl_i.alu_op","ctrl_i.alu_opa_mux","ctrl_i.alu_opb_mux","ctrl_i.alu_sub","ctrl_i.alu_unsigned","ctrl_i.cnt_event","ctrl_i.cnt_halt","ctrl_i.cpu_debug","ctrl_i.cpu_priv","ctrl_i.cpu_sleep","ctrl_i.csr_addr","ctrl_i.csr_re","ctrl_i.csr_wdata","ctrl_i.csr_we","ctrl_i.if_ack","ctrl_i.if_fence","ctrl_i.if_reset","ctrl_i.ir_opcode","ctrl_i.lsu_amo","ctrl_i.lsu_fence","ctrl_i.lsu_mo_we","ctrl_i.lsu_priv","ctrl_i.lsu_req","ctrl_i.lsu_rw","ctrl_i.pc_cur","ctrl_i.pc_nxt","ctrl_i.pc_ret","ctrl_i.rf_rd","ctrl_i.rf_rs1","ctrl_i.rf_rs2","ctrl_i.rf_wb_en","ctrl_i.rf_zero_we"]}
+    {"not reached from an input or constant-valued element":["bs_sign","valid_cmd","valid_o"]}
+
+Identify the primary security assets for 'neorv32_cpu_cp_shifter' and return the JSON object per the contract.

@@ -1,0 +1,89 @@
+{
+ "module name": "neorv32_sysinfo",
+ "module purpose": "neorv32_sysinfo exposes four 32-bit system-information words to bus reads: word 0 holds a clock-frequency value, loaded from CLOCK_FREQUENCY at reset and overwritable by a bus write to word offset 0 (lines 89-98), and words 1-3 are fixed at build time from generics (memory sizes, hart count, boot mode, feature-enable flags, cache geometry; lines 102-150). It registers each access's strobe and word index (lines 154-165) and in the next cycle returns the selected word with an acknowledge on bus_rsp_o (lines 168-170).",
+ "use-case flows": [
+  {
+   "flow": "reset",
+   "value": "sysinfo word 0 loaded with CLOCK_FREQUENCY, and buf_ack and buf_adr cleared, while rstn_i = '0'",
+   "lines": [91, 92, 156, 157, 158]
+  },
+  {
+   "flow": "configure",
+   "value": "clock-frequency word (sysinfo word 0) overwritten with bus_req_i.data on a strobed write to word offset 0",
+   "lines": [93, 94, 95]
+  },
+  {
+   "flow": "report",
+   "value": "build-time hardware configuration descriptors in sysinfo words 1-3: memory sizes, hart count, boot mode, feature-enable flags, cache geometry",
+   "lines": [102, 103, 104, 105, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 144, 145, 147, 148, 150]
+  },
+  {
+   "flow": "start",
+   "value": "access capture: the strobe registered as the pending acknowledge and the word index latched from the address on a strobe",
+   "lines": [159, 160, 161, 162]
+  },
+  {
+   "flow": "read out",
+   "value": "the sysinfo word selected by the latched index returned with an acknowledge one cycle after the access; error tied low",
+   "lines": [168, 169, 170]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Clock-frequency information word -- sysinfo word 0, reset to CLOCK_FREQUENCY, overwritable by a qualified bus write, and returned to readers",
+   "security objective": "Integrity",
+   "reasoning": "The configure flow writes the word: `if (bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(3 downto 2) = \"00\") then sysinfo(0) <= bus_req_i.data;` (lines 94-95), and the reset flow loads `sysinfo(0) <= std_ulogic_vector(to_unsigned(CLOCK_FREQUENCY, 32));` while rstn_i = '0' (lines 91-92). The read-out flow returns it through `bus_rsp_o.data <= sysinfo(to_integer(unsigned(buf_adr))) when (buf_ack = '1') else (others => '0');` (line 168) to a consumer outside this file, so Integrity is Established from the delivering line: a reader of index 0 must receive the reset value or the last qualified write. Availability is also Established: the word is held between writes on the clock edge (line 93) and returned on every acknowledged read of index 0. Confidentiality is not established: no line restricts which access may read it. sysinfo stores (occurrence 3, CLOCKED_BY clk_i, line 95), and its own use record is SOURCES bus_rsp_o.data (occurrence 45, line 168). The value enters on bus_req_i.data and leaves on bus_rsp_o.data, but bus_req_i (address, data, byte enables, strobe, read/write) and bus_rsp_o (data, ack, err) are transport records, excluded whole and by field. The write qualification (line 94) is an inline condition over transport fields; no declared element computes it. rstn_i is the reset input (RESETS buf_ack and buf_adr, occurrence 5, line 156; the map writes its arm on sysinfo as GATES at line 91 because the reset value is a generic-derived expression) and is excluded.",
+   "related structural assets": [
+    {
+     "asset rtl": "sysinfo",
+     "entity": "neorv32_sysinfo",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Build-time hardware configuration descriptors -- sysinfo words 1-3 (internal memory sizes, hart count, boot mode, feature-enable flags, cache geometry) returned to readers",
+   "security objective": "Integrity",
+   "reasoning": "The report flow drives words 1-3 from generics and constants only: `sysinfo(1)(7  downto 0)  <= std_ulogic_vector(to_unsigned(log2_imem_size_c, 8)) when int_imem_en_c else (others => '0');` (line 102), the data-memory size, hart count and boot mode (lines 103-105), one feature-enable flag per bit of word 2 (lines 109-140, bits 7-10 tied '0' at lines 116-119) and cache geometry in word 3 (lines 144-148, upper half zero at line 150). These words leave the entity unchanged through line 168 when buf_adr selects them, to a consumer outside this file, so Integrity is Established from the delivering line: a reader must receive exactly the configuration the build defines. Availability: the words are combinational and present in every cycle. Confidentiality is not established: no line restricts reads. Which bits are '1' depends on generics (for example INT_BOOTLOADER_EN at line 109, OCD_AUTH at line 120); the values are fixed per build. sysinfo is the setting point of these values: the map records the assignments only as constant_drivers (occurrence 4 at line 102, and occurrences 5-44), with no receiving record because every operand is a generic or constant, so the edge is null. The map did not miss a statement; it has no relationship type for a constant assignment.",
+   "related structural assets": [
+    {
+     "asset rtl": "sysinfo",
+     "entity": "neorv32_sysinfo",
+     "realization": "sets",
+     "occurrence": 4,
+     "edge": null
+    }
+   ]
+  },
+  {
+   "concept": "Selected information-word index -- the latched word index of the access being answered, which decides which word the response carries",
+   "security objective": "Integrity",
+   "reasoning": "The start flow latches the index of each strobed access: `if (bus_req_i.stb = '1') then buf_adr <= bus_req_i.addr(3 downto 2);` (lines 161-162), cleared on reset (line 158). The read-out flow uses it as the run-time index of the returned word: `bus_rsp_o.data <= sysinfo(to_integer(unsigned(buf_adr))) when (buf_ack = '1') else (others => '0');` (line 168). Integrity is Established: the response must carry the word the access addressed, and a wrong index delivers a different sysinfo word through line 168 to a consumer outside this file. Availability: the index is held until the next strobe (line 161). Confidentiality is not established. buf_adr stores (occurrence 3, CLOCKED_BY clk_i, line 162), and its own SELECTS bus_rsp_o.data record (occurrence 4, line 168) shows the use. The index enters on bus_req_i.addr, a field of the transport record, which is not reported.",
+   "related structural assets": [
+    {
+     "asset rtl": "buf_adr",
+     "entity": "neorv32_sysinfo",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Read-response acknowledge -- the event that answers each bus access one cycle later and qualifies the returned data",
+   "security objective": "Integrity",
+   "reasoning": "The start flow registers the strobe: `buf_ack <= bus_req_i.stb;` (line 160), cleared on reset (line 157). The read-out flow exports it as `bus_rsp_o.ack  <= buf_ack;` (line 169) and uses it to gate the data, which is forced to zero unless `buf_ack = '1'` (line 168). Integrity is Established from these delivering lines: the acknowledge leaving the entity must match the strobe of the previous cycle, and returned data is non-zero only with it. Availability is also Established under the implemented conditions: at each rising edge of clk_i with rstn_i = '1', a strobe produces the acknowledge in the next cycle (lines 159-160). Confidentiality is not established. buf_ack stores (occurrence 3, CLOCKED_BY clk_i, line 160); its own CARRIES bus_rsp_o.ack (occurrence 5, line 169) and GATES bus_rsp_o.data (occurrence 4, line 168) records show the use. Its COPIES record names bus_req_i.stb, a port field that is not a listed element, so the copy rule does not remove it. bus_rsp_o.ack is a field of the transport response record and is not reported.",
+   "related structural assets": [
+    {
+     "asset rtl": "buf_ack",
+     "entity": "neorv32_sysinfo",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,231 @@
+{
+  "module name": "neorv32_cpu_cp_fpu",
+  "conceptual assets": [
+    {
+      "concept": "CSR rounding-mode register (frm)",
+      "security objective": "Integrity",
+      "reasoning": "The csr_write process stores and updates csr_frm under CSR writes: `if (csr_we_i = '1') then ... if (csr_addr_i = csr_frm_c(1 downto 0)) then csr_frm <= csr_wdata_i(2 downto 0); end if;`. csr_read returns csr_frm (`when \"10\" => csr_rdata_o(2 downto 0) <= csr_frm;`). The control FSM loads this register into the active rounding mode for instructions: `if (ctrl_i.ir_funct3 = '111') then fpu_operands.frm <= csr_frm(2 downto 0) ...`. Corruption of csr_frm therefore changes the rounding mode used by executed FPU operations.",
+      "related structural assets": [
+        {
+          "asset rtl": "csr_frm",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr_wdata_i",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "csr_we_i",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "csr_addr_i",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "csr_rdata_o",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "CSR exception-flags register (fflags CSR)",
+      "security objective": "Integrity",
+      "reasoning": "The csr_write process writes csr_fflags on CSR writes (`if (csr_we_i = '1') then if (csr_addr_i = csr_fflags_c(1 downto 0)) then csr_fflags <= csr_wdata_i(4 downto 0); end if;`). On non-write cycles the design accumulates operation flags: `else csr_fflags <= csr_fflags or fflags; end if;`. csr_read exposes these bits (`when \"01\" => csr_rdata_o(4 downto 0) <= csr_fflags;`). Integrity of csr_fflags controls reported FPU exceptions and status.",
+      "related structural assets": [
+        {
+          "asset rtl": "csr_fflags",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "fflags",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "csr_wdata_i",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "csr_addr_i",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "csr_we_i",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "csr_rdata_o",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Operation exception flags produced by the functional units (fflags value aggregated at output)",
+      "security objective": "Integrity",
+      "reasoning": "The output stage captures functional-unit flags into the local fflags register and then those feed the CSR: output_gate assigns `fflags <= fu_classify.flags` / `fu_compare.flags` / `fu_min_max.flags` / ... depending on funct_ff, and csr_write uses `csr_fflags <= csr_fflags or fflags` when not writing. The sources of flags are computed in local units (e.g. float_comparison and min_max_select set fu_compare.flags and fu_min_max.flags). Integrity of these flags affects reported exceptions and CSR state.",
+      "related structural assets": [
+        {
+          "asset rtl": "fflags",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "fu_compare.flags",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "fu_min_max.flags",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "fu_classify.flags",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "fu_sign_inject.flags",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Rounding-mode value used for the currently-started instruction (active rmode)",
+      "security objective": "Integrity",
+      "reasoning": "The control FSM selects the rounding mode for an instruction in S_IDLE: `if (ctrl_i.ir_funct3 = '111') then fpu_operands.frm <= csr_frm(2 downto 0); else fpu_operands.frm <= ctrl_i.ir_funct3(2 downto 0); end if;`. That stored value fpu_operands.frm is passed to submodules (rmode_i), so its integrity determines how operations are rounded.",
+      "related structural assets": [
+        {
+          "asset rtl": "fpu_operands.frm",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr_frm",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "FPU operand values captured for execution (rs1, rs2)",
+      "security objective": "Integrity",
+      "reasoning": "Operand fields are formed from the instruction register inputs (`op_data(0)(31) <= rs1_i(31); op_data(0)(30 downto 23) <= rs1_i(30 downto 23); ...`) and the control FSM captures them into the execution context on start: `fpu_operands.rs1 <= op_data(0); fpu_operands.rs2 <= op_data(1);` in S_IDLE before start. Number classification and all arithmetic depend on these stored operands, so their integrity is required.",
+      "related structural assets": [
+        {
+          "asset rtl": "rs1_i",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "rs2_i",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "fpu_operands.rs1",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "fpu_operands.rs2",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Decoded FPU instruction and selected function code (which FU is executed)",
+      "security objective": "Integrity",
+      "reasoning": "Instruction decode sets cmd fields from control inputs (e.g. `cmd.instr_mul <= '1' when (ctrl_i.ir_funct12(11 downto 7) = \"00010\") else '0';` and `cmd.valid <= '1' when ...`). The selected function code is written into funct_ff at start (`funct_ff <= cmd.funct;`) and the FSM uses cmd.valid and ctrl_i.alu_cp_fpu to start execution. Corruption of the decode or selected function changes which FU computes the result.",
+      "related structural assets": [
+        {
+          "asset rtl": "cmd.funct",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "cmd.valid",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "funct_ff",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "FPU result produced by an operation (value presented by res_o)",
+      "security objective": "Integrity",
+      "reasoning": "When the control engine reports a completed operation (`if (ctrl_engine.valid = '1') then ... end if;` in output_gate) the process selects a functional-unit result and writes it to res_o (e.g. `when op_class_c => res_o <= fu_classify.result; when op_comp_c => res_o <= fu_compare.result; when op_sgnj_c => res_o <= fu_sign_inject.result; when op_minmax_c => res_o <= fu_min_max.result; when others => res_o <= normalizer.result;`). The integrity of the selected FU result and the res_o exit value is required for correct outputs.",
+      "related structural assets": [
+        {
+          "asset rtl": "res_o",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "fu_classify.result",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "fu_compare.result",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "fu_sign_inject.result",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "fu_min_max.result",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Completion/valid indicator for FPU result (valid_o)",
+      "security objective": "Integrity",
+      "reasoning": "The module exports operation completion via valid_o which is directly driven from the control engine (`valid_o <= ctrl_engine.valid;`). ctrl_engine.valid is set in the FSM when `fu_core_done = '1'` or `ctrl_i.cpu_trap = '1'` in S_BUSY, and output_gate uses ctrl_engine.valid to gate updates to res_o and fflags. Integrity of this signal affects whether consumers observe the result as ready.",
+      "related structural assets": [
+        {
+          "asset rtl": "valid_o",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "ctrl_engine.valid",
+          "entity": "neorv32_cpu_cp_fpu",
+          "realization": "stores"
+        }
+      ]
+    }
+  ]
+}

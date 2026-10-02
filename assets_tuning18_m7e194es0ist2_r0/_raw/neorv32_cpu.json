@@ -1,0 +1,278 @@
+{
+  "module name": "neorv32_cpu",
+  "module purpose": "Top-level NEORV32 CPU: instantiates and wires the CPU sub-units (frontend, control, regfile, ALU, LSU, PMP, counters, ICC), routes external interrupts and bus interfaces, combines sub-unit results into register-file write data, and forwards the control bus and CSR/status signals between sub-units.",
+  "use-case flows": [
+    {
+      "flow": "operate",
+      "value": "control decisions produced by the control unit and distributed to sub-units (the 'ctrl' bus)",
+      "lines": [
+        205,
+        253,
+        321,
+        362,
+        384,
+        414
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "register-file write value computed from ALU result, LSU read data, CSR read data or control pc_ret and presented to the register file (rf_wdata)",
+      "lines": [
+        323,
+        330
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "effective memory address produced by the ALU (alu_add) delivered to the LSU and PMP for memory accesses and protection checks",
+      "lines": [
+        370,
+        386,
+        418
+      ]
+    },
+    {
+      "flow": "start",
+      "value": "machine-level interrupt event formed from external interrupt inputs (msi_i, mei_i, mti_i) and presented to the control unit",
+      "lines": [
+        75,
+        76,
+        77,
+        267,
+        276
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "combined XCSR read result (xcsr_res) assembled from sub-unit CSR sources and delivered to control",
+      "lines": [
+        264,
+        279
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "PMP fault indication produced by the PMP and reported to control and the LSU (pmp_fault); when PMP is disabled this signal is tied to '0'",
+      "lines": [
+        257,
+        392,
+        420,
+        427
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Control-bus decisions (the 'ctrl' bus) that direct regfile/ALU/LSU/PMP behavior",
+      "security objective": "Integrity",
+      "reasoning": "The control unit instance produces the top-level 'ctrl' signal and the top level wires it into the functional sub-units; corrupted control signals would cause incorrect sub-unit behavior. Evidence: the control instance drives ctrl in the port map (neorv32_cpu_control_inst -> ctrl, RTL mapping at line 253) shown in the map as a CONNECTS record on ctrl (ctrl occurrence 3, connection to neorv32_cpu_control_inst.ctrl_o at line 253). The same 'ctrl' signal is connected into the regfile, ALU, LSU and PMP (maps / RTL at lines 321, 362, 384, 414), so the integrity of ctrl is required by those consumers.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl",
+          "entity": "neorv32_cpu",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "CONNECTS",
+            "partner": "neorv32_cpu_control_inst.ctrl_o"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Register-file write data (rf_wdata) — the  value written into the register file when an instruction writes a register",
+      "security objective": "Integrity",
+      "reasoning": "rf_wdata is computed in this entity and is delivered into the regfile as the write-data input; an incorrect rf_wdata causes incorrect architectural register state. Evidence: rf_wdata is assigned by rf_wdata <= alu_res or lsu_rdata or csr_rdata or ctrl.pc_ret (RTL line 330), recorded as a DERIVES_FROM on rf_wdata (rf_wdata occurrence 3, DERIVES_FROM targets include alu_res, csr_rdata, ctrl.pc_ret, lsu_rdata at line 330). The regfile receives rf_wdata on its rd_i port in the port map (connection at rf_wdata occurrence 2, RTL line 323), establishing the integrity property of the value delivered here.",
+      "related structural assets": [
+        {
+          "asset rtl": "rf_wdata",
+          "entity": "neorv32_cpu",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "alu_res"
+          }
+        },
+        {
+          "asset rtl": "alu_res",
+          "entity": "neorv32_cpu",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "rf_wdata"
+          }
+        },
+        {
+          "asset rtl": "lsu_rdata",
+          "entity": "neorv32_cpu",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "rf_wdata"
+          }
+        },
+        {
+          "asset rtl": "csr_rdata",
+          "entity": "neorv32_cpu",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "rf_wdata"
+          }
+        },
+        {
+          "asset rtl": "ctrl.pc_ret",
+          "entity": "neorv32_cpu",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "rf_wdata"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "ALU-produced address (alu_add) used for LSU memory accesses and PMP checks",
+      "security objective": "Integrity",
+      "reasoning": "The ALU produces alu_add and the top-level forwards it to the LSU and PMP; an incorrect alu_add changes memory access targets and PMP decisions. Evidence: ALU instance drives alu_add (connection from neorv32_cpu_alu_inst.add_o at RTL line 370, map: CONNECTS on alu_add at occurrence 3 partner neorv32_cpu_alu_inst.add_o), and the signal is wired to the LSU addr_i and PMP addr_ls_i ports (RTL lines 386 and 418). The map records show those connections, establishing that the integrity of alu_add matters for memory access and protection flows.",
+      "related structural assets": [
+        {
+          "asset rtl": "alu_add",
+          "entity": "neorv32_cpu",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "CONNECTS",
+            "partner": "neorv32_cpu_alu_inst.add_o"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Combined XCSR read result (xcsr_res) assembled from sub-unit CSR/status sources and presented to control",
+      "security objective": "Integrity",
+      "reasoning": "The top-level composes xcsr_res from several sub-unit CSR/status sources; the control unit consumes xcsr_res for CSR readback and decisions, so its integrity is required. Evidence: xcsr_res is assigned by xcsr_res <= xcsr_alu or xcsr_cnt or xcsr_icc or xcsr_pmp (RTL line 279), recorded as DERIVES_FROM at xcsr_res occurrence 3 with targets [xcsr_alu, xcsr_cnt, xcsr_icc, xcsr_pmp] (map record at line 279). xcsr_res is delivered to the control instance as xcsr_rdata_i (connection at RTL line 264, map occurrence 2). Note: some contributors are tied to zero when their feature is disabled by generics (xcsr_cnt default at line 305 under the not-RISCV_ISA_Zicntr configuration; xcsr_pmp and xcsr_icc likewise have constant drivers when their generics disable them, lines 426, 454).",
+      "related structural assets": [
+        {
+          "asset rtl": "xcsr_res",
+          "entity": "neorv32_cpu",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "xcsr_alu"
+          }
+        },
+        {
+          "asset rtl": "xcsr_alu",
+          "entity": "neorv32_cpu",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "xcsr_res"
+          }
+        },
+        {
+          "asset rtl": "xcsr_cnt",
+          "entity": "neorv32_cpu",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "xcsr_res"
+          }
+        },
+        {
+          "asset rtl": "xcsr_icc",
+          "entity": "neorv32_cpu",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "xcsr_res"
+          }
+        },
+        {
+          "asset rtl": "xcsr_pmp",
+          "entity": "neorv32_cpu",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "xcsr_res"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Machine interrupt event (irq_machine) computed from external interrupt inputs",
+      "security objective": "Integrity",
+      "reasoning": "The module computes irq_machine = mti_i & mei_i & msi_i (RTL line 276) and forwards it into the control instance (irq_machine_i at line 267); corrupting that decision would change whether the core takes machine interrupts. Evidence: map shows a DERIVES_FROM on irq_machine at occurrence 3 (line 276) with targets [mei_i, msi_i, mti_i], and the three external interrupt ports each have SOURCES records at their occurrence 2 (line 276) targeting irq_machine.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_machine",
+          "entity": "neorv32_cpu",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "mei_i"
+          }
+        },
+        {
+          "asset rtl": "msi_i",
+          "entity": "neorv32_cpu",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "irq_machine"
+          }
+        },
+        {
+          "asset rtl": "mei_i",
+          "entity": "neorv32_cpu",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "irq_machine"
+          }
+        },
+        {
+          "asset rtl": "mti_i",
+          "entity": "neorv32_cpu",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "irq_machine"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "PMP fault indicator (pmp_fault) produced by the PMP and consumed by control/LSU to detect access violations",
+      "security objective": "Integrity",
+      "reasoning": "pmp_fault is driven by the PMP when the PMP feature is enabled and is consumed by control and the LSU; a wrong pmp_fault value would mask or spuriously raise protection faults. Evidence: when PMP is enabled the PMP instance drives pmp_fault (connection from neorv32_cpu_pmp_inst.fault_o at RTL line 420; map shows a CONNECTS record on pmp_fault at occurrence 4 partner neorv32_cpu_pmp_inst.fault_o). The same top-level signal is passed into the control instance and the LSU (port maps at lines 257 and 392). When PMP is not enabled the map shows a constant driver tying pmp_fault to '0' (constant driver at occurrence 5, RTL line 427 under the not-RISCV_ISA_Smpmp configuration), which the reasoning notes as a configuration-dependent fallback.",
+      "related structural assets": [
+        {
+          "asset rtl": "pmp_fault",
+          "entity": "neorv32_cpu",
+          "realization": "computes",
+          "occurrence": 4,
+          "edge": {
+            "type": "CONNECTS",
+            "partner": "neorv32_cpu_pmp_inst.fault_o"
+          }
+        }
+      ]
+    }
+  ]
+}

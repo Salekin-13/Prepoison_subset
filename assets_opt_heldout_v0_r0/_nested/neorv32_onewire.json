@@ -1,0 +1,199 @@
+{
+ "module name": "neorv32_onewire",
+ "module purpose": "neorv32_onewire holds bus-written control settings (enable, queue-clear request, clock prescaler select, clock divider), queues bus-written 1-Wire commands in a transmit FIFO, executes each queued command (single bit, byte, or reset with presence sample) by driving onewire_o and sampling onewire_i on a tick derived from clkgen_i and the divider, writes each result (data byte and presence bit) into a receive FIFO for bus readback, and raises irq_o when enabled with no pending command and an idle engine.",
+ "use-case flows": [
+  {
+   "flow": "configure",
+   "value": "control settings (enable, queue-clear request, prescaler select, clock divider) taken from bus write data on a control-address write and held in ctrl",
+   "lines": [141, 142, 143, 144, 145]
+  },
+  {
+   "flow": "start",
+   "value": "a 1-Wire command (2-bit operation code and data byte) written by the bus into the transmit queue, and the engine leaving idle when a queued command is pending",
+   "lines": [190, 191, 200, 201, 317, 318]
+  },
+  {
+   "flow": "operate",
+   "value": "bit-time tick generated from the selected clkgen_i bit and the clock divider",
+   "lines": [258, 259, 260, 261, 262, 263, 265, 268, 276]
+  },
+  {
+   "flow": "operate",
+   "value": "command execution: command fetched from the transmit queue, bit/byte slots or reset/presence sequence timed in ticks, onewire_o driven and onewire_i sampled",
+   "lines": [202, 296, 299, 300, 301, 302, 306, 307, 308, 311, 312, 316, 317, 318, 323, 324, 326, 328, 329, 330, 331, 332, 333, 334, 335, 342, 343, 346, 347, 350, 351, 352, 353, 354, 355, 356, 358, 360, 361, 366, 367, 370, 371, 374, 375, 378, 379, 380, 394]
+  },
+  {
+   "flow": "read out",
+   "value": "result of a completed operation (received byte and presence bit) written into the receive queue and returned on a bus read of the data address; control settings returned on a control read",
+   "lines": [150, 151, 152, 161, 162, 222, 223, 226, 227, 232, 233, 234]
+  },
+  {
+   "flow": "report",
+   "value": "interrupt request when enabled with no pending command and an idle engine; status bits (transmit queue full, receive data available, sensed line level, busy); clock-generator enable output",
+   "lines": [156, 157, 158, 159, 243, 273]
+  },
+  {
+   "flow": "reset",
+   "value": "rstn_i clears control, tick and engine registers; a cleared enable or a clear request flushes both queues, a cleared enable also holds the tick counter at zero and sends the engine to its clearing arm",
+   "lines": [128, 129, 130, 131, 132, 133, 140, 199, 231, 240, 241, 252, 253, 254, 255, 258, 259, 283, 284, 285, 286, 287, 288, 289, 290, 291, 292, 293, 311, 383, 385, 386, 387]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Controller enable -- the held on/off state of the 1-Wire controller",
+   "security objective": "Integrity",
+   "reasoning": "The configure flow stores bit 0 of a control write: `ctrl.enable <= bus_req_i.data(ctrl_en_c);` (line 142, CLOCKED_BY clk_i at occurrence 3, reset to '0' at line 130). The module's behavior depends on this state: it forces both queue clears (lines 199, 231), holds the tick counter at zero (lines 258-259), drives engine state bit 2 (line 311, COPIES), so a cleared enable sends the engine to the others arm that clears sreg, presence and the phase (lines 383-387), qualifies irq_o (line 243), and is exported by `clkgen_en_o <= ctrl.enable;` (line 273). Integrity is Established: a wrong value starts or stops the engine, flushes queued commands, or misstates the clock-generator request relative to the stored setting. Availability is also Established: a cleared enable stops every operation (lines 199, 259, 311). ctrl.enable stores it; clkgen_en_o is the exit port (COPIES ctrl.enable, occurrence 2) delivering it outside the entity. The readback on bus_rsp_o.data (line 150) is not listed because bus_rsp_o is a transport record.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.enable", "entity": "neorv32_onewire", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "clkgen_en_o", "entity": "neorv32_onewire", "realization": "exit port", "occurrence": 2, "edge": {"type": "COPIES", "partner": "ctrl.enable"}}
+   ]
+  },
+  {
+   "concept": "Bit-timing configuration -- the prescaler select and clock divider that set the tick period",
+   "security objective": "Integrity",
+   "reasoning": "`ctrl.clk_prsc <= bus_req_i.data(ctrl_prsc1_c downto ctrl_prsc0_c);` (line 144) and `ctrl.clk_div <= bus_req_i.data(ctrl_clkdiv7_c downto ctrl_clkdiv0_c);` (line 145) hold the timing settings (CLOCKED_BY clk_i at occurrence 3 each; reset at lines 131-132). clk_prsc selects which clk_src bit lets the counter advance (`elsif (clk_src(to_integer(unsigned(ctrl.clk_prsc))) = '1') then`, line 260; SELECTS clk_cnt and clk_tick) and clk_div sets the count at which the tick fires (`if (clk_cnt = unsigned(ctrl.clk_div)) then`, line 261; CONSTRAINS clk_cnt and clk_tick). Every slot length and sample point is counted in ticks (lines 342-380), so Integrity is Established: a wrong setting changes the onewire_o waveform timing and the sampling instants. Both registers store the setting. clkgen_i is not listed: through clk_src (line 276) it only enables the tick counter's advance at line 260, so the clock-enable rule excludes it, and clk_src only forwards its slice and gates. The readback (lines 151-152) leaves only through the transport record bus_rsp_o.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.clk_prsc", "entity": "neorv32_onewire", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.clk_div", "entity": "neorv32_onewire", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Bit-time tick -- the counted time base that paces every 1-Wire slot",
+   "security objective": "Integrity",
+   "reasoning": "The clock_generator process counts with `clk_cnt <= clk_cnt + 1;` (line 265) and, when clk_cnt equals clk_div, clears it and sets `clk_tick <= '1';` (lines 261-263); clk_tick is cleared otherwise (line 257) and delayed into clk_tick2 (line 268). The engine depends on this event: fifo.tx_re fires on clk_tick (line 202), a slot starts only on clk_tick (lines 329-330), tick_cnt advances only on clk_tick (lines 360-361, 366-367), and the read and presence samples are taken on clk_tick2 (lines 346, 374). Integrity is Established: a corrupted counter or tick changes every slot length and sample point of the waveform and the command-consumption instant. clk_cnt stores the counting state (self-updating, CLOCKED_BY clk_i at occurrence 6), clk_tick stores the tick event (CLOCKED_BY at occurrence 5, line 263; it is also the comparison result, CONSTRAINED_BY ctrl.clk_div), and clk_tick2 stores its one-cycle-delayed copy that times sampling (CLOCKED_BY at occurrence 3, line 268), a storing element even though it captures unchanged data.",
+   "related structural assets": [
+    {"asset rtl": "clk_cnt", "entity": "neorv32_onewire", "realization": "stores", "occurrence": 6, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "clk_tick", "entity": "neorv32_onewire", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "clk_tick2", "entity": "neorv32_onewire", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Queue flush decision -- the clear request and the resulting clear of both command and result queues",
+   "security objective": "Integrity",
+   "reasoning": "A control write sets `ctrl.clear <= bus_req_i.data(ctrl_clear_c);` (line 143), and `ctrl.clear <= '0';` (line 140) makes it a one-cycle request (CLOCKED_BY clk_i at occurrence 4). fifo.tx_clr and fifo.rx_clr compute the flush decision `'1' when (ctrl.enable = '0') or (ctrl.clear = '1') else '0'` (lines 199, 231; GATED_BY ctrl.clear and ctrl.enable at occurrence 3) and deliver it to the clear_i ports of tx_fifo_inst and rx_fifo_inst (lines 186, 218), whose internals are not supplied. Integrity is Established by that delivery: each queue must receive exactly this decision, so queued commands and unread results are discarded when, and only when, the module is disabled or a clear is requested. Availability is also Established: a spurious flush drops pending commands and results. Both fields are computed here from a decision, so the sub-unit wiring exception is satisfied; ctrl.enable is listed under its own concept.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.clear", "entity": "neorv32_onewire", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "fifo.tx_clr", "entity": "neorv32_onewire", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "ctrl.clear"}},
+    {"asset rtl": "fifo.rx_clr", "entity": "neorv32_onewire", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "ctrl.clear"}}
+   ]
+  },
+  {
+   "concept": "Command enqueue decision -- whether a bus access writes a command into the transmit queue",
+   "security objective": "Integrity",
+   "reasoning": "`fifo.tx_we <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '1') else '0';` (line 200) decides whether an access enqueues a command and delivers the decision to tx_fifo_inst.we_i (line 191). Integrity is Established by delivery to a sub-unit that is not supplied: the queue must receive exactly this write decision, so a command enters only on a write to the data address. fifo.tx_we computes it (GATED_BY bus_req_i.stb, occurrence 3), computed here from a decision. The request fields are not listed because bus_req_i is a transport record, and fifo.tx_wdata only passes bus data bits 9 downto 0 unchanged to wdata_i (lines 190, 201), so it is a carrier.",
+   "related structural assets": [
+    {"asset rtl": "fifo.tx_we", "entity": "neorv32_onewire", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "bus_req_i.stb"}}
+   ]
+  },
+  {
+   "concept": "Command-pending start condition -- whether a queued command is available to start the engine",
+   "security objective": "Integrity",
+   "reasoning": "The start flow leaves idle only on `if (fifo.tx_avail = '1') then`, which sets the phase bits to 01 (lines 317-318); the same value blocks irq_o (line 243) and is reported as busy (line 159). This block tests it in an if condition (line 317), so the sub-unit wiring exception applies; fifo.tx_avail sets the decision here through the connection from tx_fifo_inst.avail_o (CONNECTS, occurrence 3, line 196), whose internal computation is not inferred. Integrity is Established: a wrong value starts the engine on an empty queue, leaves a queued command unexecuted, or raises the interrupt while a command is pending.",
+   "related structural assets": [
+    {"asset rtl": "fifo.tx_avail", "entity": "neorv32_onewire", "realization": "sets", "occurrence": 3, "edge": {"type": "CONNECTS", "partner": "tx_fifo_inst.avail_o"}}
+   ]
+  },
+  {
+   "concept": "Queued command word -- the operation code (single bit, byte, reset) and transmit data byte of the command being executed",
+   "security objective": "Integrity",
+   "reasoning": "tx_fifo_inst delivers the next command on fifo.tx_rdata (CONNECTS tx_fifo_inst.rdata_o, occurrence 2, line 195). This block decides on it: its operation-code bits select the bit count (`if (fifo.tx_rdata(dcmd_cmd_hi_c downto dcmd_cmd_lo_c) = cmd_bit_c) then`, lines 323-326) and the next phase (case at lines 331-335: bit or byte to the slot phase, reset to the reset phase, others back to idle), and its data byte is loaded by `serial.sreg <= fifo.tx_rdata(dcmd_msb_c downto dcmd_lsb_c);` (line 328). serial.sreg stores the byte (CLOCKED_BY clk_i at occurrence 4) and its bit 0 decides the early release of a write-one slot (line 342). Integrity is Established: the executed operation and the bits driven on onewire_o must be those of the queued command. fifo.tx_rdata is tested in an if and a case condition, so the sub-unit wiring exception applies, and it sets the value here through the connection from the sub-unit output.",
+   "related structural assets": [
+    {"asset rtl": "fifo.tx_rdata", "entity": "neorv32_onewire", "realization": "sets", "occurrence": 2, "edge": {"type": "CONNECTS", "partner": "tx_fifo_inst.rdata_o"}},
+    {"asset rtl": "serial.sreg", "entity": "neorv32_onewire", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Command consumption decision -- when the engine removes the command it starts executing from the transmit queue",
+   "security objective": "Integrity",
+   "reasoning": "fifo.tx_re is '1' when serial.state is the fetch phase 101 and clk_tick is '1' (line 202) and is delivered to tx_fifo_inst.re_i (line 194). In the same cycle the case at lines 329-335 moves the engine out of the fetch phase, so each queued command is removed exactly once when its execution starts. Integrity is Established by delivery to a sub-unit that is not supplied: the queue must receive exactly this read decision; a wrong value repeats or skips commands. fifo.tx_re computes it (GATED_BY serial.state, occurrence 3), computed here from a decision, so the sub-unit wiring exception is satisfied.",
+   "related structural assets": [
+    {"asset rtl": "fifo.tx_re", "entity": "neorv32_onewire", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "serial.state"}}
+   ]
+  },
+  {
+   "concept": "Engine phase -- the serial engine state (idle, fetch, bit/byte slot, reset/presence) and the busy decision derived from it",
+   "security objective": "Integrity",
+   "reasoning": "serial.state holds the phase: bit 2 follows ctrl.enable (line 311) and bits 1-0 move from idle to fetch on a pending command (line 318), from fetch to the slot or reset phase by the command code (lines 331-335), and back to idle at the end of a bit or byte (line 356), at presence end (line 380), or in the others arm (line 387); it selects every engine assignment (SELECTS at line 312) and the consumption strobe (line 202). serial.busy computes `'0' when (serial.state(1 downto 0) = 00) else '1'` (line 394; GATED_BY serial.state, occurrence 5), which releases onewire_o when idle (line 299), blocks irq_o (line 243) and is reported as status (line 159). Integrity is Established: a corrupted phase drives the wrong waveform, skips or repeats a command, or misreports idle. serial.state stores it (self-updating, CLOCKED_BY clk_i at occurrence 6, line 318); serial.busy computes the decision.",
+   "related structural assets": [
+    {"asset rtl": "serial.state", "entity": "neorv32_onewire", "realization": "stores", "occurrence": 6, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "serial.busy", "entity": "neorv32_onewire", "realization": "computes", "occurrence": 5, "edge": {"type": "GATED_BY", "partner": "serial.state"}}
+   ]
+  },
+  {
+   "concept": "Slot time position -- the tick count within the current slot or reset sequence",
+   "security objective": "Integrity",
+   "reasoning": "serial.tick_cnt is cleared in idle (line 316) and at slot end (line 351) and advanced on clk_tick (lines 361, 367). Its comparisons with the timing constants decide the write-one release (line 342), the read-sample instant (line 346), the slot end (line 350), the end of the reset pulse (line 370), the presence-sample instant (line 374) and the presence end (line 378). Integrity is Established: a wrong count shifts when onewire_o is released, when the line is sampled and when the operation ends. serial.tick_cnt stores this state (self-updating, CLOCKED_BY clk_i at occurrence 9, line 361).",
+   "related structural assets": [
+    {"asset rtl": "serial.tick_cnt", "entity": "neorv32_onewire", "realization": "stores", "occurrence": 9, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Remaining-bit count -- how many slots of the current bit or byte operation are left",
+   "security objective": "Integrity",
+   "reasoning": "serial.bit_cnt is loaded with 000 for a single-bit command and 111 otherwise (lines 323-326), decremented at each slot end (line 353), and its zero test ends the operation, raises serial.done and returns to idle (lines 354-356), or starts the next slot (line 358). Integrity is Established: a wrong count sends too few or too many slots and stores a wrong number of received bits. serial.bit_cnt stores it (self-updating, CLOCKED_BY clk_i at occurrence 5, line 353).",
+   "related structural assets": [
+    {"asset rtl": "serial.bit_cnt", "entity": "neorv32_onewire", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Received data byte -- the bits sampled from the line during bit/byte slots and assembled for the receive queue",
+   "security objective": "Integrity",
+   "reasoning": "In a slot, `serial.sample <= serial.wire_in(1);` (line 347) captures the line at the read-sample instant and `serial.sreg <= serial.sample & serial.sreg(7 downto 1);` (line 352) shifts it into the byte; on completion `fifo.rx_wdata <= serial.presence & serial.sreg;` (line 232) and `fifo.rx_we <= serial.done;` (line 233) write it into rx_fifo_inst. Integrity is Established by delivery to a sub-unit that is not supplied: the receive queue must receive exactly the sampled bits, in order. serial.sample stores the sampled bit (CLOCKED_BY clk_i at occurrence 3) and serial.sreg stores the assembled byte (CLOCKED_BY at occurrence 6, line 352). fifo.rx_wdata only packs the values unchanged into wdata_i (line 222) and fifo.rx_rdata only carries the queue output into bus_rsp_o.data (lines 161, 227), so both are carriers; the readback leaves through the transport record bus_rsp_o. Confidentiality is not established: no line restricts who reads the result.",
+   "related structural assets": [
+    {"asset rtl": "serial.sample", "entity": "neorv32_onewire", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "serial.sreg", "entity": "neorv32_onewire", "realization": "stores", "occurrence": 6, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Sensed line level -- the 1-Wire input level captured for sampling and status",
+   "security objective": "Integrity",
+   "reasoning": "`serial.wire_in <= serial.wire_in(0) & to_stdulogic(to_bit(onewire_i));` (line 296) captures the line into a two-stage register (CLOCKED_BY clk_i at occurrence 4); its bit 1 is the level the engine samples for data (line 347) and presence (line 375) and that is reported as the sense status bit (line 158). Integrity is Established: received bits and the presence result must reflect the sensed line. onewire_i sets it, because this entity reads the input to store it (SOURCES serial.wire_in, occurrence 2); serial.wire_in stores it, including its unchanged capture.",
+   "related structural assets": [
+    {"asset rtl": "onewire_i", "entity": "neorv32_onewire", "realization": "sets", "occurrence": 2, "edge": {"type": "SOURCES", "partner": "serial.wire_in"}},
+    {"asset rtl": "serial.wire_in", "entity": "neorv32_onewire", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Presence-detect result -- whether the line was held low at the presence-sample instant after a reset pulse",
+   "security objective": "Integrity",
+   "reasoning": "In the reset phase, `serial.presence <= not serial.wire_in(1);` (line 375) records the decision at the presence-sample instant (gated by tick_cnt and clk_tick2, line 374); the others arm clears it (line 386). The map shows no RESET_BY on it, matching the reset arm (lines 283-293), which omits it. It is written into the receive queue as bit 8 of fifo.rx_wdata (line 232) when serial.done fires at presence end (line 379). Integrity is Established by delivery to the receive queue, which is not supplied: the queue must receive exactly this decision. serial.presence stores it (CLOCKED_BY clk_i at occurrence 3).",
+   "related structural assets": [
+    {"asset rtl": "serial.presence", "entity": "neorv32_onewire", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Operation-completion event -- the one-cycle signal that a bit, byte or reset operation has finished and its result is to be queued",
+   "security objective": "Integrity",
+   "reasoning": "serial.done is cleared every cycle (line 308) and set when a bit or byte operation ends (line 355) or a reset sequence ends (line 379); `fifo.rx_we <= serial.done;` (line 233) delivers it unchanged to rx_fifo_inst.we_i (line 223). Integrity is Established by delivery to a sub-unit that is not supplied: the receive queue must be written exactly once per completed operation, or results are lost or duplicated. serial.done stores the event (CLOCKED_BY clk_i at occurrence 5); fifo.rx_we only copies it into the sub-unit and is a carrier.",
+   "related structural assets": [
+    {"asset rtl": "serial.done", "entity": "neorv32_onewire", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "1-Wire line drive -- the output waveform, with its pull-low and release decisions",
+   "security objective": "Integrity",
+   "reasoning": "`if (serial.busy = '0') or (serial.wire_hi = '1') then onewire_o <= '1'; elsif (serial.wire_lo = '1') then onewire_o <= '0';` (lines 299-302) drives the line; it is '0' while rstn_i is low (line 293). serial.wire_lo is set at each slot start (lines 330, 358) and serial.wire_hi at the write-one release or slot end (lines 342-343) and at the end of the reset pulse (lines 370-371); both are cleared every cycle (lines 306-307). Integrity is Established: the waveform that leaves the entity, with each low-pulse start and end, must follow the queued command and the slot timing, and the consumer outside the entity must receive exactly that value. onewire_o is the exit port (GATED_BY serial.busy, occurrence 3, line 300); serial.wire_lo and serial.wire_hi store the pull-low and release decisions (CLOCKED_BY clk_i at occurrence 5, lines 330 and 343).",
+   "related structural assets": [
+    {"asset rtl": "onewire_o", "entity": "neorv32_onewire", "realization": "exit port", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "serial.busy"}},
+    {"asset rtl": "serial.wire_lo", "entity": "neorv32_onewire", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "serial.wire_hi", "entity": "neorv32_onewire", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Idle interrupt request -- the event that the enabled controller has no pending command and an idle engine",
+   "security objective": "Integrity",
+   "reasoning": "`irq_o <= ctrl.enable and (not fifo.tx_avail) and (not serial.busy);` (line 243, CLOCKED_BY clk_i, reset to '0' at line 241) reports the condition. Integrity is Established by delivery through an output port: the consumer outside the entity must receive exactly this condition. irq_o is the exit port (GATED_BY ctrl.enable, occurrence 3); ctrl.enable, fifo.tx_avail and serial.busy are listed under their own concepts.",
+   "related structural assets": [
+    {"asset rtl": "irq_o", "entity": "neorv32_onewire", "realization": "exit port", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "ctrl.enable"}}
+   ]
+  },
+  {
+   "concept": "Result dequeue decision -- whether a bus access removes the oldest result from the receive queue",
+   "security objective": "Integrity",
+   "reasoning": "`fifo.rx_re <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(2) = '1') else '0';` (line 234) decides whether a read removes the oldest result from rx_fifo_inst (re_i, line 226). Integrity is Established by delivery to a sub-unit that is not supplied: a result leaves the queue only on a read of the data address; a spurious dequeue loses a received byte and presence bit. fifo.rx_re computes it (GATED_BY bus_req_i.stb, occurrence 3), computed here from a decision; the request fields are not listed because bus_req_i is a transport record.",
+   "related structural assets": [
+    {"asset rtl": "fifo.rx_re", "entity": "neorv32_onewire", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "bus_req_i.stb"}}
+   ]
+  }
+ ]
+}

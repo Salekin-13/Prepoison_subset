@@ -1,0 +1,468 @@
+{
+  "module name": "neorv32_bus",
+  "module purpose": "neorv32_bus groups several bus-helper entities: a 2-port bus switch, an optional bus request/response register stage, address-decoding gateways/switches, and helpers for atomic memory operations. Across these entities it routes bus transactions, stores arbitration and watchdog state, computes AMO write-back data, and generates timeout or store-conditional failure indications.",
+  "use-case flows": [
+    {
+      "flow": "operate",
+      "value": "switch arbitration selects port A or B, latches pending requests, forwards the selected request to x_req_o, and routes x_rsp_i acknowledge/error back to the selected requester",
+      "lines": [
+        46,
+        54,
+        55,
+        56,
+        57,
+        58,
+        61,
+        63,
+        66,
+        74,
+        83,
+        87,
+        88,
+        93,
+        99,
+        100,
+        105,
+        111,
+        112,
+        113,
+        117,
+        123,
+        127,
+        140,
+        158,
+        164,
+        165,
+        168,
+        169
+      ]
+    },
+    {
+      "flow": "lock",
+      "value": "captured bus-switch lock bits keep the selected requester active until its lock input is released",
+      "lines": [
+        57,
+        88,
+        89,
+        90,
+        91,
+        100,
+        101,
+        102,
+        103,
+        111,
+        143
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "optional bus request/response register stage stores host requests and/or device responses when REQ_REG_EN or RSP_REG_EN is enabled",
+      "lines": [
+        215,
+        218,
+        219,
+        221,
+        222,
+        224,
+        225,
+        226,
+        232,
+        233,
+        240,
+        243,
+        244,
+        246,
+        252,
+        253
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "gateway address decode selects one of ports A, B, C or X, forwards the request only to the selected port, and OR-combines enabled responses",
+      "lines": [
+        356,
+        357,
+        358,
+        361,
+        372,
+        375,
+        377,
+        378,
+        384,
+        390,
+        391,
+        392,
+        395,
+        399,
+        400,
+        401
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "gateway timeout monitor tracks an outstanding request, counts cycles, suppresses timeout on the X port, and raises an internal error that forces rsp_o.ack and rsp_o.err",
+      "lines": [
+        400,
+        401,
+        406,
+        414,
+        415,
+        416,
+        417,
+        418,
+        419,
+        420,
+        422,
+        423,
+        424,
+        425,
+        426,
+        427
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "I/O switch optionally pipelines the main bus through neorv32_bus_reg, decodes the main request address to one of 32 device ports, and OR-combines enabled device responses",
+      "lines": [
+        598,
+        600,
+        601,
+        608,
+        610,
+        611,
+        617,
+        653,
+        658,
+        660,
+        661,
+        662,
+        664,
+        679,
+        685,
+        686,
+        687,
+        690
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "AMO read-modify-write logic captures opcode and write operand, stores the returned read data, computes the write-back result, issues the write phase, and returns the saved read data to the core",
+      "lines": [
+        755,
+        757,
+        762,
+        763,
+        777,
+        778,
+        779,
+        780,
+        785,
+        786,
+        787,
+        792,
+        796,
+        800,
+        801,
+        813,
+        815,
+        816,
+        826,
+        827,
+        828,
+        833,
+        838,
+        839,
+        840,
+        841,
+        842,
+        843,
+        844,
+        850,
+        851,
+        852,
+        853
+      ]
+    },
+    {
+      "flow": "lock",
+      "value": "LR/SC reservation control records reservation state, gates store-conditional requests, and marks failed store-conditional operations",
+      "lines": [
+        901,
+        905,
+        906,
+        910,
+        911,
+        912,
+        914,
+        920,
+        921,
+        926,
+        927,
+        935,
+        940,
+        943,
+        944,
+        946,
+        952,
+        956,
+        957,
+        963,
+        964
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "arbiter, monitor, reservation, and ALU/result registers are forced to cleared states when rstn_i is low",
+      "lines": [
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        218,
+        219,
+        243,
+        244,
+        408,
+        409,
+        410,
+        411,
+        412,
+        413,
+        757,
+        758,
+        759,
+        760,
+        761,
+        835,
+        836,
+        903,
+        904,
+        954,
+        955
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Bus-switch arbitration context \u2014 current owner, pending requests, round-robin history, captured lock bits, and the computed grant that decide which requester drives the shared bus and where acknowledge/error return",
+      "security objective": "Integrity",
+      "reasoning": "In neorv32_bus_switch, `state`, `sel_q`, `locked`, `a_req`, and `b_req` are stored on the clock (lines 55-67), and the FSM computes `sel` and `stb` from these states, the request strobes, lock bits, and `x_rsp_i.ack` (lines 83-135). The selected request is then multiplexed to `x_req_o` (lines 140-158), while `a_rsp_o.ack/err` and `b_rsp_o.ack/err` are gated by `sel` (lines 164-169). Integrity is Established because correct request routing and response return depend on this context matching the implemented arbitration rules. Availability is also Established because `a_req <= a_req or a_req_i.stb` and `b_req <= b_req or b_req_i.stb` retain pending requests until service (lines 61, 66); `sel_q` affects fairness when `ROUND_ROBIN_EN` enables round-robin preference (line 112).",
+      "related structural assets": [
+        {
+          "asset rtl": "state",
+          "entity": "neorv32_bus_switch",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "a_req",
+          "entity": "neorv32_bus_switch",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "b_req",
+          "entity": "neorv32_bus_switch",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "sel_q",
+          "entity": "neorv32_bus_switch",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "locked",
+          "entity": "neorv32_bus_switch",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "sel",
+          "entity": "neorv32_bus_switch",
+          "realization": "computes",
+          "occurrence": 6,
+          "edge": {
+            "type": "SELECTED_BY",
+            "partner": "state"
+          }
+        },
+        {
+          "asset rtl": "stb",
+          "entity": "neorv32_bus_switch",
+          "realization": "computes",
+          "occurrence": 5,
+          "edge": {
+            "type": "SELECTED_BY",
+            "partner": "state"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Gateway destination decode \u2014 the decision of which downstream port A, B, C, or X receives the current request",
+      "security objective": "Integrity",
+      "reasoning": "In neorv32_bus_gateway, `port_sel` is computed from `req_i.addr` against the enabled base/size regions (lines 356-361) and then controls which copied request keeps its strobe asserted in `port_req(i)` via `port_req(i).stb <= port_sel(i) and req_i.stb` (lines 377-378). The decode also feeds `keeper.halt` through `port_sel(port_sel'left)` at line 416. Integrity is Established because the gateway's operate flow depends on forwarding the request to the correct enabled port; availability is Established because a matching enabled selection produces a request strobe when `req_i.stb` is asserted (line 378).",
+      "related structural assets": [
+        {
+          "asset rtl": "port_sel",
+          "entity": "neorv32_bus_gateway",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "req_i.addr"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Gateway transaction watchdog state and timeout error \u2014 the stored monitor state that tracks an outstanding request and the error flag raised on timeout",
+      "security objective": "Integrity",
+      "reasoning": "In neorv32_bus_gateway, reset clears `keeper.busy`, `keeper.lock`, `keeper.cnt`, `keeper.err`, and `keeper.halt` (lines 408-413). On each clock, `keeper.halt` samples fallback-port selection, `keeper.busy` and `keeper.lock` capture a new request, and `keeper.cnt` increments while a request is outstanding (lines 415-422). When the counter MSB is set and `keeper.halt = '0'`, `keeper.err` is raised and `keeper.busy` is cleared (lines 423-425); otherwise acknowledge or lock release clears `keeper.busy` (line 426-427). `rsp_o.ack` and `rsp_o.err` OR in `keeper.err` (lines 400-401). Integrity is Established because timeout termination and lock-aware release must follow exactly these RTL-visible conditions, and availability is Established because this monitor state is preserved until acknowledge or timeout.",
+      "related structural assets": [
+        {
+          "asset rtl": "keeper.busy",
+          "entity": "neorv32_bus_gateway",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "keeper.lock",
+          "entity": "neorv32_bus_gateway",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "keeper.cnt",
+          "entity": "neorv32_bus_gateway",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "keeper.halt",
+          "entity": "neorv32_bus_gateway",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "keeper.err",
+          "entity": "neorv32_bus_gateway",
+          "realization": "stores",
+          "occurrence": 6,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "AMO read-modify-write context and phase \u2014 the stored opcode, saved read data, saved write operand, and current phase of an in-flight AMO sequence",
+      "security objective": "Integrity",
+      "reasoning": "In neorv32_bus_amo_rmw, reset initializes the AMO context fields `state`, `cmd`, `rdata`, and `wdata` (lines 757-761), and the whole `arbiter` record is updated by `arbiter <= arbiter_nxt` (line 763). The combinational controller captures `core_req_i.amoop` and `core_req_i.data` when a non-reservation AMO starts (lines 777-780), captures `sys_rsp_i.data` after the read phase (lines 785-787), and sequences execute, write, and write-wait back to idle (lines 792-801). Later logic uses the stored context to choose write/data phases on `sys_req_o` (lines 813-816) and to return the saved read value on `core_rsp_o.data` outside idle (line 826). Integrity is Established because the AMO flow depends on preserving and sequencing this context exactly; availability is Established because the stored context persists until the final acknowledge (lines 800-801).",
+      "related structural assets": [
+        {
+          "asset rtl": "arbiter",
+          "entity": "neorv32_bus_amo_rmw",
+          "realization": "stores",
+          "occurrence": 6,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "AMO computed write-back word \u2014 the result generated from the stored AMO command, read data, and write operand for the write phase",
+      "security objective": "Integrity",
+      "reasoning": "In neorv32_bus_amo_rmw, `alu_res` is registered from the stored AMO context: the clocked ALU selects pass-through, add, xor, and, or, or comparison result from `arbiter.cmd`, `arbiter.rdata`, and `arbiter.wdata` (lines 838-845), with compare operands and result built at lines 850-853. During write phases, `sys_req_o.data` uses `alu_res` instead of the incoming `core_req_i.data` (line 813). Integrity is Established because the downstream write data must match the operation encoded in the stored AMO context; availability is Established because the computed result is held across the write phases.",
+      "related structural assets": [
+        {
+          "asset rtl": "alu_res",
+          "entity": "neorv32_bus_amo_rmw",
+          "realization": "stores",
+          "occurrence": 5,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "LR/SC reservation state \u2014 the stored reservation/progress state that decides whether a conditional store is allowed to issue",
+      "security objective": "Integrity",
+      "reasoning": "In neorv32_bus_amo_rvs, reset clears `state` (lines 903-905). A reservation load request sets it to `\"10\"` (lines 926-927); in state `\"10\"`, a write request moves to `\"11\"` when `rvso = '1'` or clears otherwise (lines 910-915); and an acknowledged conditional store returns it to `\"00\"` (lines 920-921). The request gate `sys_req_o.stb <= core_req_i.stb and state(1)` for conditional writes (line 944) and the failure logic at line 957 both depend on this stored state. Integrity is Established because LR/SC operation depends on the reservation being created, consumed, and cleared under exactly these conditions; availability is Established because the reservation state is retained across cycles until completion or cancellation.",
+      "related structural assets": [
+        {
+          "asset rtl": "state",
+          "entity": "neorv32_bus_amo_rvs",
+          "realization": "stores",
+          "occurrence": 7,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Store-conditional failure indication \u2014 the decision that a conditional store failed and must be reported back to the core",
+      "security objective": "Integrity",
+      "reasoning": "In neorv32_bus_amo_rvs, `sc_fail` is cleared on reset (lines 954-955) and then registered from `rvso and core_req_i.stb and core_req_i.rw and (not state(1))` (line 957). The module reports this decision by OR-ing it into `core_rsp_o.ack` and into bit 0 of `core_rsp_o.data` (lines 963-964). Integrity is Established because the report flow depends on distinguishing a failed conditional store from a normal system response; availability is Established because the failure indication is produced whenever the RTL-visible condition at line 957 holds.",
+      "related structural assets": [
+        {
+          "asset rtl": "sc_fail",
+          "entity": "neorv32_bus_amo_rvs",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,596 @@
+TARGET IP MODULE: neorv32_trng
+
+=== RTL (comments removed, blank lines left out; each line starts with its line number in the source file) ===
+   20 | entity neorv32_trng is
+   21 |   generic (
+   22 |     TRNG_FIFO : natural range 1 to 2**15
+   23 |   );
+   24 |   port (
+   25 |     clk_i     : in  std_ulogic;
+   26 |     rstn_i    : in  std_ulogic;
+   27 |     bus_req_i : in  bus_req_t;
+   28 |     bus_rsp_o : out bus_rsp_t
+   29 |   );
+   30 | end neorv32_trng;
+
+   32 | architecture neorv32_trng_rtl of neorv32_trng is
+   35 |   constant num_cells_c     : natural := 3;
+   36 |   constant num_inv_start_c : natural := 5;
+   40 |   constant ctrl_en_c         : natural := 0;
+   41 |   constant ctrl_fifo_clr_c   : natural := 1;
+   42 |   constant ctrl_fifo_size0_c : natural := 2;
+   43 |   constant ctrl_fifo_size3_c : natural := 5;
+   44 |   constant ctrl_sim_mode_c   : natural := 6;
+   45 |   constant ctrl_avail_c      : natural := 7;
+   48 |   constant ctrl_data_lsb_c : natural := 0;
+   49 |   constant ctrl_data_msb_c : natural := 7;
+   52 |   constant log2_fifo_size_c : natural := index_size_f(TRNG_FIFO);
+   55 |   component neoTRNG
+   56 |     generic (
+   57 |       NUM_CELLS     : natural range 1 to 99 := 3;
+   58 |       NUM_INV_START : natural range 3 to 99 := 5;
+   59 |       SIM_MODE      : boolean := false
+   60 |     );
+   61 |     port (
+   62 |       clk_i    : in  std_ulogic;
+   63 |       rstn_i   : in  std_ulogic;
+   64 |       enable_i : in  std_ulogic;
+   65 |       valid_o  : out std_ulogic;
+   66 |       data_o   : out std_ulogic_vector(7 downto 0)
+   67 |     );
+   68 |   end component;
+   71 |   signal enable, fifo_clr : std_ulogic;
+   74 |   type fifo_t is record
+   75 |     we    : std_ulogic;
+   76 |     re    : std_ulogic;
+   77 |     clear : std_ulogic;
+   78 |     wdata : std_ulogic_vector(7 downto 0);
+   79 |     rdata : std_ulogic_vector(7 downto 0);
+   80 |     avail : std_ulogic;
+   81 |     half  : std_ulogic;
+   82 |     free  : std_ulogic;
+   83 |   end record;
+   84 |   signal fifo : fifo_t;
+   86 | begin
+   90 |   bus_access: process(rstn_i, clk_i)
+   91 |   begin
+   92 |     if (rstn_i = '0') then
+   93 |       bus_rsp_o <= rsp_terminate_c;
+   94 |       fifo_clr  <= '0';
+   95 |       enable    <= '0';
+   96 |     elsif rising_edge(clk_i) then
+   98 |       bus_rsp_o.ack  <= bus_req_i.stb;
+   99 |       bus_rsp_o.err  <= '0';
+  100 |       bus_rsp_o.data <= (others => '0');
+  101 |       fifo_clr       <= '0';
+  103 |       if (bus_req_i.stb = '1') then
+  104 |         if (bus_req_i.rw = '1') then
+  105 |           enable   <= bus_req_i.data(ctrl_en_c);
+  106 |           fifo_clr <= bus_req_i.data(ctrl_fifo_clr_c);
+  107 |         else
+  108 |           if (bus_req_i.addr(2) = '0') then
+  109 |             bus_rsp_o.data(ctrl_en_c)                                  <= enable;
+  110 |             bus_rsp_o.data(ctrl_fifo_size3_c downto ctrl_fifo_size0_c) <= std_ulogic_vector(to_unsigned(log2_fifo_size_c, 4));
+  111 |             bus_rsp_o.data(ctrl_sim_mode_c)                            <= bool_to_ulogic_f(is_simulation_c);
+  112 |             bus_rsp_o.data(ctrl_avail_c)                               <= fifo.avail;
+  113 |           else
+  114 |             if (fifo.avail = '0') then
+  115 |               bus_rsp_o.data(ctrl_data_msb_c downto ctrl_data_lsb_c) <= (others => '0');
+  116 |             else
+  117 |               bus_rsp_o.data(ctrl_data_msb_c downto ctrl_data_lsb_c) <= fifo.rdata;
+  118 |             end if;
+  119 |           end if;
+  120 |         end if;
+  121 |       end if;
+  122 |     end if;
+  123 |   end process bus_access;
+  128 |   neoTRNG_inst: neoTRNG
+  129 |     generic map (
+  130 |       NUM_CELLS     => num_cells_c,
+  131 |       NUM_INV_START => num_inv_start_c,
+  132 |       SIM_MODE      => is_simulation_c
+  133 |     )
+  134 |     port map (
+  135 |       clk_i    => clk_i,
+  136 |       rstn_i   => rstn_i,
+  137 |       enable_i => enable,
+  138 |       valid_o  => fifo.we,
+  139 |       data_o   => fifo.wdata
+  140 |     );
+  145 |   rnd_pool_fifo_inst: entity neorv32.neorv32_fifo
+  146 |   generic map (
+  147 |     FIFO_DEPTH => TRNG_FIFO,
+  148 |     FIFO_WIDTH => 8,
+  149 |     FIFO_RSYNC => true,
+  150 |     FIFO_SAFE  => true,
+  151 |     FULL_RESET => false
+  152 |   )
+  153 |   port map (
+  155 |     clk_i   => clk_i,
+  156 |     rstn_i  => rstn_i,
+  157 |     clear_i => fifo.clear,
+  158 |     half_o  => fifo.half,
+  159 |     level_o => open,
+  161 |     wdata_i => fifo.wdata,
+  162 |     we_i    => fifo.we,
+  163 |     free_o  => fifo.free,
+  165 |     re_i    => fifo.re,
+  166 |     rdata_o => fifo.rdata,
+  167 |     avail_o => fifo.avail
+  168 |   );
+  170 |   fifo.clear <= '1' when (enable = '0') or (fifo_clr = '1') else '0';
+  171 |   fifo.re    <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(2) = '1') else '0';
+  174 | end neorv32_trng_rtl;
+  224 | library ieee;
+  225 | use ieee.std_logic_1164.all;
+  226 | use ieee.numeric_std.all;
+
+  228 | entity neoTRNG is
+  229 |   generic (
+  230 |     NUM_CELLS     : natural range 1 to 99 := 3;
+  231 |     NUM_INV_START : natural range 3 to 99 := 5;
+  232 |     SIM_MODE      : boolean := false
+  233 |   );
+  234 |   port (
+  235 |     clk_i    : in  std_ulogic;
+  236 |     rstn_i   : in  std_ulogic;
+  237 |     enable_i : in  std_ulogic;
+  238 |     valid_o  : out std_ulogic;
+  239 |     data_o   : out std_ulogic_vector(7 downto 0)
+  240 |   );
+  241 | end neoTRNG;
+
+  243 | architecture neoTRNG_rtl of neoTRNG is
+  246 |   component neoTRNG_cell
+  247 |     generic (
+  248 |       NUM_INV  : natural range 3 to 999 := 3;
+  249 |       SIM_MODE : boolean := false
+  250 |     );
+  251 |     port (
+  252 |       clk_i  : in  std_ulogic;
+  253 |       rstn_i : in  std_ulogic;
+  254 |       en_i   : in  std_ulogic;
+  255 |       en_o   : out std_ulogic;
+  256 |       rnd_o  : out std_ulogic
+  257 |     );
+  258 |   end component;
+  261 |   signal cell_en_in   : std_ulogic_vector(NUM_CELLS-1 downto 0);
+  262 |   signal cell_en_out  : std_ulogic_vector(NUM_CELLS-1 downto 0);
+  263 |   signal cell_rnd     : std_ulogic_vector(NUM_CELLS-1 downto 0);
+  264 |   signal cell_sum     : std_ulogic;
+  267 |   signal debias_sreg  : std_ulogic_vector(1 downto 0);
+  268 |   signal debias_state : std_ulogic;
+  269 |   signal debias_valid : std_ulogic;
+  270 |   signal debias_data  : std_ulogic;
+  273 |   signal sample_en    : std_ulogic;
+  274 |   signal sample_sreg  : std_ulogic_vector(7 downto 0);
+  275 |   signal sample_cnt   : std_ulogic_vector(6 downto 0);
+  277 | begin
+  281 |   assert false report
+  282 |     "[neoTRNG] The neoTRNG (v3.2) - A Tiny and Platform-Independent True Random Number Generator, " &
+  283 |     "https://github.com/stnolting/neoTRNG" severity note;
+  285 |   assert (NUM_INV_START mod 2) /= 0 report
+  286 |     "[neoTRNG] Number of inverters in first cell <NUM_INV_START> has to be odd!" severity error;
+  288 |   assert not SIM_MODE report
+  289 |     "[neoTRNG] Simulation-mode enabled (NO TRUE/PHYSICAL RANDOM)!" severity warning;
+  294 |   entropy_cell_gen:
+  295 |   for i in 0 to NUM_CELLS-1 generate
+  296 |     neoTRNG_cell_inst: neoTRNG_cell
+  297 |     generic map (
+  298 |       NUM_INV  => NUM_INV_START + (2 * i),
+  299 |       SIM_MODE => SIM_MODE
+  300 |     )
+  301 |     port map (
+  302 |       clk_i  => clk_i,
+  303 |       rstn_i => rstn_i,
+  304 |       en_i   => cell_en_in(i),
+  305 |       en_o   => cell_en_out(i),
+  306 |       rnd_o  => cell_rnd(i)
+  307 |     );
+  308 |   end generate;
+  311 |   cell_en_in(0) <= sample_en;
+  312 |   cell_en_in(NUM_CELLS-1 downto 1) <= cell_en_out(NUM_CELLS-2 downto 0);
+  315 |   combine: process(cell_rnd)
+  316 |     variable tmp_v : std_ulogic;
+  317 |   begin
+  318 |     tmp_v := '0';
+  319 |     for i in 0 to NUM_CELLS-1 loop
+  320 |       tmp_v := tmp_v xor cell_rnd(i);
+  321 |     end loop;
+  322 |     cell_sum <= tmp_v;
+  323 |   end process combine;
+  328 |   debiasing: process(rstn_i, clk_i)
+  329 |   begin
+  330 |     if (rstn_i = '0') then
+  331 |       debias_sreg  <= (others => '0');
+  332 |       debias_state <= '0';
+  333 |     elsif rising_edge(clk_i) then
+  334 |       debias_sreg <= debias_sreg(0) & cell_sum;
+  336 |       debias_state <= (not debias_state) and cell_en_out(cell_en_out'left);
+  337 |     end if;
+  338 |   end process debiasing;
+  341 |   debias_valid <= debias_state and (debias_sreg(1) xor debias_sreg(0));
+  342 |   debias_data  <= debias_sreg(0);
+  347 |   sampling_control: process(rstn_i, clk_i)
+  348 |   begin
+  349 |     if (rstn_i = '0') then
+  350 |       sample_en   <= '0';
+  351 |       sample_cnt  <= (others => '0');
+  352 |       sample_sreg <= (others => '0');
+  353 |     elsif rising_edge(clk_i) then
+  354 |       sample_en <= enable_i;
+  355 |       if (sample_en = '0') or (sample_cnt(sample_cnt'left) = '1') then
+  356 |         sample_cnt  <= (others => '0');
+  357 |         sample_sreg <= (others => '0');
+  358 |       elsif (debias_valid = '1') then
+  359 |         sample_cnt  <= std_ulogic_vector(unsigned(sample_cnt) + 1);
+  360 |         sample_sreg <= sample_sreg(6 downto 0) & (sample_sreg(7) xor debias_data);
+  361 |       end if;
+  362 |     end if;
+  363 |   end process sampling_control;
+  366 |   data_o  <= sample_sreg;
+  367 |   valid_o <= sample_cnt(sample_cnt'left);
+  369 | end neoTRNG_rtl;
+  377 | library ieee;
+  378 | use ieee.std_logic_1164.all;
+
+  380 | entity neoTRNG_cell is
+  381 |   generic (
+  382 |     NUM_INV  : natural range 3 to 999 := 3;
+  383 |     SIM_MODE : boolean := false
+  384 |   );
+  385 |   port (
+  386 |     clk_i  : in  std_ulogic;
+  387 |     rstn_i : in  std_ulogic;
+  388 |     en_i   : in  std_ulogic;
+  389 |     en_o   : out std_ulogic;
+  390 |     rnd_o  : out std_ulogic
+  391 |   );
+  392 | end neoTRNG_cell;
+
+  394 | architecture neoTRNG_cell_rtl of neoTRNG_cell is
+  396 |   signal sreg    : std_ulogic_vector(NUM_INV-1 downto 0);
+  397 |   signal latch   : std_ulogic_vector(NUM_INV-1 downto 0);
+  398 |   signal inv_in  : std_ulogic_vector(NUM_INV-1 downto 0);
+  399 |   signal inv_out : std_ulogic_vector(NUM_INV-1 downto 0);
+  400 |   signal sync    : std_ulogic_vector(1 downto 0);
+  402 | begin
+  411 |   en_shift_reg: process(rstn_i, clk_i)
+  412 |   begin
+  413 |     if (rstn_i = '0') then
+  414 |       sreg <= (others => '0');
+  415 |     elsif rising_edge(clk_i) then
+  416 |       sreg <= sreg(sreg'left-1 downto 0) & en_i;
+  417 |     end if;
+  418 |   end process en_shift_reg;
+  421 |   en_o <= sreg(sreg'left);
+  431 |   ring_osc_gen:
+  432 |   for i in 0 to NUM_INV-1 generate
+  435 |     latch(i) <= '0' when (en_i = '0') else latch(i) when (sreg(i) = '0') else inv_out(i);
+  438 |     inverter_phy:
+  439 |     if not SIM_MODE generate
+  440 |       inv_out(i) <= not inv_in(i);
+  441 |     end generate;
+  444 |     inverter_sim:
+  445 |     if SIM_MODE generate
+  446 |       inverter_sim_ff: process(clk_i)
+  447 |       begin
+  448 |         if rising_edge(clk_i) then
+  449 |           inv_out(i) <= not inv_in(i);
+  450 |         end if;
+  451 |       end process inverter_sim_ff;
+  452 |     end generate;
+  454 |   end generate;
+  457 |   inv_in(0) <= latch(NUM_INV-1);
+  458 |   inv_in(NUM_INV-1 downto 1) <= latch(NUM_INV-2 downto 0);
+  465 |   synchronizer: process(rstn_i, clk_i)
+  466 |   begin
+  467 |     if (rstn_i = '0') then
+  468 |       sync <= (others => '0');
+  469 |     elsif rising_edge(clk_i) then
+  470 |       sync <= sync(0) & latch(latch'left);
+  471 |     end if;
+  472 |   end process synchronizer;
+  475 |   rnd_o <= sync(1);
+  477 | end neoTRNG_cell_rtl;
+
+=== RELATIONSHIP MAP: ELEMENTS AND RECORDS ===
+PORT {"name":"clk_i","entity":"neorv32_trng","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25},{"id":2,"line":90},{"id":3,"line":96},{"id":4,"line":135},{"id":5,"line":155}]}
+    {"connections":[{"at":4,"instance":"neoTRNG_inst","formal":"clk_i","mode":"in","lines":[135]},{"at":5,"instance":"rnd_pool_fifo_inst","formal":"clk_i","mode":"in","lines":[155]}]}
+    {"type":"SEQUENCES","at":[3],"lines":[96],"targets":["bus_rsp_o.ack","bus_rsp_o.data","bus_rsp_o.err","enable","fifo_clr"]}
+PORT {"name":"rstn_i","entity":"neorv32_trng","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":26},{"id":2,"line":90},{"id":3,"line":92},{"id":4,"line":136},{"id":5,"line":156}]}
+    {"connections":[{"at":4,"instance":"neoTRNG_inst","formal":"rstn_i","mode":"in","lines":[136]},{"at":5,"instance":"rnd_pool_fifo_inst","formal":"rstn_i","mode":"in","lines":[156]}]}
+    {"type":"RESETS","at":[3],"lines":[92],"targets":["bus_rsp_o","enable","fifo_clr"]}
+PORT {"name":"bus_req_i","entity":"neorv32_trng","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":27},{"id":2,"line":98},{"id":3,"line":103},{"id":4,"line":104},{"id":5,"line":105},{"id":6,"line":106},{"id":7,"line":108},{"id":8,"line":171},{"id":9,"line":171},{"id":10,"line":171}]}
+PORT {"name":"bus_req_i.addr","entity":"neorv32_trng","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":27},{"id":2,"line":108},{"id":3,"line":171}]}
+    {"type":"GATES","at":[2],"guard":"bus_req_i.addr(2) = '0' | not (bus_req_i.addr(2) = '0')","lines":[108],"targets":["bus_rsp_o.data"]}
+    {"type":"GATES","at":[3],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(2) = '1')","lines":[171],"targets":["fifo.re"]}
+PORT {"name":"bus_req_i.data","entity":"neorv32_trng","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":27},{"id":2,"line":105},{"id":3,"line":106}]}
+    {"type":"SOURCES","at":[2],"lines":[105],"targets":["enable"]}
+    {"type":"SOURCES","at":[3],"lines":[106],"targets":["fifo_clr"]}
+PORT {"name":"bus_req_i.ben","entity":"neorv32_trng","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":27}]}
+PORT {"name":"bus_req_i.stb","entity":"neorv32_trng","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":27},{"id":2,"line":98},{"id":3,"line":103},{"id":4,"line":171}]}
+    {"type":"GATES","at":[3],"guard":"bus_req_i.stb = '1'","lines":[103],"targets":["bus_rsp_o.data","enable","fifo_clr"]}
+    {"type":"GATES","at":[4],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(2) = '1')","lines":[171],"targets":["fifo.re"]}
+    {"type":"CARRIES","at":[2],"lines":[98],"targets":["bus_rsp_o.ack"]}
+PORT {"name":"bus_req_i.rw","entity":"neorv32_trng","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":27},{"id":2,"line":104},{"id":3,"line":171}]}
+    {"type":"GATES","at":[2],"guard":"not (bus_req_i.rw = '1')","lines":[104],"targets":["bus_rsp_o.data"]}
+    {"type":"GATES","at":[2],"guard":"bus_req_i.rw = '1'","lines":[104],"targets":["enable","fifo_clr"]}
+    {"type":"GATES","at":[3],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(2) = '1')","lines":[171],"targets":["fifo.re"]}
+PORT {"name":"bus_req_i.src","entity":"neorv32_trng","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":27}]}
+PORT {"name":"bus_req_i.priv","entity":"neorv32_trng","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":27}]}
+PORT {"name":"bus_req_i.debug","entity":"neorv32_trng","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":27}]}
+PORT {"name":"bus_req_i.amo","entity":"neorv32_trng","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":27}]}
+PORT {"name":"bus_req_i.amoop","entity":"neorv32_trng","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":27}]}
+PORT {"name":"bus_req_i.lock","entity":"neorv32_trng","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":27}]}
+PORT {"name":"bus_req_i.fence","entity":"neorv32_trng","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":27}]}
+PORT {"name":"bus_rsp_o","entity":"neorv32_trng","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":28},{"id":2,"line":93},{"id":3,"line":98},{"id":4,"line":99},{"id":5,"line":100},{"id":6,"line":109},{"id":7,"line":110},{"id":8,"line":111},{"id":9,"line":112},{"id":10,"line":115},{"id":11,"line":117}]}
+    {"constant_drivers":[{"at":2,"value":"rsp_terminate_c","lines":[93]}]}
+    {"type":"RESET_BY","at":[2],"lines":[93],"targets":["rstn_i"]}
+PORT {"name":"bus_rsp_o.ack","entity":"neorv32_trng","handling":["ORIGINATES"],"boundary":{"mode":"out","drive":"driven"},"storage":"edge"}
+    {"occurrences":[{"id":1,"line":28},{"id":2,"line":98}]}
+    {"type":"CLOCKED_BY","at":[2],"lines":[98],"targets":["clk_i"]}
+    {"type":"COPIES","at":[2],"lines":[98],"targets":["bus_req_i.stb"]}
+PORT {"name":"bus_rsp_o.err","entity":"neorv32_trng","handling":["ORIGINATES"],"boundary":{"mode":"out","drive":"driven"},"storage":"edge"}
+    {"occurrences":[{"id":1,"line":28},{"id":2,"line":99}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[99]}]}
+    {"type":"CLOCKED_BY","at":[2],"lines":[99],"targets":["clk_i"]}
+PORT {"name":"bus_rsp_o.data","entity":"neorv32_trng","handling":["ORIGINATES"],"boundary":{"mode":"out","drive":"driven"},"storage":"edge"}
+    {"occurrences":[{"id":1,"line":28},{"id":2,"line":100},{"id":3,"line":109},{"id":4,"line":110},{"id":5,"line":111},{"id":6,"line":112},{"id":7,"line":115},{"id":8,"line":117}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[100]},{"at":4,"value":"std_ulogic_vector(to_unsigned(log2_fifo_size_c, 4))","lines":[110]},{"at":5,"value":"bool_to_ulogic_f(is_simulation_c)","lines":[111]},{"at":7,"value":"(others => '0')","lines":[115]}]}
+    {"type":"CLOCKED_BY","at":[2,3,4,5,6,7,8],"lines":[100,109,110,111,112,115,117],"targets":["clk_i"]}
+    {"type":"GATED_BY","at":[3,4,5,6],"guard":"bus_req_i.addr(2) = '0'","lines":[109,110,111,112],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[3,4,5,6,7,8],"guard":"not (bus_req_i.rw = '1')","lines":[109,110,111,112,115,117],"targets":["bus_req_i.rw"]}
+    {"type":"GATED_BY","at":[3,4,5,6,7,8],"guard":"bus_req_i.stb = '1'","lines":[109,110,111,112,115,117],"targets":["bus_req_i.stb"]}
+    {"type":"GATED_BY","at":[7,8],"guard":"not (bus_req_i.addr(2) = '0')","lines":[115,117],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[7],"guard":"fifo.avail = '0'","lines":[115],"targets":["fifo.avail"]}
+    {"type":"GATED_BY","at":[8],"guard":"not (fifo.avail = '0')","lines":[117],"targets":["fifo.avail"]}
+    {"type":"COPIES","at":[3],"lines":[109],"targets":["enable"]}
+    {"type":"COPIES","at":[6],"lines":[112],"targets":["fifo.avail"]}
+    {"type":"COPIES","at":[8],"lines":[117],"targets":["fifo.rdata"]}
+PORT {"name":"clk_i","entity":"neoTRNG","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":235},{"id":2,"line":302},{"id":3,"line":328},{"id":4,"line":333},{"id":5,"line":347},{"id":6,"line":353}]}
+    {"connections":[{"at":2,"instance":"neoTRNG_cell_inst","formal":"clk_i","mode":"in","lines":[302]}]}
+    {"type":"SEQUENCES","at":[4],"lines":[333],"targets":["debias_sreg","debias_state"]}
+    {"type":"SEQUENCES","at":[6],"lines":[353],"targets":["sample_cnt","sample_en","sample_sreg"]}
+PORT {"name":"rstn_i","entity":"neoTRNG","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":236},{"id":2,"line":303},{"id":3,"line":328},{"id":4,"line":330},{"id":5,"line":347},{"id":6,"line":349}]}
+    {"connections":[{"at":2,"instance":"neoTRNG_cell_inst","formal":"rstn_i","mode":"in","lines":[303]}]}
+    {"type":"RESETS","at":[4],"lines":[330],"targets":["debias_sreg","debias_state"]}
+    {"type":"RESETS","at":[6],"lines":[349],"targets":["sample_cnt","sample_en","sample_sreg"]}
+PORT {"name":"enable_i","entity":"neoTRNG","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":237},{"id":2,"line":354}]}
+    {"type":"CARRIES","at":[2],"lines":[354],"targets":["sample_en"]}
+PORT {"name":"valid_o","entity":"neoTRNG","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":238},{"id":2,"line":367}]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[367],"targets":["sample_cnt"]}
+PORT {"name":"data_o","entity":"neoTRNG","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":239},{"id":2,"line":366}]}
+    {"type":"COPIES","at":[2],"lines":[366],"targets":["sample_sreg"]}
+PORT {"name":"clk_i","entity":"neoTRNG_cell","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":386},{"id":2,"line":411},{"id":3,"line":415},{"id":4,"line":446},{"id":5,"line":448},{"id":6,"line":465},{"id":7,"line":469}]}
+    {"type":"SEQUENCES","at":[3],"lines":[415],"targets":["sreg"]}
+    {"type":"SEQUENCES","at":[5],"lines":[448],"targets":["inv_out"]}
+    {"type":"SEQUENCES","at":[7],"lines":[469],"targets":["sync"]}
+PORT {"name":"rstn_i","entity":"neoTRNG_cell","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":387},{"id":2,"line":411},{"id":3,"line":413},{"id":4,"line":465},{"id":5,"line":467}]}
+    {"type":"RESETS","at":[3],"lines":[413],"targets":["sreg"]}
+    {"type":"RESETS","at":[5],"lines":[467],"targets":["sync"]}
+PORT {"name":"en_i","entity":"neoTRNG_cell","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":388},{"id":2,"line":416},{"id":3,"line":435}]}
+    {"type":"GATES","at":[3],"guard":"(en_i = '0')","lines":[435],"targets":["latch"]}
+    {"type":"SOURCES","at":[2],"lines":[416],"targets":["sreg"]}
+PORT {"name":"en_o","entity":"neoTRNG_cell","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":389},{"id":2,"line":421}]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[421],"targets":["sreg"]}
+PORT {"name":"rnd_o","entity":"neoTRNG_cell","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":390},{"id":2,"line":475}]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[475],"targets":["sync"]}
+SIGNAL {"name":"enable","entity":"neorv32_trng","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":71},{"id":2,"line":95},{"id":3,"line":105},{"id":4,"line":109},{"id":5,"line":137},{"id":6,"line":170}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[95]}]}
+    {"connections":[{"at":5,"instance":"neoTRNG_inst","formal":"enable_i","mode":"in","lines":[137]}]}
+    {"type":"GATES","at":[6],"guard":"(enable = '0') or (fifo_clr = '1')","lines":[170],"targets":["fifo.clear"]}
+    {"type":"CARRIES","at":[4],"lines":[109],"targets":["bus_rsp_o.data"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[105],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[95],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.rw = '1'","lines":[105],"targets":["bus_req_i.rw"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.stb = '1'","lines":[105],"targets":["bus_req_i.stb"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[105],"targets":["bus_req_i.data"]}
+SIGNAL {"name":"fifo_clr","entity":"neorv32_trng","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":71},{"id":2,"line":94},{"id":3,"line":101},{"id":4,"line":106},{"id":5,"line":170}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[94]},{"at":3,"value":"'0'","lines":[101]}]}
+    {"type":"GATES","at":[5],"guard":"(enable = '0') or (fifo_clr = '1')","lines":[170],"targets":["fifo.clear"]}
+    {"type":"CLOCKED_BY","at":[3,4],"lines":[101,106],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[94],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[4],"guard":"bus_req_i.rw = '1'","lines":[106],"targets":["bus_req_i.rw"]}
+    {"type":"GATED_BY","at":[4],"guard":"bus_req_i.stb = '1'","lines":[106],"targets":["bus_req_i.stb"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[106],"targets":["bus_req_i.data"]}
+SIGNAL {"name":"fifo","entity":"neorv32_trng","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":112},{"id":3,"line":114},{"id":4,"line":117},{"id":5,"line":138},{"id":6,"line":139},{"id":7,"line":157},{"id":8,"line":158},{"id":9,"line":161},{"id":10,"line":162},{"id":11,"line":163},{"id":12,"line":165},{"id":13,"line":166},{"id":14,"line":167},{"id":15,"line":170},{"id":16,"line":171}]}
+SIGNAL {"name":"fifo.we","entity":"neorv32_trng","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":138},{"id":3,"line":162}]}
+    {"connections":[{"at":2,"instance":"neoTRNG_inst","formal":"valid_o","mode":"out","lines":[138]},{"at":3,"instance":"rnd_pool_fifo_inst","formal":"we_i","mode":"in","lines":[162]}]}
+SIGNAL {"name":"fifo.re","entity":"neorv32_trng","kind":"signal","handling":["ORIGINATES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":165},{"id":3,"line":171}]}
+    {"connections":[{"at":2,"instance":"rnd_pool_fifo_inst","formal":"re_i","mode":"in","lines":[165]}]}
+    {"type":"GATED_BY","at":[3],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(2) = '1')","lines":[171],"targets":["bus_req_i.addr","bus_req_i.rw","bus_req_i.stb"]}
+SIGNAL {"name":"fifo.clear","entity":"neorv32_trng","kind":"signal","handling":["ORIGINATES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":157},{"id":3,"line":170}]}
+    {"connections":[{"at":2,"instance":"rnd_pool_fifo_inst","formal":"clear_i","mode":"in","lines":[157]}]}
+    {"type":"GATED_BY","at":[3],"guard":"(enable = '0') or (fifo_clr = '1')","lines":[170],"targets":["enable","fifo_clr"]}
+SIGNAL {"name":"fifo.wdata","entity":"neorv32_trng","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":139},{"id":3,"line":161}]}
+    {"connections":[{"at":2,"instance":"neoTRNG_inst","formal":"data_o","mode":"out","lines":[139]},{"at":3,"instance":"rnd_pool_fifo_inst","formal":"wdata_i","mode":"in","lines":[161]}]}
+SIGNAL {"name":"fifo.rdata","entity":"neorv32_trng","kind":"signal","handling":["CONSUMES"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":117},{"id":3,"line":166}]}
+    {"connections":[{"at":3,"instance":"rnd_pool_fifo_inst","formal":"rdata_o","mode":"out","lines":[166]}]}
+    {"type":"CARRIES","at":[2],"lines":[117],"targets":["bus_rsp_o.data"]}
+SIGNAL {"name":"fifo.avail","entity":"neorv32_trng","kind":"signal","handling":["CONSUMES"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":112},{"id":3,"line":114},{"id":4,"line":167}]}
+    {"connections":[{"at":4,"instance":"rnd_pool_fifo_inst","formal":"avail_o","mode":"out","lines":[167]}]}
+    {"type":"GATES","at":[3],"guard":"fifo.avail = '0' | not (fifo.avail = '0')","lines":[114],"targets":["bus_rsp_o.data"]}
+    {"type":"CARRIES","at":[2],"lines":[112],"targets":["bus_rsp_o.data"]}
+SIGNAL {"name":"fifo.half","entity":"neorv32_trng","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":158}]}
+    {"connections":[{"at":2,"instance":"rnd_pool_fifo_inst","formal":"half_o","mode":"out","lines":[158]}]}
+SIGNAL {"name":"fifo.free","entity":"neorv32_trng","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":163}]}
+    {"connections":[{"at":2,"instance":"rnd_pool_fifo_inst","formal":"free_o","mode":"out","lines":[163]}]}
+SIGNAL {"name":"cell_en_in","entity":"neoTRNG","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":261},{"id":2,"line":304},{"id":3,"line":311},{"id":4,"line":312}]}
+    {"connections":[{"at":2,"instance":"neoTRNG_cell_inst","formal":"en_i","mode":"in","lines":[304]}]}
+    {"type":"COPIES","at":[3],"lines":[311],"targets":["sample_en"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[312],"targets":["cell_en_out"]}
+SIGNAL {"name":"cell_en_out","entity":"neoTRNG","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":262},{"id":2,"line":305},{"id":3,"line":312},{"id":4,"line":336},{"id":5,"line":336}]}
+    {"connections":[{"at":2,"instance":"neoTRNG_cell_inst","formal":"en_o","mode":"out","lines":[305]}]}
+    {"type":"GATES","at":[4],"guard":"(not debias_state) and cell_en_out(cell_en_out'left)","lines":[336],"targets":["debias_state"]}
+    {"type":"SOURCES","at":[3],"lines":[312],"targets":["cell_en_in"]}
+SIGNAL {"name":"cell_rnd","entity":"neoTRNG","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":263},{"id":2,"line":306},{"id":3,"line":315},{"id":4,"line":320}]}
+    {"connections":[{"at":2,"instance":"neoTRNG_cell_inst","formal":"rnd_o","mode":"out","lines":[306]}]}
+    {"type":"SOURCES","at":[4],"lines":[320],"targets":["cell_sum"]}
+SIGNAL {"name":"cell_sum","entity":"neoTRNG","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":264},{"id":2,"line":322},{"id":3,"line":334}]}
+    {"type":"SOURCES","at":[3],"lines":[334],"targets":["debias_sreg"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[322],"targets":["cell_rnd"]}
+SIGNAL {"name":"debias_sreg","entity":"neoTRNG","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":267},{"id":2,"line":331},{"id":3,"line":334},{"id":4,"line":334},{"id":5,"line":341},{"id":6,"line":341},{"id":7,"line":342}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[331]}]}
+    {"type":"SOURCES","at":[4],"lines":[334],"targets":["debias_sreg"]}
+    {"type":"SOURCES","at":[5,6],"lines":[341],"targets":["debias_valid"]}
+    {"type":"SOURCES","at":[7],"lines":[342],"targets":["debias_data"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[334],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[331],"targets":["rstn_i"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[334],"targets":["cell_sum","debias_sreg"]}
+SIGNAL {"name":"debias_state","entity":"neoTRNG","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":268},{"id":2,"line":332},{"id":3,"line":336},{"id":4,"line":336},{"id":5,"line":341}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[332]}]}
+    {"type":"GATES","at":[4],"guard":"(not debias_state) and cell_en_out(cell_en_out'left)","lines":[336],"targets":["debias_state"]}
+    {"type":"GATES","at":[5],"guard":"debias_state and (debias_sreg(1) xor debias_sreg(0))","lines":[341],"targets":["debias_valid"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[336],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[332],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"(not debias_state) and cell_en_out(cell_en_out'left)","lines":[336],"targets":["cell_en_out","debias_state"]}
+SIGNAL {"name":"debias_valid","entity":"neoTRNG","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":269},{"id":2,"line":341},{"id":3,"line":358}]}
+    {"type":"GATES","at":[3],"guard":"debias_valid = '1'","lines":[358],"targets":["sample_cnt","sample_sreg"]}
+    {"type":"GATED_BY","at":[2],"guard":"debias_state and (debias_sreg(1) xor debias_sreg(0))","lines":[341],"targets":["debias_state"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[341],"targets":["debias_sreg"]}
+SIGNAL {"name":"debias_data","entity":"neoTRNG","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":270},{"id":2,"line":342},{"id":3,"line":360}]}
+    {"type":"SOURCES","at":[3],"lines":[360],"targets":["sample_sreg"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[342],"targets":["debias_sreg"]}
+SIGNAL {"name":"sample_en","entity":"neoTRNG","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":273},{"id":2,"line":311},{"id":3,"line":350},{"id":4,"line":354},{"id":5,"line":355}]}
+    {"constant_drivers":[{"at":3,"value":"'0'","lines":[350]}]}
+    {"type":"GATES","at":[5],"guard":"(sample_en = '0') or (sample_cnt(sample_cnt'left) = '1') | not ((sample_en = '0') or (sample_cnt(sample_cnt'left) = '1'))","lines":[355],"targets":["sample_cnt","sample_sreg"]}
+    {"type":"CARRIES","at":[2],"lines":[311],"targets":["cell_en_in"]}
+    {"type":"CLOCKED_BY","at":[4],"lines":[354],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[3],"lines":[350],"targets":["rstn_i"]}
+    {"type":"COPIES","at":[4],"lines":[354],"targets":["enable_i"]}
+SIGNAL {"name":"sample_sreg","entity":"neoTRNG","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":274},{"id":2,"line":352},{"id":3,"line":357},{"id":4,"line":360},{"id":5,"line":360},{"id":6,"line":360},{"id":7,"line":366}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[352]},{"at":3,"value":"(others => '0')","lines":[357]}]}
+    {"type":"CARRIES","at":[7],"lines":[366],"targets":["data_o"]}
+    {"type":"SOURCES","at":[5,6],"lines":[360],"targets":["sample_sreg"]}
+    {"type":"CLOCKED_BY","at":[3,4],"lines":[357,360],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[352],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"(sample_en = '0') or (sample_cnt(sample_cnt'left) = '1')","lines":[357],"targets":["sample_cnt","sample_en"]}
+    {"type":"GATED_BY","at":[4],"guard":"debias_valid = '1'","lines":[360],"targets":["debias_valid"]}
+    {"type":"GATED_BY","at":[4],"guard":"not ((sample_en = '0') or (sample_cnt(sample_cnt'left) = '1'))","lines":[360],"targets":["sample_cnt","sample_en"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[360],"targets":["debias_data","sample_sreg"]}
+SIGNAL {"name":"sample_cnt","entity":"neoTRNG","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":275},{"id":2,"line":351},{"id":3,"line":355},{"id":4,"line":355},{"id":5,"line":356},{"id":6,"line":359},{"id":7,"line":359},{"id":8,"line":367},{"id":9,"line":367}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[351]},{"at":5,"value":"(others => '0')","lines":[356]}]}
+    {"type":"GATES","at":[3],"guard":"(sample_en = '0') or (sample_cnt(sample_cnt'left) = '1') | not ((sample_en = '0') or (sample_cnt(sample_cnt'left) = '1'))","lines":[355],"targets":["sample_cnt","sample_sreg"]}
+    {"type":"SOURCES","at":[7],"lines":[359],"targets":["sample_cnt"]}
+    {"type":"SOURCES","at":[8],"lines":[367],"targets":["valid_o"]}
+    {"type":"CLOCKED_BY","at":[5,6],"lines":[356,359],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[351],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[5],"guard":"(sample_en = '0') or (sample_cnt(sample_cnt'left) = '1')","lines":[356],"targets":["sample_cnt","sample_en"]}
+    {"type":"GATED_BY","at":[6],"guard":"debias_valid = '1'","lines":[359],"targets":["debias_valid"]}
+    {"type":"GATED_BY","at":[6],"guard":"not ((sample_en = '0') or (sample_cnt(sample_cnt'left) = '1'))","lines":[359],"targets":["sample_cnt","sample_en"]}
+    {"type":"DERIVES_FROM","at":[6],"lines":[359],"targets":["sample_cnt"]}
+SIGNAL {"name":"sreg","entity":"neoTRNG_cell","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":396},{"id":2,"line":414},{"id":3,"line":416},{"id":4,"line":416},{"id":5,"line":416},{"id":6,"line":421},{"id":7,"line":421},{"id":8,"line":435}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[414]}]}
+    {"type":"GATES","at":[8],"guard":"(sreg(i) = '0')","lines":[435],"targets":["latch"]}
+    {"type":"SOURCES","at":[4],"lines":[416],"targets":["sreg"]}
+    {"type":"SOURCES","at":[6],"lines":[421],"targets":["en_o"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[416],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[414],"targets":["rstn_i"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[416],"targets":["en_i","sreg"]}
+SIGNAL {"name":"latch","entity":"neoTRNG_cell","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":397},{"id":2,"line":435},{"id":3,"line":435},{"id":4,"line":457},{"id":5,"line":458},{"id":6,"line":470},{"id":7,"line":470}]}
+    {"type":"SOURCES","at":[3],"lines":[435],"targets":["latch"]}
+    {"type":"SOURCES","at":[4,5],"lines":[457,458],"targets":["inv_in"]}
+    {"type":"SOURCES","at":[6],"lines":[470],"targets":["sync"]}
+    {"type":"GATED_BY","at":[2],"guard":"(en_i = '0')","lines":[435],"targets":["en_i"]}
+    {"type":"GATED_BY","at":[2],"guard":"(sreg(i) = '0')","lines":[435],"targets":["sreg"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[435],"targets":["inv_out","latch"]}
+SIGNAL {"name":"inv_in","entity":"neoTRNG_cell","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":398},{"id":2,"line":440},{"id":3,"line":449},{"id":4,"line":457},{"id":5,"line":458}]}
+    {"type":"SOURCES","at":[2,3],"lines":[440,449],"targets":["inv_out"]}
+    {"type":"DERIVES_FROM","at":[4,5],"lines":[457,458],"targets":["latch"]}
+SIGNAL {"name":"inv_out","entity":"neoTRNG_cell","kind":"register","storage":"mixed"}
+    {"occurrences":[{"id":1,"line":399},{"id":2,"line":435},{"id":3,"line":440},{"id":4,"line":449}]}
+    {"configuration":[{"condition":"[generic] SIM_MODE","at":[4],"lines":[449]},{"condition":"[generic] not SIM_MODE","at":[3],"lines":[440]}]}
+    {"type":"SOURCES","at":[2],"lines":[435],"targets":["latch"]}
+    {"type":"CLOCKED_BY","at":[4],"lines":[449],"targets":["clk_i"]}
+    {"type":"DERIVES_FROM","at":[3,4],"lines":[440,449],"targets":["inv_in"]}
+SIGNAL {"name":"sync","entity":"neoTRNG_cell","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":400},{"id":2,"line":468},{"id":3,"line":470},{"id":4,"line":470},{"id":5,"line":475}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[468]}]}
+    {"type":"SOURCES","at":[4],"lines":[470],"targets":["sync"]}
+    {"type":"SOURCES","at":[5],"lines":[475],"targets":["rnd_o"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[470],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[468],"targets":["rstn_i"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[470],"targets":["latch","sync"]}
+
+=== RELATIONSHIP MAP: FLOW GRAPH (computed by a program from the records above) ===
+MAP CHECK {"elements":52,"driving records":58,"receiving records":76,"driving without receiving":0,"receiving without driving":18}
+    {"receiving without driving":["bus_rsp_o RESET_BY rstn_i","bus_rsp_o.ack CLOCKED_BY clk_i","bus_rsp_o.data CLOCKED_BY clk_i","bus_rsp_o.err CLOCKED_BY clk_i","debias_sreg CLOCKED_BY clk_i","debias_sreg RESET_BY rstn_i","debias_state CLOCKED_BY clk_i","debias_state RESET_BY rstn_i","enable CLOCKED_BY clk_i","enable RESET_BY rstn_i","fifo_clr CLOCKED_BY clk_i","fifo_clr RESET_BY rstn_i","sample_cnt CLOCKED_BY clk_i","sample_cnt RESET_BY rstn_i","sample_en CLOCKED_BY clk_i","sample_en RESET_BY rstn_i","sample_sreg CLOCKED_BY clk_i","sample_sreg RESET_BY rstn_i"]}
+    {"clock or reset (drive SEQUENCES / RESETS)":["clk_i","rstn_i"]}
+    {"whole records (their fields carry the records)":["bus_req_i","bus_rsp_o","fifo"]}
+    {"self-updating (X is computed from X: counters, state registers)":["debias_sreg","latch","sample_cnt","sample_sreg","sreg","sync"]}
+PATH {"from":"bus_req_i.data","source":"input"}
+    {"stores":["bus_rsp_o.data","enable","fifo_clr"]}
+    {"exits":["bus_rsp_o.data"]}
+    {"sub-block":["neoTRNG_inst.enable_i"]}
+    {"influence":["bus_req_i.addr","bus_req_i.rw","bus_req_i.stb","fifo.avail"]}
+PATH {"from":"bus_req_i.stb","source":"input"}
+    {"stores":["bus_rsp_o.ack"]}
+    {"exits":["bus_rsp_o.ack"]}
+PATH {"from":"en_i","source":"input"}
+    {"stores":["sreg"]}
+    {"exits":["en_o"]}
+PATH {"from":"enable_i","source":"input"}
+    {"stores":["sample_en"]}
+    {"sub-block":["neoTRNG_cell_inst.en_i"]}
+PATH {"from":"sample_cnt","source":"constant-valued"}
+    {"exits":["valid_o"]}
+    {"influence":["debias_valid","sample_en"]}
+CONTROL-ONLY {"from":"bus_req_i.addr","source":"input","gates or selects":["bus_rsp_o.data","fifo.re"]}
+CONTROL-ONLY {"from":"bus_req_i.rw","source":"input","gates or selects":["bus_rsp_o.data","enable","fifo.re","fifo_clr"]}
+CONTROL-ONLY {"from":"debias_state","source":"constant-valued","gates or selects":["debias_state","debias_valid"]}
+    {"no local use (no relationship, connection or constant driver)":["bus_req_i.amo","bus_req_i.amoop","bus_req_i.ben","bus_req_i.debug","bus_req_i.fence","bus_req_i.lock","bus_req_i.priv","bus_req_i.src"]}
+    {"not reached from an input or constant-valued element":["cell_en_out","cell_rnd","cell_sum","data_o","debias_data","debias_valid","fifo.avail","fifo.clear","fifo.free","fifo.half","fifo.rdata","fifo.re","fifo.wdata","fifo.we","inv_in","inv_out","rnd_o"]}
+
+Identify the primary security assets for 'neorv32_trng' and return the JSON object per the contract.

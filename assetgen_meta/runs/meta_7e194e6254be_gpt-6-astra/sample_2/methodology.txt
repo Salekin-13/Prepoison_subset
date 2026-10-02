@@ -1,0 +1,225 @@
+1. Information
+
+The executor distinguishes the three information categories defined below. Only explicit and RTL-derived information may be used to classify an asset. External/contextual information is never silently converted into an RTL fact. If the security relevance of an element depends on unavailable external information, that dependency is treated as Context-dependent, not assumed. The analysis answers, in order: what is explicitly present in the RTL; what can be logically established from it; what remains unknown because it needs external context.
+
+The input is only the RTL of one hardware IP module, with all comments removed. The RTL may declare more than one entity. The RTL is the sole authoritative source. Comments are not an evidence source.
+
+Maintain internal working records that distinguish:
+- Observed declarations and behavior.
+- Relationships logically derived from those observations.
+- Unresolved meanings, dependencies, and external assumptions.
+
+These working records support the analysis but are not returned. The final reasoning fields provide concise evidence summaries, not private chain-of-thought.
+
+2. Observation
+
+The executor first builds the closed set, recording for each element its exact declared name and the entity that declares it. Expressions, assignments, operators, processes, functions, procedures, state transitions, conditions, and similar constructs are not assets; they are evidence about declared elements. The executor derives relationships from the RTL before classifying anything, and distinguishes a value's origin or realization point from the intermediate elements it later travels through.
+
+Build a declaration inventory across every entity in the supplied RTL. Record element kind, direction where applicable, type, width where resolvable, record structure, declaration ownership, and enclosing scope. Track scopes internally without adding hierarchy or instance prefixes to reported names. Fields are candidates only for internal record signals. Array indices, slices, literals, type names, constants, parameters, enumeration literals, and expression results are not additional candidates unless they independently satisfy the closed-set definition.
+
+Derive relationships using:
+- Data flow: assignments, operand-to-result dependencies, bit and field mappings, transformations, readback paths, and port connections.
+- Control flow: conditions, selection predicates, enables, state-dependent behavior, and the declared elements affected by each decision.
+- State analysis: storage, initialization, reset effects, update conditions, retained values, and state transitions.
+- Dependency analysis: which values determine other values or decisions, and which elements merely influence their production.
+- Structural analysis: entity boundaries, instantiated sub-blocks, internal record connections, and evidenced complete-transaction transport.
+
+Use procedural ordering and language semantics when resolving drivers and updates. Distinguish registered values from combinational values, value transformations from identity propagation, and computed decisions from the controls that merely enable their evaluation.
+
+A syntactic operator does not by itself establish an asset computation. Formatting, packing, routing, and gating can preserve the same value rather than realize a new concept. Conversely, a declared result of a comparison, selection, or transformation can realize a distinct decision or value when its meaning is established by the flow.
+
+Analyze instantiated implementations only when their RTL is supplied. Otherwise, record connections and locally observable behavior without inventing sub-block internals. Unresolved types, parameters, elaboration choices, or drivers remain explicit limitations.
+
+The output of observation is an internal relationship model linking declared elements to values, decisions, states, computations, storage, conditions, transport paths, entity boundaries, and outputs. No element is labeled an asset at this stage.
+
+3. Use-case flows
+
+Before identifying conceptual assets, the executor derives the module's use-case flows from the RTL alone.
+
+Recognize flows by following implemented operations from their enabling condition or initiating input through state updates or computations to an observable result, status, event, retained state, or output. Include continuous computations and autonomous state behavior; a flow need not have a named command or explicit start signal.
+
+Describe each flow internally by:
+- Its operation, using behavior-based language.
+- Its initiating or enabling conditions, if present.
+- The values and states it consumes.
+- The computations, decisions, and state changes it implements.
+- Its resulting values, events, retained states, and output boundaries.
+- Any RTL-established completion, retention, visibility, or conditional-progress property.
+- The relationships supporting the description and any unresolved boundary dependencies.
+
+Do not infer software procedures, deployment purposes, or transaction sequences beyond those implemented in the RTL. Separate independently evidenced operations, while retaining their shared data and state dependencies. Flow descriptions provide the basis for conceptual asset identification rather than serving as renamed lists of signals.
+
+4. External information
+
+Conclusions requiring unavailable system architecture, application purpose, designer intent, software behavior, deployment conditions, authorization policy, threat model, or outside use of a value are external/contextual.
+
+Do not assume:
+- A value is secret because of its name, width, or familiar computational pattern.
+- A configuration is sensitive merely because it is programmable.
+- A control signal is security-critical merely because it affects execution.
+- A peer eventually responds, an input is trustworthy, or an external consumer interprets an output in a particular way.
+- An unprovided implementation has a customary function.
+- A suspicious implementation is exploitable or that a particular attacker can reach an element.
+
+Record the exact missing premise internally. If the RTL identifies the meaning but security significance requires that premise, use Context-dependent. If the RTL cannot establish the meaning or the relevant property, use Insufficient evidence.
+
+Asset identification is separate from vulnerability discovery, exploitability analysis, and threat assessment. An abstract confidentiality, integrity, or availability consequence may be described without asserting an attack mechanism, actor capability, or deployment-specific threat.
+
+5. Asset definition
+
+Apply the following definitions. Conceptual assets are identified first, from the use-case flows; their structural references are identified second. The analysis never starts by labeling individual signals as assets. A conceptual asset is reported only when its evidence level is Established.
+
+- Two axes. Assets are classified along two independent axes: abstraction (conceptual vs structural, from IEEE P3164) and dependency (primary vs secondary, from SAIF).
+- Conceptual asset: a piece of data, configuration, or system state (including a decision or event the module computes) that a use-case flow of the IP depends on, and whose confidentiality, integrity, or availability must hold for that flow to be secure. It is defined by what it means, not where it is. It must be identifiable from the RTL as a value the module produces, stores, or uses.
+- Structural asset (structural reference): a declared RTL element (a port, a signal, or a field of an internal record signal) that realizes a conceptual asset: where its value is stored, set, or computed, or the port through which it leaves its entity. An element that only passes the value along, or gates it on the way, carries the asset but is not its structural reference. An input port whose value this entity itself reads, to store it, compute from it, or decide on it, is where that value enters the entity: it is a structural reference of the concept it carries, with realization "sets". Clock, clock-enable and reset inputs, and ports whose record type carries complete bus transactions, are not structural references in this way. One conceptual asset usually has several structural references along its path, and one element can realize several conceptual assets.
+- Primary asset: a primary asset is an element that stores, sets, or computes a security-relevant value or decision, or a port through which such a value leaves its entity. Elements that only pass the value along or gate it between those points are not primary, but secondary assets. An input port whose value this entity itself reads, to store it, compute from it, or decide on it, is where that value is set. At module level, the primary assets are the structural references of the conceptual assets. These are what the executor reports.
+- Secondary asset: an element that only passes a primary asset's value along or gates it between those points, or an internal signal or register that influences a primary asset or could violate its security objective. The executor never reports secondary assets; a later stage finds them from connectivity.
+- Transport: a port or signal whose record type carries complete read or write transactions between this block and an interconnect (address, write data, byte enables, strobe, acknowledge, read data) is transport. Do not report it, whole or by field. Do not use it as the exit of a value that a register holds and software can read back, or as the element that sets a value written into this block. Report the element inside the block that stores or decides the value. A port is a single candidate: name it whole; never report a field of a port.
+- Sub-block connection field: a field of an internal record that only connects this block to an instantiated sub-block, receiving one of its outputs or passing a value unchanged to one of its inputs, is a carrier. Do not report it unless this block tests it in an if, case or when condition, or computes it here from a decision.
+- Use-case flow: an operation the RTL implements, such as configuring the module, starting an operation, computing a result, reporting status, or reading out data.
+- Closed set (candidate universe): the declared ports of every entity in the RTL, the declared internal signals, and the individually identifiable fields of internal record signals. A port is a single candidate; its fields are not candidates. Nothing else can be a structural asset.
+- Evidence levels:
+  Established: the RTL explicitly or logically establishes that the value, state, or decision has a confidentiality, integrity, or availability property that matters to a module operation or flow.
+  Context-dependent: the RTL identifies a meaningful value, state, or decision, but whether its security matters depends on information outside the RTL.
+  Insufficient evidence: the RTL does not provide enough information to establish the conceptual meaning or the security property.
+- Information categories:
+  Explicit information: directly represented in the RTL, including declared ports, signals, fields, types, widths, element names, assignments, state elements, state transitions, and explicit operations or comparisons.
+  RTL-derived information: not stated directly but logically established from the RTL, such as a value being stored in a register, computed from particular inputs, controlling a state transition, propagating to a particular output, or determining another state or value.
+  External/contextual information: requires knowledge beyond the RTL, such as system architecture, application purpose, designer intent, software or firmware behavior, deployment environment, threat model, unstated security requirements, or how a signal is used outside the module.
+
+6. Security relevance
+
+For each flow-derived concept, identify a concrete property established by the RTL and determine whether the concept's protection is necessary to that property:
+- Confidentiality: unauthorized disclosure of the value would violate a property established from the RTL.
+- Integrity: unauthorized modification, corruption, or incorrect setting of the value or decision would violate a property established from the RTL.
+- Availability: preventing the value, state, decision, or event from being produced, maintained, or delivered would violate a property established from the RTL.
+
+Apply these tests specifically:
+- For Confidentiality, identify the RTL-established restriction on visibility or release and explain why disclosure violates it. A name suggesting secrecy, internal storage, or absence of an output connection is not sufficient by itself.
+- For Integrity, identify the actual value relationship, decision predicate, state-update rule, or flow invariant that must remain correct. Explain what the concept represents and which established flow property an incorrect value would violate. Merely observing that a signal influences an output is insufficient.
+- For Availability, identify the production, retention, or delivery obligation implemented by the RTL and the conditions under which it applies. Do not infer unconditional progress from a flow that depends on unavailable external responses or assumptions.
+
+An explicit security mechanism is not required when a concrete flow property and its security objective follow logically from the RTL. Equally, ordinary connectivity or the generic possibility of functional failure is not sufficient to establish every connected element as an asset.
+
+Explicit relevance is directly evidenced by represented behavior that enforces or defines the property. RTL-derived relevance follows from identified relationships and language semantics. Context-dependent relevance requires an unstated premise about why protection matters.
+
+Assess supported objectives internally. Because the output permits a singular "security objective", select the Established objective most directly explained by the concept's evidence chain. If objectives are equally direct, use the schema order: Confidentiality, Integrity, Availability. The reasoning may mention other Established objectives without duplicating the concept solely to enumerate objectives.
+
+7. Evidence sufficiency
+
+Every classification is supported by evidence from the RTL. Evidence is an explicit RTL fact or a conclusion that follows logically from identified RTL relationships; inference is an interpretation the RTL does not establish. A sufficient chain for an Established conceptual asset connects: RTL evidence, then an identifiable value, state, or decision, then its security significance, then its confidentiality, integrity, or availability objective. Element names may support interpretation but are corroborated by RTL behavior when security relevance is not explicit. Conflicting evidence is resolved conservatively; incomplete evidence leads to Context-dependent or Insufficient evidence, never to speculative completion.
+
+For each proposed Established concept, retain an internal evidence record containing:
+- The declarations, assignments, computations, conditions, or state behavior supporting its meaning.
+- The implemented flow that consumes, maintains, produces, or delivers it.
+- The particular property that depends on its protection.
+- The selected objective and the RTL-supported consequence of violating that property.
+- Any conditions limiting the claim.
+
+A conclusion is RTL-derived only when the identified relationships suffice without an external premise. Do not substitute a conventional interpretation of an element name for an implemented property.
+
+Evaluate relevant drivers, branches, reset behavior, update paths, and output paths before claiming an invariant. A property supported only under an explicit condition must be stated conditionally. Resolve apparent contradictions using RTL semantics where possible. If unresolved contradictions undermine the claim, downgrade the evidence level. If a narrower property remains established, use that property without inventing intended behavior.
+
+The final reasoning is a concise evidence summary. It should identify recognizable RTL behavior and the corresponding flow property, rather than assert that an element is “sensitive” or “critical.” Do not fabricate comments, source locations, requirements, or missing implementation details.
+
+8. Uncertainty
+
+The executor uses the three evidence levels defined above, with exactly those names. Uncertainty is never resolved by assuming common hardware-security conventions. Only Established conceptual assets, and their structural references, appear in the output. Context-dependent and Insufficient evidence cases are decided during the analysis and are not reported. Not established is not the same as not present: failing to establish relevance is not evidence that an element is irrelevant.
+
+9. Analysis procedure
+
+The stages run in this order: build the closed set; derive relationships; derive use-case flows; identify conceptual assets; identify their structural references; validate.
+
+The executor starts from the empty output object:
+{"module name": "", "conceptual assets": []}
+
+When it identifies conceptual assets, it fills in "module name" and adds one entry per Established conceptual asset, with "related structural assets" left empty. When it moves on to structural references, it fills in each "related structural assets" list. It then validates the object. This filling happens during the analysis; the response contains only the final, completed object.
+
+Stage: build the closed set.
+- Purpose: establish the only permissible structural candidates and their ownership.
+- Input: all supplied RTL.
+- Operation: inventory the declarations according to Section 2, without asset classification.
+- Output: the closed-set inventory and any unresolved declaration information.
+
+Stage: derive relationships.
+- Purpose: establish implemented behavior and distinguish realization points from propagation.
+- Input: RTL and the closed-set inventory.
+- Operation: perform the data-flow, control-flow, state, dependency, and structural analyses.
+- Output: the relationship model, including known boundaries and unresolved dependencies.
+
+Stage: derive use-case flows.
+- Purpose: organize implemented behavior into operations with identifiable values and properties.
+- Input: the relationship model.
+- Operation: construct the flow descriptions specified in Section 3.
+- Output: RTL-grounded flow descriptions.
+
+Stage: identify conceptual assets.
+- Purpose: determine which flow-dependent values, states, decisions, or events have Established security relevance.
+- Input: flow descriptions and supporting relationships.
+- Operation: apply the definitions, objective tests, and evidence levels. Identify concepts by meaning, not by copying declaration names. Keep distinct meanings separate and unify occurrences of the same evidenced concept across its path.
+- Output: concept entries with security objectives and concise reasoning; structural lists remain empty.
+
+Set "module name" to the exact declared name of the unique top-level entity established by instantiation relationships among the supplied entities. If no unique top-level entity is established, use the exact name of the first entity declaration in source order as a naming convention only. This fallback does not infer a hierarchy or restrict the analysis: the closed set and analysis still cover every supplied entity. Fill the name even if no concept is Established.
+
+Stage: identify structural references.
+- Purpose: locate the primary realization points of already Established concepts.
+- Input: Established concepts, the closed set, and the relationship model.
+- Operation: follow each concept through its storage, setting, computation, and entity-exit points. Evaluate all supported references rather than reporting the intervening path.
+- Output: populated "related structural assets" lists.
+
+Apply the following mapping rules:
+- A non-transport port through which the Established value leaves its entity is an "exit port". Being driven from storage does not make that exit a mere intermediate carrier.
+- An eligible input that the declaring entity itself reads to store, compute from, or decide on the concept is "sets". An input used only to forward an unchanged value does not qualify through this rule. Apply the stated clock, clock-enable, reset, and transaction-record exclusions.
+- A state-holding realization is "stores".
+- A locally derived value or decision is "computes" when the element realizes that concept rather than merely forwarding or gating another value.
+- A genuine defining or setting point not covered above is "sets". An assignment that merely aliases or transports a value does not create a setting point.
+- For an element with multiple supported roles, choose the role that directly explains its reference to this concept; do not add redundant rows solely to enumerate roles. For an outward port, use "exit port"; for an eligible entering input, use "sets".
+- Apply transport exclusion to complete-transaction record types evidenced by the RTL, not indiscriminately to every record, scalar bus-related signal, or wide value. Transport is excluded whole and by field, including readback and write-entry uses.
+- A sub-block connection field is excluded when it only carries a value. Testing it locally in an if, case or when condition, or computing it here from a decision, permits further consideration but does not automatically establish it as primary. Its own concept and realization must still satisfy the definitions. Merely influencing another asset is not enough. This exception does not override transport exclusion.
+- Do not report an aggregate internal record solely because a field realizes the concept. Report the aggregate only when its aggregate value itself realizes that concept.
+- An element may realize distinct Established concepts. Conversely, a concept may have references in different entities. Preserve each declaring entity's exact name.
+- Do not invent a reference when a concept is realized only by constructs outside the closed set or by excluded elements. If no eligible reference exists, retain an empty list and summarize the mapping limitation in the concept's reasoning.
+
+Stage: validate.
+- Purpose: ensure that the completed object contains only evidence-supported concepts and primary structural references.
+- Input: the object and all preceding working records.
+- Operation: perform Section 10 checks and repair unsupported or inconsistent entries.
+- Output: the final schema-conforming JSON object.
+
+10. Validation
+
+Validate both inclusions and coverage:
+- Every concept denotes an RTL-identifiable value, configuration, state, decision, or event needed by an implemented flow.
+- Every concept has Established evidence for its selected objective, with no unstated contextual premise.
+- The reasoning connects RTL behavior, conceptual meaning, flow property, and objective. Conditional claims retain their conditions.
+- Relevant contradictory drivers, paths, states, and reset effects have been considered.
+- Every "asset rtl" is an exact name from the closed set, and every "entity" is the entity that declares it, copied verbatim.
+- Every name is bare: no entity prefix, instance path, synthetic expression, or invented indexed element. A field of an internal record uses its declared record-and-field dot path, without an entity prefix.
+- No field of a port is reported. A port is named whole.
+- No transport element is reported, whole or by field.
+- No carrier is reported as a structural reference. In particular, unchanged sub-block connection fields are excluded unless the specified local-use exception and the general realization requirements both hold.
+- Every realization label is supported by the RTL for the referenced concept. Dependency on a primary asset or influence over it is not itself a realization.
+- The whole-port input and exit rules are applied without confusing entity boundaries with intermediate internal wiring.
+- Internal aggregates, their fields, aliases, and overlapping uses have not produced unsupported or redundant references.
+- All Established concepts and their supported eligible references have been considered. No expected amount of output drives inclusion or exclusion.
+- Empty structural lists reflect a genuine closed-set or exclusion limitation, not unfinished analysis.
+- No Context-dependent or Insufficient evidence cases, secondary-asset lists, vulnerability claims, or external assumptions have leaked into the output.
+- The object has only the schema's keys, actual permitted string values rather than schema alternatives, and valid JSON syntax.
+
+11. Output representation
+
+The executor returns the EXECUTOR OUTPUT SCHEMA below and nothing else.
+
+Return ONE JSON object and nothing else: no markdown, no code fences, no prose. Use the keys exactly as written.
+{"module name": "<the module analysed>",
+ "conceptual assets": [
+   {"concept": "<the conceptual asset identified>",
+    "security objective": "Confidentiality" | "Integrity" | "Availability",
+    "reasoning": "<how it was considered an asset, grounded in the RTL>",
+    "related structural assets": [
+      {"asset rtl": "<exact declared name from the closed set; a field of an internal record signal is written with its dot, as declared. Write the element as its bare declared name, also for a port of another entity in the same file; the entity goes only in the entity field.>",
+       "entity": "<the entity that declares the element, copied verbatim>",
+       "realization": "stores" | "sets" | "computes" | "exit port"}
+    ]}
+ ]}
+If the module has no Established conceptual assets, return {"module name": "<the module analysed>", "conceptual assets": []}.

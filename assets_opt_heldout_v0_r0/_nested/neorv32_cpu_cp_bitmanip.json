@@ -1,0 +1,397 @@
+{
+ "module name": "neorv32_cpu_cp_bitmanip",
+ "module purpose": "neorv32_cpu_cp_bitmanip decodes instruction fields of the ctrl_i record into a one-hot operation command (lines 132-161), captures rs1_i, rs2_i, shamt_i and the less-than bit of cmp_i when ctrl_i.alu_cp_alu is set (lines 187-191), computes the selected result in one cycle or through a serial shifter or a shift-and-XOR product unit sequenced by a three-phase controller (lines 195-223, 230-383), and registers the selected result on res_o with a completion flag on valid_o (lines 461-502).",
+ "use-case flows": [
+  {
+   "flow": "operate",
+   "value": "instruction fields of ctrl_i (ir_opcode, ir_funct12, ir_funct3) decoded into the one-hot operation command cmd, each bit under its build generic",
+   "lines": [132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 146, 147, 150, 151, 152, 153, 156, 157, 158, 161]
+  },
+  {
+   "flow": "start",
+   "value": "acceptance of an issued instruction (valid_cmd) and the start pulse of the serial shifter or the product unit, or immediate completion",
+   "lines": [164, 197, 199, 200, 201, 202, 203, 204, 205, 206, 207]
+  },
+  {
+   "flow": "operate",
+   "value": "source operands, shift amount and less-than flag captured into rs1_reg, rs2_reg, sha_reg and less_reg when ctrl_i.alu_cp_alu is set",
+   "lines": [187, 188, 189, 190, 191]
+  },
+  {
+   "flow": "operate",
+   "value": "shift, rotate, zero count and bit count: serial shift register and counters when not EN_FAST_SHIFT, barrel shifter and combinational counts when EN_FAST_SHIFT",
+   "lines": [241, 242, 243, 244, 245, 247, 249, 250, 251, 252, 253, 255, 257, 258, 259, 266, 267, 268, 274, 275, 276, 278, 281, 282, 284, 298, 301, 304, 305, 307, 310, 313, 314, 317, 318, 319]
+  },
+  {
+   "flow": "operate",
+   "value": "shift-and-XOR product of rs1_reg and rs2_reg accumulated in clmul.res over a counted number of cycles when EN_ZBKC",
+   "lines": [358, 359, 360, 361, 362, 363, 364, 366, 368, 374, 380, 381, 382]
+  },
+  {
+   "flow": "operate",
+   "value": "single-cycle results computed from the captured operands into res_int",
+   "lines": [329, 330, 331, 332, 334, 342, 343, 389, 390, 391, 394, 395, 398, 399, 402, 405, 406, 407, 410, 411, 414, 419, 423, 426, 429, 430, 431, 432, 433, 436, 437, 442, 443, 444, 445, 447, 452, 456]
+  },
+  {
+   "flow": "operate",
+   "value": "controller sequencing through idle, start and busy phases until both multi-cycle units stop or ctrl_i.cpu_trap is set",
+   "lines": [195, 197, 202, 205, 208, 212, 214, 216, 218, 219, 220]
+  },
+  {
+   "flow": "report",
+   "value": "completion flag valid set at the end of an operation and driven on valid_o",
+   "lines": [184, 207, 219, 502]
+  },
+  {
+   "flow": "read out",
+   "value": "result entry of the decoded command passed by res_out and registered on res_o when valid is set",
+   "lines": [461, 462, 463, 464, 465, 466, 467, 468, 469, 470, 471, 472, 473, 474, 475, 476, 477, 478, 479, 480, 490, 491, 492, 493, 494, 495, 496]
+  },
+  {
+   "flow": "reset",
+   "value": "controller phase, operand registers, start and valid flags, shifter and product state and res_o cleared while rstn_i is '0'",
+   "lines": [171, 172, 173, 174, 175, 176, 177, 178, 179, 235, 236, 237, 238, 239, 354, 355, 356, 487, 488]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Decoded operation command -- which bit-manipulation operation the current instruction selects (one-hot cmd)",
+   "security objective": "Integrity",
+   "reasoning": "Each cmd bit is set from instruction fields of ctrl_i under a build generic, for example line 132 tests ctrl_i.ir_opcode(5), ctrl_i.ir_funct12(11 downto 5) and ctrl_i.ir_funct3; lines 133-161 do the same for the other bits. cmd then decides acceptance (`valid_cmd <= '1' when (ctrl_i.alu_cp_alu = '1') and (or_reduce_f(cmd) = '1') else '0';`, line 164), the controller path (lines 200, 203), the shift direction and fill bit (lines 251-252, 266), the iteration bound (line 244), the termination rule (line 274), and which res_int entry res_out passes to res_o (lines 461-480, 492). Integrity is Established: a wrong command makes res_o carry the result of another operation or sends the controller down the wrong path. ctrl_i sets the decision: its fields ir_funct3, ir_funct12 and ir_opcode GATE cmd at line 132 (ctrl_i occurrence 2). ctrl_i is a control record with no read data or acknowledge returned by this block, not a complete-transaction record, so it is named whole. cmd computes the decision (GATED_BY at occurrence 2, line 132). The map lists cmd as not reached from an input because the instruction fields reach it only through GATES records. No line restricts observation, so confidentiality is not established.",
+   "related structural assets": [
+    {
+     "asset rtl": "ctrl_i",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {
+      "type": "GATES",
+      "partner": "cmd"
+     }
+    },
+    {
+     "asset rtl": "cmd",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "computes",
+     "occurrence": 2,
+     "edge": {
+      "type": "GATED_BY",
+      "partner": "ctrl_i.ir_funct3"
+     }
+    }
+   ]
+  },
+  {
+   "concept": "Operation acceptance and start request -- whether an issued instruction is accepted as a bit-manipulation operation, and which multi-cycle unit is started",
+   "security objective": "Integrity",
+   "reasoning": "valid_cmd is the acceptance decision (line 164). In S_IDLE it starts the serial shifter with `shifter.start <= '1';` (line 201, only when not EN_FAST_SHIFT and a shift or count command is set, line 200), the product unit with `clmul.start <= '1';` (line 204, when cmd(op_clmul_c), whose decode requires EN_ZBKC at line 161), or completes at once (line 207). The start pulses load the multi-cycle state (lines 241-249, 358-360) and are cleared every cycle (lines 182-183). Integrity is Established: a spurious or missing acceptance or start makes the unit compute on stale operands, skip the multi-cycle load, or report completion for no operation. ctrl_i sets the decision through ctrl_i.alu_cp_alu, which GATES valid_cmd (ctrl_i occurrence 64, line 164) and also enables operand capture (line 187). valid_cmd computes (GATED_BY ctrl_i.alu_cp_alu, occurrence 2, line 164); shifter.start and clmul.start store the start request (CLOCKED_BY clk_i, occurrence 4, lines 201 and 204).",
+   "related structural assets": [
+    {
+     "asset rtl": "ctrl_i",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "sets",
+     "occurrence": 64,
+     "edge": {
+      "type": "GATES",
+      "partner": "valid_cmd"
+     }
+    },
+    {
+     "asset rtl": "valid_cmd",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "computes",
+     "occurrence": 2,
+     "edge": {
+      "type": "GATED_BY",
+      "partner": "ctrl_i.alu_cp_alu"
+     }
+    },
+    {
+     "asset rtl": "shifter.start",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {
+      "type": "CLOCKED_BY",
+      "partner": "clk_i"
+     }
+    },
+    {
+     "asset rtl": "clmul.start",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {
+      "type": "CLOCKED_BY",
+      "partner": "clk_i"
+     }
+    }
+   ]
+  },
+  {
+   "concept": "Operation sequencing state -- the controller phase (idle, start, busy), the busy decisions of the multi-cycle units, and their iteration bound and count",
+   "security objective": "Integrity",
+   "reasoning": "The controller moves from S_IDLE to S_START on a multi-cycle start (lines 202, 205), from S_START to S_BUSY (line 214), and from S_BUSY back to S_IDLE with valid when `((shifter.run = '0') and (clmul.run = '0')) or (ctrl_i.cpu_trap = '1')` holds (lines 218-220). shifter.run is the serial termination decision: the inverted end bit of shifter.sreg for the zero-count command (lines 276, 278), otherwise '0' when shifter.cnt = shifter.cnt_max (lines 281-284). clmul.run is '1' while clmul.cnt is non-zero (line 374); clmul.cnt is loaded with XLEN at start and decremented while running (lines 359, 362). shifter.cnt_max holds the bound: XLEN for the bit-count command or '0' & shamt_i otherwise (lines 245, 247). Integrity is Established: a corrupted phase, bound or count ends an operation early or late, which changes the delivered result and its completion. Availability is Established under the implemented conditions: the controller leaves S_BUSY and asserts valid only when both run decisions are '0' or ctrl_i.cpu_trap is '1' (line 218); a run decision that never clears holds the unit in S_BUSY. Configuration: the serial shifter logic exists only when not EN_FAST_SHIFT (shifter.run and shifter.cnt_max are tied to '0' at lines 317, 319 otherwise); the product logic exists only when EN_ZBKC (clmul.cnt and clmul.run are tied to zero at lines 380, 382 otherwise). ctrl_state stores (CLOCKED_BY clk_i, occurrence 4, line 202); shifter.run computes (CONSTRAINED_BY shifter.cnt_max, occurrence 6, line 282); clmul.run computes (GATED_BY clmul.cnt, occurrence 4, line 374); shifter.cnt_max and clmul.cnt store (CLOCKED_BY clk_i, occurrence 5, lines 247 and 362); shamt_i sets the bound (SOURCES shifter.cnt_max, occurrence 3, line 247); ctrl_i sets the abort through ctrl_i.cpu_trap, which GATES ctrl_state (ctrl_i occurrence 66, line 218). shifter.cnt also feeds the termination comparison (line 281); it is listed with the computation state.",
+   "related structural assets": [
+    {
+     "asset rtl": "ctrl_state",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {
+      "type": "CLOCKED_BY",
+      "partner": "clk_i"
+     }
+    },
+    {
+     "asset rtl": "shifter.run",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "computes",
+     "occurrence": 6,
+     "edge": {
+      "type": "CONSTRAINED_BY",
+      "partner": "shifter.cnt_max"
+     }
+    },
+    {
+     "asset rtl": "clmul.run",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "computes",
+     "occurrence": 4,
+     "edge": {
+      "type": "GATED_BY",
+      "partner": "clmul.cnt"
+     }
+    },
+    {
+     "asset rtl": "shifter.cnt_max",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "stores",
+     "occurrence": 5,
+     "edge": {
+      "type": "CLOCKED_BY",
+      "partner": "clk_i"
+     }
+    },
+    {
+     "asset rtl": "clmul.cnt",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "stores",
+     "occurrence": 5,
+     "edge": {
+      "type": "CLOCKED_BY",
+      "partner": "clk_i"
+     }
+    },
+    {
+     "asset rtl": "shamt_i",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "sets",
+     "occurrence": 3,
+     "edge": {
+      "type": "SOURCES",
+      "partner": "shifter.cnt_max"
+     }
+    },
+    {
+     "asset rtl": "ctrl_i",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "sets",
+     "occurrence": 66,
+     "edge": {
+      "type": "GATES",
+      "partner": "ctrl_state"
+     }
+    }
+   ]
+  },
+  {
+   "concept": "Result-valid completion event -- the flag that an operation has finished, which loads res_o and is reported on valid_o",
+   "security objective": "Integrity",
+   "reasoning": "valid is cleared every cycle (line 184) and set for an accepted single-cycle command in S_IDLE (line 207) or at the end of S_BUSY (line 219). It decides whether res_o is loaded with the selected result (`if (valid = '1') then`, lines 491-492; otherwise res_o is cleared at line 490) and leaves through `valid_o <= valid;` (line 502). Integrity is Established: a spurious or missing valid makes res_o load or drop a result and makes the completion reported on valid_o disagree with the controller (lines 207, 219). Availability is Established under the implemented conditions: completion is produced when valid_cmd holds for a single-cycle command (lines 199-207) or when both run decisions are '0' or ctrl_i.cpu_trap is '1' (lines 218-219). valid stores (CLOCKED_BY clk_i, occurrence 4, line 207); valid_o is the exit port (COPIES valid, occurrence 2, line 502).",
+   "related structural assets": [
+    {
+     "asset rtl": "valid",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {
+      "type": "CLOCKED_BY",
+      "partner": "clk_i"
+     }
+    },
+    {
+     "asset rtl": "valid_o",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {
+      "type": "COPIES",
+      "partner": "valid"
+     }
+    }
+   ]
+  },
+  {
+   "concept": "Captured operands -- the two source data words, the shift amount and the less-than comparison flag held for the current operation",
+   "security objective": "Integrity",
+   "reasoning": "When ctrl_i.alu_cp_alu is '1' the controller captures `less_reg <= cmp_i(cmp_less_c);`, `rs1_reg <= rs1_i;`, `rs2_reg <= rs2_i;` and `sha_reg <= shamt_i;` (lines 187-191). Every result is computed from them: rs1_reg and rs2_reg in res_int (lines 389-452), adder_res (line 334), the shifter load (lines 243, 301) and the product unit (lines 360, 364); sha_reg in the bit mask (line 343) and the barrel shift amount (line 298); less_reg chooses between rs1_reg and rs2_reg (line 402). Integrity is Established: the values are received across the entity boundary and the result delivered through res_o must be computed from exactly the captured values. rs1_i, rs2_i and shamt_i set the operands by CARRIES into their registers, and cmp_i by SOURCES less_reg (occurrence 2, lines 188-191); the four registers store (CLOCKED_BY clk_i, occurrence 3, lines 188-191). No line restricts observation, so confidentiality is not established.",
+   "related structural assets": [
+    {
+     "asset rtl": "rs1_i",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {
+      "type": "CARRIES",
+      "partner": "rs1_reg"
+     }
+    },
+    {
+     "asset rtl": "rs2_i",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {
+      "type": "CARRIES",
+      "partner": "rs2_reg"
+     }
+    },
+    {
+     "asset rtl": "shamt_i",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {
+      "type": "CARRIES",
+      "partner": "sha_reg"
+     }
+    },
+    {
+     "asset rtl": "cmp_i",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {
+      "type": "SOURCES",
+      "partner": "less_reg"
+     }
+    },
+    {
+     "asset rtl": "rs1_reg",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {
+      "type": "CLOCKED_BY",
+      "partner": "clk_i"
+     }
+    },
+    {
+     "asset rtl": "rs2_reg",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {
+      "type": "CLOCKED_BY",
+      "partner": "clk_i"
+     }
+    },
+    {
+     "asset rtl": "sha_reg",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {
+      "type": "CLOCKED_BY",
+      "partner": "clk_i"
+     }
+    },
+    {
+     "asset rtl": "less_reg",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {
+      "type": "CLOCKED_BY",
+      "partner": "clk_i"
+     }
+    }
+   ]
+  },
+  {
+   "concept": "Operation result -- the bit-manipulation result computed for the decoded command and delivered on res_o",
+   "security objective": "Integrity",
+   "reasoning": "res_int holds one computed result per command: bitwise combinations of rs1_reg and rs2_reg (lines 389-391), a choice between them by less_reg (line 402), sign and zero extension (lines 405-411), byte OR-combine, byte swap and per-byte bit reversal (lines 419, 423, 452), bit clear, extract, invert and set with one_hot_res (lines 429-433), packing and interleaving (lines 436-447), and copies of the shifter, adder and product results (lines 395, 399, 414, 426, 456). res_out passes only the entry whose cmd bit is set (lines 461-480), and res_o is loaded with the OR of the res_out entries when valid is '1' (lines 491-496), otherwise cleared (line 490). Integrity is Established: the consumer outside this entity must receive exactly the result defined by the command and the captured operands (lines 461-496). Availability is Established under the implemented condition that valid is '1' at a rising edge of clk_i (lines 489-491). res_int computes (DERIVES_FROM rs1_reg, occurrence 2, line 389); res_o is the exit port (DERIVES_FROM res_out, occurrence 4, line 492), ahead of its overlapping storage role (CLOCKED_BY at the same occurrence). res_out only gates res_int entries by cmd, and adder_res, one_hot_res, zip_res, unzip_res, bs_level and bs_shift are parts of computations whose results are res_int entries or shifter.sreg, so none is listed.",
+   "related structural assets": [
+    {
+     "asset rtl": "res_int",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "computes",
+     "occurrence": 2,
+     "edge": {
+      "type": "DERIVES_FROM",
+      "partner": "rs1_reg"
+     }
+    },
+    {
+     "asset rtl": "res_o",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "exit port",
+     "occurrence": 4,
+     "edge": {
+      "type": "DERIVES_FROM",
+      "partner": "res_out"
+     }
+    }
+   ]
+  },
+  {
+   "concept": "In-progress multi-cycle computation state -- the shift register, the zero count, the set-bit count and the shift-and-XOR product while an operation runs",
+   "security objective": "Integrity",
+   "reasoning": "When not EN_FAST_SHIFT, a start loads `shifter.sreg <= rs1_reg;` and clears the counters (lines 241-249); while shifter.run is '1' the register shifts in shifter.nxt (lines 253, 255), shifter.cnt increments (line 257) and shifter.bcnt counts the set bits leaving position 0 (lines 258-259). When EN_ZBKC, clmul.res is loaded from rs1_reg (line 360) and, while clmul.run is '1', shifted and XORed with rs2_reg (lines 363-368). These values become results: `res_int(op_rot_c) <= shifter.sreg;` (line 414), shifter.cnt at line 395, shifter.bcnt at line 399 and clmul.res at line 456. Integrity is Established: corrupting the state while the operation runs changes the result delivered on res_o. Configuration: under EN_FAST_SHIFT the three shifter fields are combinational, computed from bs_level and rs1_reg (lines 307, 310, 313-314); under not EN_ZBKC clmul.res is tied to zero (line 381). All four store (CLOCKED_BY clk_i: shifter.sreg occurrence 4 line 253, shifter.cnt occurrence 4 line 257, shifter.bcnt occurrence 4 line 259, clmul.res occurrence 5 line 364). shifter.cnt also drives the termination comparison (line 281).",
+   "related structural assets": [
+    {
+     "asset rtl": "shifter.sreg",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {
+      "type": "CLOCKED_BY",
+      "partner": "clk_i"
+     }
+    },
+    {
+     "asset rtl": "shifter.cnt",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {
+      "type": "CLOCKED_BY",
+      "partner": "clk_i"
+     }
+    },
+    {
+     "asset rtl": "shifter.bcnt",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {
+      "type": "CLOCKED_BY",
+      "partner": "clk_i"
+     }
+    },
+    {
+     "asset rtl": "clmul.res",
+     "entity": "neorv32_cpu_cp_bitmanip",
+     "realization": "stores",
+     "occurrence": 5,
+     "edge": {
+      "type": "CLOCKED_BY",
+      "partner": "clk_i"
+     }
+    }
+   ]
+  }
+ ]
+}

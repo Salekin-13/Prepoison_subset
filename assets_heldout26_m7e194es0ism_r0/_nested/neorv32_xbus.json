@@ -1,0 +1,122 @@
+{
+  "module name": "neorv32_xbus",
+  "conceptual assets": [
+    {
+      "concept": "Outgoing xbus transaction signals (address, write-data, write-enable, byte-select, strobe, cycle, tag) presented to the external interconnect",
+      "security objective": "Integrity",
+      "reasoning": "The architecture drives the external xbus outputs directly from the forwarded request: xbus_adr_o <= bus_req.addr; xbus_dat_o <= bus_req.data; xbus_we_o <= bus_req.rw; xbus_sel_o <= bus_req.ben; xbus_stb_o <= bus_req.stb; xbus_cyc_o <= bus_req.stb or pending; xbus_tag_o(2) <= bus_req.src; xbus_tag_o(1) <= '0'; xbus_tag_o(0) <= bus_req.priv or bus_req.debug. These ports leave the entity to the interconnect; their correctness (integrity) is required so the external transaction matches the implemented request-forwarding flow.",
+      "related structural assets": [
+        {
+          "asset rtl": "xbus_adr_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "xbus_dat_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "xbus_we_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "xbus_sel_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "xbus_stb_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "xbus_cyc_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "xbus_tag_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Pending request state that records an outstanding forwarded request",
+      "security objective": "Integrity",
+      "reasoning": "The arbiter stores and uses pending to control transaction progress: on reset pending <= '0'; when pending = '0' it captures a request (pending <= bus_req.stb); when pending = '1' it is cleared on timeout, xbus_err_i or xbus_ack_i (or on lock release). xbus_cyc_o and the constructed response use pending as a gate. Corruption of pending would violate the implemented arbitration and response flow.",
+      "related structural assets": [
+        {
+          "asset rtl": "pending",
+          "entity": "neorv32_xbus",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Locked arbitration flag recording whether the current request holds a bus lock",
+      "security objective": "Integrity",
+      "reasoning": "The arbiter records lock state: on pending='0' locked <= bus_req.stb and bus_req.lock; when pending='1' the clearing rules depend on locked (if locked='0' clear on ack/err/timeout; if locked='1' clear only on timeout or bus_req.lock = '0'). Integrity of locked preserves the implemented lock-hold semantics controlling request completion.",
+      "related structural assets": [
+        {
+          "asset rtl": "locked",
+          "entity": "neorv32_xbus",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "External xbus response inputs (read data, ack, error) consumed to form the host response and complete requests",
+      "security objective": "Integrity",
+      "reasoning": "The architecture consumes external response signals to produce the host response and to complete pending requests: bus_rsp.data <= xbus_dat_i when (pending = '1') else (others => '0'); bus_rsp.ack <= pending and (timeout or xbus_err_i or xbus_ack_i); bus_rsp.err <= pending and (timeout or xbus_err_i). The arbiter also clears pending when xbus_err_i or xbus_ack_i are asserted. Integrity of xbus_dat_i, xbus_ack_i and xbus_err_i therefore matters for correct response data and completion behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "xbus_dat_i",
+          "entity": "neorv32_xbus",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "xbus_ack_i",
+          "entity": "neorv32_xbus",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "xbus_err_i",
+          "entity": "neorv32_xbus",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Bus transaction timeout state and countdown that enforce completion on timeout",
+      "security objective": "Integrity",
+      "reasoning": "When TIMEOUT_VAL /= 0 the timeout_counter process presets timecnt <= timeout_c while no pending and decrements timecnt while pending; when the count reaches zero the process sets timeout <= '1'. The arbiter clears pending on timeout and bus_rsp uses timeout in ack/err expressions (bus_rsp.ack and bus_rsp.err). Integrity of timeout/timecnt enforces the implemented timeout-based completion behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "timecnt",
+          "entity": "neorv32_xbus",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "timeout",
+          "entity": "neorv32_xbus",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Computed host-response fields (bus_rsp.data, bus_rsp.ack, bus_rsp.err) delivered back to the host",
+      "security objective": "Integrity",
+      "reasoning": "The architecture computes host-response fields: bus_rsp.data <= xbus_dat_i when (pending = '1') else (others => '0'); bus_rsp.ack <= pending and (timeout or xbus_err_i or xbus_ack_i); bus_rsp.err <= pending and (timeout or xbus_err_i). Those fields are forwarded to the host via reg_stage_inst (host_rsp_o => bus_rsp_o, device_rsp_i => bus_rsp). Corruption of these computed response fields would present incorrect data/ack/err to the host. Mapping omitted: the internal signal bus_rsp and the port bus_rsp_o are record-typed transaction signals (transport) and therefore excluded from primary structural reporting.",
+      "related structural assets": []
+    },
+    {
+      "concept": "Host request transaction as presented to this block (host-side request record)",
+      "security objective": "Integrity",
+      "reasoning": "The reg-stage instance connects the host request into this block (port map host_req_i => bus_req_i, device_req_o => bus_req). The arbiter and the xbus outputs read bus_req fields (used throughout the architecture) so integrity of the host request matters to correct forwarded transactions. Mapping omitted: the host request port bus_req_i and the internal bus_req signal are record-typed transaction/transport signals and are excluded from structural reporting.",
+      "related structural assets": []
+    }
+  ]
+}

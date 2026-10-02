@@ -1,0 +1,125 @@
+{
+  "module name": "neorv32_cpu_cp_cfu",
+  "conceptual assets": [
+    {
+      "concept": "Key memory contents used by XTEA (cryptographic key words stored in key_mem)",
+      "security objective": "Integrity",
+      "reasoning": "The RTL implements a CSR write/read and uses those stored words in the XTEA computation: the write process stores CSR writes into key_mem (if (csr_we_i = '1') then key_mem(to_integer(unsigned(csr_addr_i))) <= csr_wdata_i;) and csr_rdata_o is driven from key_mem (csr_rdata_o <= key_mem(to_integer(unsigned(csr_addr_i)))). The encryption datapath reads key_mem to form tmp_z using xtea.sum bits (tmp_z <= key_mem(to_integer(unsigned(xtea.sum(1 downto 0)))) or key_mem(to_integer(unsigned(xtea.sum(12 downto 11))))). Corrupting or incorrectly setting key_mem changes tmp_z and therefore xtea.res, so the integrity of key_mem is established by the RTL flows.",
+      "related structural assets": [
+        {
+          "asset rtl": "key_mem",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr_wdata_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "csr_we_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "csr_addr_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "csr_rdata_o",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "CFU operation control and invocation (inputs that select and trigger XTEA variants)",
+      "security objective": "Integrity",
+      "reasoning": "The RTL uses start and control inputs to decide when and which operation to perform: operand capture and start are gated by start_i and rtype_i (if (start_i = '1') and (rtype_i = r3type_c) then xtea.opa <= rs1_i; xtea.opb <= rs2_i; xtea.done(0) <= '1';). The same funct3_i bits drive different sum and result-update branches inside xtea_core and are used by result_select to choose which xtea.res cases map to result_o/valid_o. Therefore the integrity of these control inputs (start_i, rtype_i, funct3_i) is required for the module to select the intended operation.",
+      "related structural assets": [
+        {
+          "asset rtl": "start_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "rtype_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "funct3_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Operation operands (values captured from rs1_i/rs2_i into internal operand registers)",
+      "security objective": "Integrity",
+      "reasoning": "On a start for r3-type operations the core stores operand inputs into internal registers (if (start_i = '1') and (rtype_i = r3type_c) then xtea.opa <= rs1_i; xtea.opb <= rs2_i;). The combinational tmp_* expressions use xtea.opa/opb to compute tmp_r and ultimately xtea.res. Corruption of rs1_i/rs2_i or of the stored operands would change the computed result, establishing Integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "rs1_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "rs2_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "xtea.opa",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "xtea.opb",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "XTEA internal sum state (xtea.sum) that controls key indexing and round updates",
+      "security objective": "Integrity",
+      "reasoning": "When an operation is active (xtea.done(0) = '1') the core updates xtea.sum according to funct3_i (branches: xtea.sum <= xtea.opa; or xtea.sum <= xtea.sum +/- xtea_delta_c). xtea.sum's bits are then used to index key_mem for tmp_z (tmp_z reads key_mem using xtea.sum bits). Because xtea.sum directly controls which key word is selected and participates in arithmetic that determines xtea.res, the RTL establishes Integrity of xtea.sum for correct computation.",
+      "related structural assets": [
+        {
+          "asset rtl": "xtea.sum",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Computed CFU result and its validity (the result value and the done/valid event exported by the block)",
+      "security objective": "Integrity",
+      "reasoning": "The RTL computes xtea.res in xtea_core from tmp_* and xtea state, then result_select drives the external outputs when rtype_i = r3type_c and an encryption/decryption funct3 is selected: result_o <= xtea.res; valid_o <= xtea.done(1). The value leaves the entity via result_o and the validity via valid_o. Corruption of xtea.res or the completion indicator (xtea.done) would cause the module to report an incorrect result or incorrect valid signaling, so Integrity of the computed result and done event is established.",
+      "related structural assets": [
+        {
+          "asset rtl": "xtea.res",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "result_o",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "valid_o",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "xtea.done",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "stores"
+        }
+      ]
+    }
+  ]
+}

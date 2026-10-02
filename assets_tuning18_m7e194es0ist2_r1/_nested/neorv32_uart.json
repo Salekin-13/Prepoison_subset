@@ -1,0 +1,430 @@
+{
+  "module name": "neorv32_uart",
+  "module purpose": "UART peripheral: decodes bus reads/writes into control and data registers, holds TX/RX FIFO data, runs TX and RX engines that drive uart_txd_o and sample uart_rxd_i, manages RTS/CTS hardware flow-control, and emits bus responses and IRQs.",
+  "use-case flows": [
+    {
+      "flow": "configure",
+      "value": "Control registers written (enable, sim_mode, hwfc_en, prsc, baud, IRQ-selection bits, clr_rx, clr_tx)",
+      "lines": [
+        176,
+        177,
+        178,
+        179,
+        180,
+        181,
+        182,
+        183,
+        185,
+        186,
+        187,
+        188,
+        189,
+        190,
+        191
+      ]
+    },
+    {
+      "flow": "start",
+      "value": "Enqueue a transmit byte: bus_req_i.data -> tx_fifo.wdata and tx_fifo.we, then tx_engine may fetch (tx_fifo.re) to begin transmission",
+      "lines": [
+        260,
+        261,
+        262,
+        351
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "Transmit operation: tx_engine sequences, shifts bits from tx_engine.sreg and toggles tx_engine.txd -> uart_txd_o",
+      "lines": [
+        325,
+        344,
+        351,
+        365,
+        370,
+        376,
+        392
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "Receive operation: sample uart_rxd_i into rx_engine.sync, assemble bits into rx_engine.sreg and assert rx_fifo.we when a byte is complete",
+      "lines": [
+        397,
+        408,
+        410,
+        422,
+        434,
+        440,
+        305,
+        306
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "IRQ generation (irq_tx_o, irq_rx_o) from control bits and FIFO status",
+      "lines": [
+        265,
+        270,
+        310,
+        315
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "Bus read returns control fields and FIFO values (bus_rsp_o.data), including rx FIFO read data (rx_fifo.rdata)",
+      "lines": [
+        170,
+        172,
+        194,
+        195,
+        201,
+        217,
+        218,
+        219
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "Synchronous registers and outputs cleared or forced on rstn_i = '0' (control registers, tx/rx engine state, FIFOs cleared by clear signals)",
+      "lines": [
+        154,
+        155,
+        156,
+        327,
+        333,
+        397,
+        400,
+        405
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Module enable flag (ctrl.enable) that gates operation, FIFO clears, IRQs and clkgen enable",
+      "security objective": "Integrity",
+      "reasoning": "bus_access writes ctrl.enable from bus_req_i.data (bus write path at line 179); ctrl.enable is clocked into a register (assignment guarded by clk_i at line 179) and reset on rstn_i (bus_access reset arm lines 154-156). The bit drives clkgen_en_o (line 228), controls tx/rx FIFO clear conditions (tx_fifo.clear line 259, rx_fifo.clear line 304), and gates IRQ generation (irq_tx/irq_rx processes at lines 270 and 315) and engine enable bits (tx/rx state updates at lines 344 and 417). Therefore the module's behavior (start, operate, report, read-out and clear) depends on the integrity of ctrl.enable (evidence: bus write at 179, register clocking and gating records in the map).",
+      "related structural assets": [
+        {
+          "asset rtl": "bus_req_i",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 6,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "ctrl.enable"
+          }
+        },
+        {
+          "asset rtl": "ctrl.enable",
+          "entity": "neorv32_uart",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "clkgen_en_o",
+          "entity": "neorv32_uart",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "ctrl.enable"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Baud-rate configuration (ctrl.baud) that sets TX and RX timing counters",
+      "security objective": "Integrity",
+      "reasoning": "bus_access writes ctrl.baud from bus_req_i.data (line 183); ctrl.baud is stored in a clocked register (clocked by clk_i at line 183) and copied into the transmitter and receiver baud counters (tx_engine.baudcnt at lines 349/368 and rx_engine.baudcnt at line 432). The timing of uart_clk-driven sampling and bit timing depends on this value, so integrity of ctrl.baud is established by these assignments and copies (lines 183, 349, 368, 432).",
+      "related structural assets": [
+        {
+          "asset rtl": "bus_req_i",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 10,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "ctrl.baud"
+          }
+        },
+        {
+          "asset rtl": "ctrl.baud",
+          "entity": "neorv32_uart",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "tx_engine.baudcnt",
+          "entity": "neorv32_uart",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "UART prescaler selection (ctrl.prsc) that chooses which clkgen_i bit forms uart_clk",
+      "security objective": "Integrity",
+      "reasoning": "bus_access writes ctrl.prsc from bus_req_i.data (line 182); ctrl.prsc is stored (clocked at line 182) and used as the selector for uart_clk (uart_clk <= clkgen_i(to_integer(unsigned(ctrl.prsc))) at line 229, SELECTED_BY record). The sampling/transmit clock source depends on ctrl.prsc, establishing integrity for this setting (lines 182, 229).",
+      "related structural assets": [
+        {
+          "asset rtl": "bus_req_i",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 9,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "ctrl.prsc"
+          }
+        },
+        {
+          "asset rtl": "ctrl.prsc",
+          "entity": "neorv32_uart",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "uart_clk",
+          "entity": "neorv32_uart",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "SELECTED_BY",
+            "partner": "ctrl.prsc"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Hardware flow-control enable (ctrl.hwfc_en) that affects CTS/RTS gating and transmitter behavior",
+      "security objective": "Integrity",
+      "reasoning": "bus_access writes ctrl.hwfc_en from bus_req_i.data (line 181); ctrl.hwfc_en is stored (clocked at line 181) and the transmitter checks it together with uart_ctsn_i and tx_engine.cts (transmitter branch at lines 358-360). The rtr_control process uses ctrl.hwfc_en to compute uart_rtsn_o (lines 472-480). The module's hardware-flow-control decisions depend on ctrl.hwfc_en, so integrity is established (evidence: write at 181 and gated use in transmitter and rtr_control).",
+      "related structural assets": [
+        {
+          "asset rtl": "bus_req_i",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 8,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "ctrl.hwfc_en"
+          }
+        },
+        {
+          "asset rtl": "ctrl.hwfc_en",
+          "entity": "neorv32_uart",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "uart_rtsn_o",
+          "entity": "neorv32_uart",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "ctrl.hwfc_en"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Serial transmit bit-stream (uart_txd_o) produced by the TX engine",
+      "security objective": "Integrity",
+      "reasoning": "The transmitter process drives internal tx_engine.txd and the output port uart_txd_o is assigned from that register (uart_txd_o <= tx_engine.txd at line 392, COPIES record). tx_engine.txd is a clocked register updated in the transmitter state machine (clocked and guarded in lines 341, 365). The correctness of the bits leaving the chip is established by these assignments (lines 341, 365, 392).",
+      "related structural assets": [
+        {
+          "asset rtl": "tx_engine.txd",
+          "entity": "neorv32_uart",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "uart_txd_o",
+          "entity": "neorv32_uart",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "tx_engine.txd"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Received bytes and RX-FIFO occupancy (data stored by RX FIFO and its avail/half/free indicators)",
+      "security objective": "Integrity",
+      "reasoning": "The receiver forms bytes in rx_engine.sreg (receiver sampling and bit-assembly, lines 422\u2013434) and writes them into the RX FIFO via rx_fifo.wdata and rx_fifo.we (lines 305\u2013306). The FIFO provides occupancy signals (rx_fifo.avail, rx_fifo.half, rx_fifo.free) that the module uses for IRQ generation (irq_rx_o at line 315) and flow-control (rtr_control). Bus reads return rx_fifo.rdata (line 217). These flows (lines 305\u2013306, 217, 315, 422\u2013434) establish integrity and availability properties of received data and occupancy state.",
+      "related structural assets": [
+        {
+          "asset rtl": "rx_engine.sreg",
+          "entity": "neorv32_uart",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "rx_fifo.wdata",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "rx_engine.sreg"
+          }
+        },
+        {
+          "asset rtl": "rx_fifo.avail",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "CONNECTS",
+            "partner": "rx_engine_fifo_inst.avail_o"
+          }
+        },
+        {
+          "asset rtl": "bus_rsp_o",
+          "entity": "neorv32_uart",
+          "realization": "exit port",
+          "occurrence": 24,
+          "edge": {
+            "type": "COPIES",
+            "partner": "rx_fifo.rdata"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "TX FIFO queued bytes (data written by bus writes and later consumed by the TX engine)",
+      "security objective": "Integrity",
+      "reasoning": "Bus writes place bytes into tx_fifo.wdata and assert tx_fifo.we (tx enqueue at lines 260\u2013261). The transmitter later reads tx_fifo.rdata into tx_engine.sreg to shift them out (line 351). The correctness of bytes queued for transmission is therefore established by these assignments (lines 260\u2013261, 351) and the FIFO interface records linking bus_req_i.data -> tx_fifo.wdata and tx_fifo.rdata -> tx_engine.sreg.",
+      "related structural assets": [
+        {
+          "asset rtl": "bus_req_i",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 19,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "tx_fifo.wdata"
+          }
+        },
+        {
+          "asset rtl": "tx_fifo.wdata",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "bus_req_i.data"
+          }
+        },
+        {
+          "asset rtl": "tx_engine.sreg",
+          "entity": "neorv32_uart",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "IRQ-generation policy and outputs (irq_rx_o / irq_tx_o and their selecting control bits)",
+      "security objective": "Integrity",
+      "reasoning": "Interrupt outputs are computed from stored control selects and FIFO status: irq_tx_o <= ctrl.enable and ((ctrl.irq_tx_empty and not tx_fifo.avail) or (ctrl.irq_tx_nhalf and not tx_fifo.half)) (lines 265\u2013272); irq_rx_o similar (lines 310\u2013318). The control bits (ctrl.irq_tx_empty, ctrl.irq_tx_nhalf, ctrl.irq_rx_*) are written via bus_access (lines 185\u2013189) and clocked into registers. The module therefore depends on the integrity of these bits and the FIFO signals for correct IRQ decisions (evidence: assignments at lines 265\u2013273 and 310\u2013318 and the map DERIVES_FROM/GATED_BY records).",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.irq_tx_empty",
+          "entity": "neorv32_uart",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "bus_req_i",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 14,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "ctrl.irq_tx_empty"
+          }
+        },
+        {
+          "asset rtl": "irq_tx_o",
+          "entity": "neorv32_uart",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "ctrl.irq_tx_empty"
+          }
+        },
+        {
+          "asset rtl": "ctrl.irq_rx_nempty",
+          "entity": "neorv32_uart",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "bus_req_i",
+          "entity": "neorv32_uart",
+          "realization": "sets",
+          "occurrence": 11,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "ctrl.irq_rx_nempty"
+          }
+        },
+        {
+          "asset rtl": "irq_rx_o",
+          "entity": "neorv32_uart",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "ctrl.irq_rx_nempty"
+          }
+        }
+      ]
+    }
+  ]
+}

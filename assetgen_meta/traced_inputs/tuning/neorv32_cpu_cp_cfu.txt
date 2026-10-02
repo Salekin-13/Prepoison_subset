@@ -1,0 +1,316 @@
+TARGET IP MODULE: neorv32_cpu_cp_cfu
+
+=== RTL (comments removed, blank lines left out; each line starts with its line number in the source file) ===
+   19 | entity neorv32_cpu_cp_cfu is
+   20 |   port (
+   22 |     clk_i       : in  std_ulogic;
+   23 |     rstn_i      : in  std_ulogic;
+   25 |     start_i     : in  std_ulogic;
+   26 |     active_i    : in  std_ulogic;
+   28 |     csr_we_i    : in  std_ulogic;
+   29 |     csr_addr_i  : in  std_ulogic_vector(1 downto 0);
+   30 |     csr_wdata_i : in  std_ulogic_vector(31 downto 0);
+   31 |     csr_rdata_o : out std_ulogic_vector(31 downto 0);
+   33 |     rtype_i     : in  std_ulogic;
+   34 |     funct3_i    : in  std_ulogic_vector(2 downto 0);
+   35 |     funct7_i    : in  std_ulogic_vector(6 downto 0);
+   36 |     rs1_i       : in  std_ulogic_vector(31 downto 0);
+   37 |     rs2_i       : in  std_ulogic_vector(31 downto 0);
+   38 |     rs3_i       : in  std_ulogic_vector(31 downto 0);
+   40 |     result_o    : out std_ulogic_vector(31 downto 0);
+   41 |     valid_o     : out std_ulogic
+   42 |   );
+   43 | end neorv32_cpu_cp_cfu;
+
+  135 | architecture neorv32_cpu_cp_cfu_rtl of neorv32_cpu_cp_cfu is
+  138 |   constant r3type_c : std_ulogic := '0';
+  139 |   constant r4type_c : std_ulogic := '1';
+  142 |   constant xtea_enc_v0_c : std_ulogic_vector(2 downto 0) := "000";
+  143 |   constant xtea_enc_v1_c : std_ulogic_vector(2 downto 0) := "001";
+  144 |   constant xtea_dec_v0_c : std_ulogic_vector(2 downto 0) := "010";
+  145 |   constant xtea_dec_v1_c : std_ulogic_vector(2 downto 0) := "011";
+  146 |   constant xtea_init_c   : std_ulogic_vector(2 downto 0) := "100";
+  149 |   constant xtea_delta_c : std_ulogic_vector(31 downto 0) := x"9e3779b9";
+  152 |   type key_mem_t is array (0 to 3) of std_ulogic_vector(31 downto 0);
+  153 |   signal key_mem : key_mem_t;
+  156 |   type xtea_t is record
+  157 |     done : std_ulogic_vector(1 downto 0);
+  158 |     opa  : std_ulogic_vector(31 downto 0);
+  159 |     opb  : std_ulogic_vector(31 downto 0);
+  160 |     sum  : std_ulogic_vector(31 downto 0);
+  161 |     res  : std_ulogic_vector(31 downto 0);
+  162 |   end record;
+  163 |   signal xtea : xtea_t;
+  166 |   signal tmp_a, tmp_b, tmp_x, tmp_y, tmp_z, tmp_r : std_ulogic_vector(31 downto 0);
+  168 | begin
+  173 |   csr_write_access: process(rstn_i, clk_i)
+  174 |   begin
+  175 |     if (rstn_i = '0') then
+  176 |       key_mem <= (others => (others => '0'));
+  177 |     elsif rising_edge(clk_i) then
+  178 |       if (csr_we_i = '1') then
+  179 |         key_mem(to_integer(unsigned(csr_addr_i))) <= csr_wdata_i;
+  180 |       end if;
+  181 |     end if;
+  182 |   end process csr_write_access;
+  185 |   csr_rdata_o <= key_mem(to_integer(unsigned(csr_addr_i)));
+  190 |   xtea_core: process(rstn_i, clk_i)
+  191 |   begin
+  192 |     if (rstn_i = '0') then
+  193 |       xtea.done <= (others => '0');
+  194 |       xtea.opa  <= (others => '0');
+  195 |       xtea.opb  <= (others => '0');
+  196 |       xtea.sum  <= (others => '0');
+  197 |       xtea.res  <= (others => '0');
+  198 |     elsif rising_edge(clk_i) then
+  200 |       xtea.done(0) <= '0';
+  201 |       xtea.done(1) <= xtea.done(0);
+  204 |       if (start_i = '1') and (rtype_i = r3type_c) then
+  205 |         xtea.opa     <= rs1_i;
+  206 |         xtea.opb     <= rs2_i;
+  207 |         xtea.done(0) <= '1';
+  208 |       end if;
+  211 |       if (xtea.done(0) = '1') then
+  213 |         if (funct3_i(2) = '1') then
+  214 |           xtea.sum <= xtea.opa;
+  215 |         elsif (funct3_i(1 downto 0) = xtea_enc_v0_c(1 downto 0)) then
+  216 |           xtea.sum <= std_ulogic_vector(unsigned(xtea.sum) + unsigned(xtea_delta_c));
+  217 |         elsif (funct3_i(1 downto 0) = xtea_dec_v1_c(1 downto 0)) then
+  218 |           xtea.sum <= std_ulogic_vector(unsigned(xtea.sum) - unsigned(xtea_delta_c));
+  219 |         end if;
+  221 |         if (funct3_i(1) = '0') then
+  222 |           xtea.res <= std_ulogic_vector(unsigned(tmp_b) + unsigned(tmp_r));
+  223 |         else
+  224 |           xtea.res <= std_ulogic_vector(unsigned(tmp_b) - unsigned(tmp_r));
+  225 |         end if;
+  226 |       end if;
+  228 |     end if;
+  229 |   end process xtea_core;
+  232 |   tmp_a <= xtea.opb when (funct3_i(0) = '0') else xtea.opa;
+  233 |   tmp_b <= xtea.opa when (funct3_i(0) = '0') else xtea.opb;
+  234 |   tmp_x <= xtea.opb(27 downto 0) & "0000"  when (funct3_i(0) = '0') else xtea.opa(27 downto 0) & "0000";
+  235 |   tmp_y <= "00000" & xtea.opb(31 downto 5) when (funct3_i(0) = '0') else "00000" & xtea.opa(31 downto 5);
+  236 |   tmp_z <= key_mem(to_integer(unsigned(xtea.sum(1 downto 0)))) when (funct3_i(0) = '0') else
+  237 |            key_mem(to_integer(unsigned(xtea.sum(12 downto 11))));
+  238 |   tmp_r <= std_ulogic_vector(unsigned(tmp_x xor tmp_y) + unsigned(tmp_a)) xor std_ulogic_vector(unsigned(xtea.sum) + unsigned(tmp_z));
+  243 |   result_select: process(rtype_i, funct3_i, xtea)
+  244 |   begin
+  245 |     if (rtype_i = r3type_c) then
+  247 |       case funct3_i is
+  248 |         when xtea_enc_v0_c | xtea_enc_v1_c | xtea_dec_v0_c | xtea_dec_v1_c =>
+  249 |           result_o <= xtea.res;
+  250 |           valid_o  <= xtea.done(1);
+  251 |         when xtea_init_c =>
+  252 |           result_o <= (others => '0');
+  253 |           valid_o  <= '1';
+  254 |         when others =>
+  255 |           result_o <= (others => '0');
+  256 |           valid_o  <= '0';
+  257 |       end case;
+  259 |     else
+  261 |       result_o <= (others => '0');
+  262 |       valid_o  <= '0';
+  264 |     end if;
+  265 |   end process result_select;
+  268 | end neorv32_cpu_cp_cfu_rtl;
+
+=== RELATIONSHIP MAP: ELEMENTS AND RECORDS ===
+PORT {"name":"clk_i","entity":"neorv32_cpu_cp_cfu","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":22},{"id":2,"line":173},{"id":3,"line":177},{"id":4,"line":190},{"id":5,"line":198}]}
+    {"type":"SEQUENCES","at":[3],"lines":[177],"targets":["key_mem"]}
+    {"type":"SEQUENCES","at":[5],"lines":[198],"targets":["xtea.done","xtea.opa","xtea.opb","xtea.res","xtea.sum"]}
+PORT {"name":"rstn_i","entity":"neorv32_cpu_cp_cfu","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":23},{"id":2,"line":173},{"id":3,"line":175},{"id":4,"line":190},{"id":5,"line":192}]}
+    {"type":"RESETS","at":[3],"lines":[175],"targets":["key_mem"]}
+    {"type":"RESETS","at":[5],"lines":[192],"targets":["xtea.done","xtea.opa","xtea.opb","xtea.res","xtea.sum"]}
+PORT {"name":"start_i","entity":"neorv32_cpu_cp_cfu","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25},{"id":2,"line":204}]}
+    {"type":"GATES","at":[2],"guard":"(start_i = '1') and (rtype_i = r3type_c)","lines":[204],"targets":["xtea.done","xtea.opa","xtea.opb"]}
+PORT {"name":"active_i","entity":"neorv32_cpu_cp_cfu","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":26}]}
+PORT {"name":"csr_we_i","entity":"neorv32_cpu_cp_cfu","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":28},{"id":2,"line":178}]}
+    {"type":"GATES","at":[2],"guard":"csr_we_i = '1'","lines":[178],"targets":["key_mem"]}
+PORT {"name":"csr_addr_i","entity":"neorv32_cpu_cp_cfu","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29},{"id":2,"line":179},{"id":3,"line":185}]}
+    {"type":"SELECTS","at":[2],"guard":"csr_wdata_i","lines":[179],"targets":["key_mem"]}
+    {"type":"SELECTS","at":[3],"guard":"key_mem(to_integer(unsigned(csr_addr_i)))","lines":[185],"targets":["csr_rdata_o"]}
+PORT {"name":"csr_wdata_i","entity":"neorv32_cpu_cp_cfu","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":30},{"id":2,"line":179}]}
+    {"type":"CARRIES","at":[2],"lines":[179],"targets":["key_mem"]}
+PORT {"name":"csr_rdata_o","entity":"neorv32_cpu_cp_cfu","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":31},{"id":2,"line":185}]}
+    {"type":"SELECTED_BY","at":[2],"guard":"key_mem(to_integer(unsigned(csr_addr_i)))","lines":[185],"targets":["csr_addr_i"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[185],"targets":["key_mem"]}
+PORT {"name":"rtype_i","entity":"neorv32_cpu_cp_cfu","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33},{"id":2,"line":204},{"id":3,"line":243},{"id":4,"line":245}]}
+    {"type":"GATES","at":[2],"guard":"(start_i = '1') and (rtype_i = r3type_c)","lines":[204],"targets":["xtea.done","xtea.opa","xtea.opb"]}
+    {"type":"GATES","at":[4],"guard":"not (rtype_i = r3type_c) | rtype_i = r3type_c","lines":[245],"targets":["result_o","valid_o"]}
+PORT {"name":"funct3_i","entity":"neorv32_cpu_cp_cfu","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34},{"id":2,"line":213},{"id":3,"line":215},{"id":4,"line":217},{"id":5,"line":221},{"id":6,"line":232},{"id":7,"line":233},{"id":8,"line":234},{"id":9,"line":235},{"id":10,"line":236},{"id":11,"line":243},{"id":12,"line":247}]}
+    {"type":"SELECTS","at":[12],"guard":"funct3_i = xtea_init_c | funct3_i in {xtea_enc_v0_c, xtea_enc_v1_c, xtea_dec_v0_c, xtea_dec_v1_c} | not (funct3_i in {xtea_enc_v0_c, xtea_enc_v1_c, xtea_dec_v0_c, xtea_dec_v1_c, xtea_init_c})","lines":[247],"targets":["result_o","valid_o"]}
+    {"type":"GATES","at":[6],"guard":"(funct3_i(0) = '0')","lines":[232],"targets":["tmp_a"]}
+    {"type":"GATES","at":[7],"guard":"(funct3_i(0) = '0')","lines":[233],"targets":["tmp_b"]}
+    {"type":"GATES","at":[8],"guard":"(funct3_i(0) = '0')","lines":[234],"targets":["tmp_x"]}
+    {"type":"GATES","at":[9],"guard":"(funct3_i(0) = '0')","lines":[235],"targets":["tmp_y"]}
+    {"type":"GATES","at":[10],"guard":"(funct3_i(0) = '0')","lines":[236],"targets":["tmp_z"]}
+    {"type":"GATES","at":[2],"guard":"funct3_i(2) = '1' | not (funct3_i(2) = '1') and funct3_i(1 downto 0) = xtea_enc_v0_c(1 downto 0) | not (funct3_i(2) = '1') and not (funct3_i(1 downto 0) = xtea_enc_v0_c(1 downto 0)) and funct3_i(1 downto 0) = xtea_dec_v1_c(1 downto 0)","lines":[213],"targets":["xtea.sum"]}
+    {"type":"GATES","at":[3],"guard":"not (funct3_i(2) = '1') and funct3_i(1 downto 0) = xtea_enc_v0_c(1 downto 0) | not (funct3_i(2) = '1') and not (funct3_i(1 downto 0) = xtea_enc_v0_c(1 downto 0)) and funct3_i(1 downto 0) = xtea_dec_v1_c(1 downto 0)","lines":[215],"targets":["xtea.sum"]}
+    {"type":"GATES","at":[4],"guard":"not (funct3_i(2) = '1') and not (funct3_i(1 downto 0) = xtea_enc_v0_c(1 downto 0)) and funct3_i(1 downto 0) = xtea_dec_v1_c(1 downto 0)","lines":[217],"targets":["xtea.sum"]}
+    {"type":"GATES","at":[5],"guard":"funct3_i(1) = '0' | not (funct3_i(1) = '0')","lines":[221],"targets":["xtea.res"]}
+PORT {"name":"funct7_i","entity":"neorv32_cpu_cp_cfu","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":35}]}
+PORT {"name":"rs1_i","entity":"neorv32_cpu_cp_cfu","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":36},{"id":2,"line":205}]}
+    {"type":"CARRIES","at":[2],"lines":[205],"targets":["xtea.opa"]}
+PORT {"name":"rs2_i","entity":"neorv32_cpu_cp_cfu","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":37},{"id":2,"line":206}]}
+    {"type":"CARRIES","at":[2],"lines":[206],"targets":["xtea.opb"]}
+PORT {"name":"rs3_i","entity":"neorv32_cpu_cp_cfu","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":38}]}
+PORT {"name":"result_o","entity":"neorv32_cpu_cp_cfu","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":40},{"id":2,"line":249},{"id":3,"line":252},{"id":4,"line":255},{"id":5,"line":261}]}
+    {"constant_drivers":[{"at":3,"value":"(others => '0')","lines":[252]},{"at":4,"value":"(others => '0')","lines":[255]},{"at":5,"value":"(others => '0')","lines":[261]}]}
+    {"type":"SELECTED_BY","at":[2],"guard":"funct3_i in {xtea_enc_v0_c, xtea_enc_v1_c, xtea_dec_v0_c, xtea_dec_v1_c}","lines":[249],"targets":["funct3_i"]}
+    {"type":"SELECTED_BY","at":[3],"guard":"funct3_i = xtea_init_c","lines":[252],"targets":["funct3_i"]}
+    {"type":"SELECTED_BY","at":[4],"guard":"not (funct3_i in {xtea_enc_v0_c, xtea_enc_v1_c, xtea_dec_v0_c, xtea_dec_v1_c, xtea_init_c})","lines":[255],"targets":["funct3_i"]}
+    {"type":"GATED_BY","at":[2,3,4],"guard":"rtype_i = r3type_c","lines":[249,252,255],"targets":["rtype_i"]}
+    {"type":"GATED_BY","at":[5],"guard":"not (rtype_i = r3type_c)","lines":[261],"targets":["rtype_i"]}
+    {"type":"COPIES","at":[2],"lines":[249],"targets":["xtea.res"]}
+PORT {"name":"valid_o","entity":"neorv32_cpu_cp_cfu","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":41},{"id":2,"line":250},{"id":3,"line":253},{"id":4,"line":256},{"id":5,"line":262}]}
+    {"constant_drivers":[{"at":3,"value":"'1'","lines":[253]},{"at":4,"value":"'0'","lines":[256]},{"at":5,"value":"'0'","lines":[262]}]}
+    {"type":"SELECTED_BY","at":[2],"guard":"funct3_i in {xtea_enc_v0_c, xtea_enc_v1_c, xtea_dec_v0_c, xtea_dec_v1_c}","lines":[250],"targets":["funct3_i"]}
+    {"type":"SELECTED_BY","at":[3],"guard":"funct3_i = xtea_init_c","lines":[253],"targets":["funct3_i"]}
+    {"type":"SELECTED_BY","at":[4],"guard":"not (funct3_i in {xtea_enc_v0_c, xtea_enc_v1_c, xtea_dec_v0_c, xtea_dec_v1_c, xtea_init_c})","lines":[256],"targets":["funct3_i"]}
+    {"type":"GATED_BY","at":[2,3,4],"guard":"rtype_i = r3type_c","lines":[250,253,256],"targets":["rtype_i"]}
+    {"type":"GATED_BY","at":[5],"guard":"not (rtype_i = r3type_c)","lines":[262],"targets":["rtype_i"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[250],"targets":["xtea.done"]}
+SIGNAL {"name":"key_mem","entity":"neorv32_cpu_cp_cfu","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":153},{"id":2,"line":176},{"id":3,"line":179},{"id":4,"line":185},{"id":5,"line":236},{"id":6,"line":237}]}
+    {"constant_drivers":[{"at":2,"value":"(others => (others => '0'))","lines":[176]}]}
+    {"type":"SOURCES","at":[4],"lines":[185],"targets":["csr_rdata_o"]}
+    {"type":"SOURCES","at":[5,6],"lines":[236,237],"targets":["tmp_z"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[179],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[176],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[3],"guard":"csr_wdata_i","lines":[179],"targets":["csr_addr_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"csr_we_i = '1'","lines":[179],"targets":["csr_we_i"]}
+    {"type":"COPIES","at":[3],"lines":[179],"targets":["csr_wdata_i"]}
+SIGNAL {"name":"xtea","entity":"neorv32_cpu_cp_cfu","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":163},{"id":2,"line":193},{"id":3,"line":194},{"id":4,"line":195},{"id":5,"line":196},{"id":6,"line":197},{"id":7,"line":200},{"id":8,"line":201},{"id":9,"line":201},{"id":10,"line":205},{"id":11,"line":206},{"id":12,"line":207},{"id":13,"line":211},{"id":14,"line":214},{"id":15,"line":214},{"id":16,"line":216},{"id":17,"line":216},{"id":18,"line":218},{"id":19,"line":218},{"id":20,"line":222},{"id":21,"line":224},{"id":22,"line":232},{"id":23,"line":232},{"id":24,"line":233},{"id":25,"line":233},{"id":26,"line":234},{"id":27,"line":234},{"id":28,"line":235},{"id":29,"line":235},{"id":30,"line":236},{"id":31,"line":237},{"id":32,"line":238},{"id":33,"line":243},{"id":34,"line":249},{"id":35,"line":250}]}
+SIGNAL {"name":"xtea.done","entity":"neorv32_cpu_cp_cfu","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":163},{"id":2,"line":193},{"id":3,"line":200},{"id":4,"line":201},{"id":5,"line":201},{"id":6,"line":207},{"id":7,"line":211},{"id":8,"line":250}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[193]},{"at":3,"value":"'0'","lines":[200]},{"at":6,"value":"'1'","lines":[207]}]}
+    {"type":"GATES","at":[7],"guard":"xtea.done(0) = '1'","lines":[211],"targets":["xtea.res","xtea.sum"]}
+    {"type":"SOURCES","at":[5],"lines":[201],"targets":["xtea.done"]}
+    {"type":"SOURCES","at":[8],"lines":[250],"targets":["valid_o"]}
+    {"type":"CLOCKED_BY","at":[3,4,6],"lines":[200,201,207],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[193],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[6],"guard":"(start_i = '1') and (rtype_i = r3type_c)","lines":[207],"targets":["rtype_i","start_i"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[201],"targets":["xtea.done"]}
+SIGNAL {"name":"xtea.opa","entity":"neorv32_cpu_cp_cfu","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":163},{"id":2,"line":194},{"id":3,"line":205},{"id":4,"line":214},{"id":5,"line":232},{"id":6,"line":233},{"id":7,"line":234},{"id":8,"line":235}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[194]}]}
+    {"type":"CARRIES","at":[4],"lines":[214],"targets":["xtea.sum"]}
+    {"type":"SOURCES","at":[5],"lines":[232],"targets":["tmp_a"]}
+    {"type":"SOURCES","at":[6],"lines":[233],"targets":["tmp_b"]}
+    {"type":"SOURCES","at":[7],"lines":[234],"targets":["tmp_x"]}
+    {"type":"SOURCES","at":[8],"lines":[235],"targets":["tmp_y"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[205],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[194],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"(start_i = '1') and (rtype_i = r3type_c)","lines":[205],"targets":["rtype_i","start_i"]}
+    {"type":"COPIES","at":[3],"lines":[205],"targets":["rs1_i"]}
+SIGNAL {"name":"xtea.opb","entity":"neorv32_cpu_cp_cfu","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":163},{"id":2,"line":195},{"id":3,"line":206},{"id":4,"line":232},{"id":5,"line":233},{"id":6,"line":234},{"id":7,"line":235}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[195]}]}
+    {"type":"SOURCES","at":[4],"lines":[232],"targets":["tmp_a"]}
+    {"type":"SOURCES","at":[5],"lines":[233],"targets":["tmp_b"]}
+    {"type":"SOURCES","at":[6],"lines":[234],"targets":["tmp_x"]}
+    {"type":"SOURCES","at":[7],"lines":[235],"targets":["tmp_y"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[206],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[195],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"(start_i = '1') and (rtype_i = r3type_c)","lines":[206],"targets":["rtype_i","start_i"]}
+    {"type":"COPIES","at":[3],"lines":[206],"targets":["rs2_i"]}
+SIGNAL {"name":"xtea.sum","entity":"neorv32_cpu_cp_cfu","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":163},{"id":2,"line":196},{"id":3,"line":214},{"id":4,"line":216},{"id":5,"line":216},{"id":6,"line":218},{"id":7,"line":218},{"id":8,"line":236},{"id":9,"line":237},{"id":10,"line":238}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[196]}]}
+    {"type":"SELECTS","at":[8,9],"guard":"key_mem(to_integer(unsigned(xtea.sum(1 downto 0)))) when (funct3_i(0) = '0') else","lines":[236,237],"targets":["tmp_z"]}
+    {"type":"SOURCES","at":[5,7],"lines":[216,218],"targets":["xtea.sum"]}
+    {"type":"SOURCES","at":[10],"lines":[238],"targets":["tmp_r"]}
+    {"type":"CLOCKED_BY","at":[3,4,6],"lines":[214,216,218],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[196],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"funct3_i(2) = '1'","lines":[214],"targets":["funct3_i"]}
+    {"type":"GATED_BY","at":[3,4,6],"guard":"xtea.done(0) = '1'","lines":[214,216,218],"targets":["xtea.done"]}
+    {"type":"GATED_BY","at":[4],"guard":"not (funct3_i(2) = '1') and funct3_i(1 downto 0) = xtea_enc_v0_c(1 downto 0)","lines":[216],"targets":["funct3_i"]}
+    {"type":"GATED_BY","at":[6],"guard":"not (funct3_i(2) = '1') and not (funct3_i(1 downto 0) = xtea_enc_v0_c(1 downto 0)) and funct3_i(1 downto 0) = xtea_dec_v1_c(1 downto 0)","lines":[218],"targets":["funct3_i"]}
+    {"type":"COPIES","at":[3],"lines":[214],"targets":["xtea.opa"]}
+    {"type":"DERIVES_FROM","at":[4,6],"lines":[216,218],"targets":["xtea.sum"]}
+SIGNAL {"name":"xtea.res","entity":"neorv32_cpu_cp_cfu","kind":"register","handling":["ORIGINATES","FORWARDS"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":163},{"id":2,"line":197},{"id":3,"line":222},{"id":4,"line":224},{"id":5,"line":249}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[197]}]}
+    {"type":"CARRIES","at":[5],"lines":[249],"targets":["result_o"]}
+    {"type":"CLOCKED_BY","at":[3,4],"lines":[222,224],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[197],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"funct3_i(1) = '0'","lines":[222],"targets":["funct3_i"]}
+    {"type":"GATED_BY","at":[3,4],"guard":"xtea.done(0) = '1'","lines":[222,224],"targets":["xtea.done"]}
+    {"type":"GATED_BY","at":[4],"guard":"not (funct3_i(1) = '0')","lines":[224],"targets":["funct3_i"]}
+    {"type":"DERIVES_FROM","at":[3,4],"lines":[222,224],"targets":["tmp_b","tmp_r"]}
+SIGNAL {"name":"tmp_a","entity":"neorv32_cpu_cp_cfu","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":166},{"id":2,"line":232},{"id":3,"line":238}]}
+    {"type":"SOURCES","at":[3],"lines":[238],"targets":["tmp_r"]}
+    {"type":"GATED_BY","at":[2],"guard":"(funct3_i(0) = '0')","lines":[232],"targets":["funct3_i"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[232],"targets":["xtea.opa","xtea.opb"]}
+SIGNAL {"name":"tmp_b","entity":"neorv32_cpu_cp_cfu","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":166},{"id":2,"line":222},{"id":3,"line":224},{"id":4,"line":233}]}
+    {"type":"SOURCES","at":[2,3],"lines":[222,224],"targets":["xtea.res"]}
+    {"type":"GATED_BY","at":[4],"guard":"(funct3_i(0) = '0')","lines":[233],"targets":["funct3_i"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[233],"targets":["xtea.opa","xtea.opb"]}
+SIGNAL {"name":"tmp_x","entity":"neorv32_cpu_cp_cfu","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":166},{"id":2,"line":234},{"id":3,"line":238}]}
+    {"type":"SOURCES","at":[3],"lines":[238],"targets":["tmp_r"]}
+    {"type":"GATED_BY","at":[2],"guard":"(funct3_i(0) = '0')","lines":[234],"targets":["funct3_i"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[234],"targets":["xtea.opa","xtea.opb"]}
+SIGNAL {"name":"tmp_y","entity":"neorv32_cpu_cp_cfu","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":166},{"id":2,"line":235},{"id":3,"line":238}]}
+    {"type":"SOURCES","at":[3],"lines":[238],"targets":["tmp_r"]}
+    {"type":"GATED_BY","at":[2],"guard":"(funct3_i(0) = '0')","lines":[235],"targets":["funct3_i"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[235],"targets":["xtea.opa","xtea.opb"]}
+SIGNAL {"name":"tmp_z","entity":"neorv32_cpu_cp_cfu","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":166},{"id":2,"line":236},{"id":3,"line":238}]}
+    {"type":"SOURCES","at":[3],"lines":[238],"targets":["tmp_r"]}
+    {"type":"SELECTED_BY","at":[2],"guard":"key_mem(to_integer(unsigned(xtea.sum(1 downto 0)))) when (funct3_i(0) = '0') else","lines":[236],"targets":["xtea.sum"]}
+    {"type":"GATED_BY","at":[2],"guard":"(funct3_i(0) = '0')","lines":[236],"targets":["funct3_i"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[236],"targets":["key_mem"]}
+SIGNAL {"name":"tmp_r","entity":"neorv32_cpu_cp_cfu","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":166},{"id":2,"line":222},{"id":3,"line":224},{"id":4,"line":238}]}
+    {"type":"SOURCES","at":[2,3],"lines":[222,224],"targets":["xtea.res"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[238],"targets":["tmp_a","tmp_x","tmp_y","tmp_z","xtea.sum"]}
+
+=== RELATIONSHIP MAP: FLOW GRAPH (computed by a program from the records above) ===
+MAP CHECK {"elements":29,"driving records":60,"receiving records":60,"driving without receiving":0,"receiving without driving":0}
+    {"clock or reset (drive SEQUENCES / RESETS)":["clk_i","rstn_i"]}
+    {"whole records (their fields carry the records)":["xtea"]}
+    {"self-updating (X is computed from X: counters, state registers)":["xtea.done","xtea.sum"]}
+PATH {"from":"csr_wdata_i","source":"input"}
+    {"stores":["key_mem","xtea.res"]}
+    {"exits":["csr_rdata_o","result_o"]}
+    {"influence":["csr_addr_i","csr_we_i","funct3_i","rtype_i","xtea.done","xtea.sum"]}
+PATH {"from":"rs1_i","source":"input"}
+    {"stores":["xtea.opa","xtea.res","xtea.sum"]}
+    {"exits":["result_o"]}
+    {"influence":["funct3_i","rtype_i","start_i","xtea.done"]}
+PATH {"from":"rs2_i","source":"input"}
+    {"stores":["xtea.opb","xtea.res"]}
+    {"exits":["result_o"]}
+    {"influence":["funct3_i","rtype_i","start_i","xtea.done"]}
+PATH {"from":"xtea.done","source":"constant-valued"}
+    {"exits":["valid_o"]}
+    {"influence":["funct3_i","rtype_i","start_i"]}
+CONTROL-ONLY {"from":"csr_addr_i","source":"input","gates or selects":["csr_rdata_o","key_mem"]}
+CONTROL-ONLY {"from":"csr_we_i","source":"input","gates or selects":["key_mem"]}
+CONTROL-ONLY {"from":"funct3_i","source":"input","gates or selects":["result_o","tmp_a","tmp_b","tmp_x","tmp_y","tmp_z","valid_o","xtea.res","xtea.sum"]}
+CONTROL-ONLY {"from":"rtype_i","source":"input","gates or selects":["result_o","valid_o","xtea.done","xtea.opa","xtea.opb"]}
+CONTROL-ONLY {"from":"start_i","source":"input","gates or selects":["xtea.done","xtea.opa","xtea.opb"]}
+    {"no local use (no relationship, connection or constant driver)":["active_i","funct7_i","rs3_i"]}
+
+Identify the primary security assets for 'neorv32_cpu_cp_cfu' and return the JSON object per the contract.

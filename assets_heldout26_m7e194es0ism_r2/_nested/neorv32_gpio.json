@@ -1,0 +1,128 @@
+{
+  "module name": "neorv32_gpio",
+  "conceptual assets": [
+    {
+      "concept": "GPIO output configuration (port_out) that drives gpio_o",
+      "security objective": "Integrity",
+      "reasoning": "bus_access process writes the output register on bus writes: when bus_req_i.stb='1' and bus_req_i.rw='1' and bus_req_i.addr(4 downto 2)=addr_out_c => port_out <= bus_req_i.data(GPIO_NUM-1 downto 0). The output_stage process drives gpio_o(GPIO_NUM-1 downto 0) <= port_out. The module's write->drive relation is implemented in these statements; an incorrect port_out or gpio_o value would break that implemented relation, establishing an Integrity requirement. Structural mapping: the stored register port_out retains the configured value and gpio_o is the entity exit through which that configured value leaves.",
+      "related structural assets": [
+        {
+          "asset rtl": "port_out",
+          "entity": "neorv32_gpio",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "gpio_o",
+          "entity": "neorv32_gpio",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Captured GPIO input samples (current and previous) used for readback and edge/level detection",
+      "security objective": "Integrity",
+      "reasoning": "input_stage process samples inputs on clock: on rising_edge(clk_i) port_in <= gpio_i(GPIO_NUM-1 downto 0); port_in2 <= port_in. The bus read path returns port_in for addr_in_c (bus_access: when addr_in_c => bus_rsp_o.data(...) <= port_in), and irq_trigger processes use both port_in and port_in2 to decide transitions. The correctness of readback and trigger logic depends on these stored samples, establishing Integrity. Structural mapping: gpio_i is where the value enters (sets) and port_in and port_in2 are the stored sampled values (stores).",
+      "related structural assets": [
+        {
+          "asset rtl": "gpio_i",
+          "entity": "neorv32_gpio",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "port_in",
+          "entity": "neorv32_gpio",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "port_in2",
+          "entity": "neorv32_gpio",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Per-pin interrupt type configuration (irq_typ)",
+      "security objective": "Integrity",
+      "reasoning": "bus_access process writes irq_typ on bus writes to addr_tt_c: when addr_tt_c => irq_typ <= bus_req_i.data(GPIO_NUM-1 downto 0). irq_trigger processes form sel_v := irq_typ(i) & irq_pol(i) and use it to select the per-pin trigger expression that produces irq_trig(i). The trigger decision depends on irq_typ, so its integrity is required to preserve the implemented trigger selection behavior. Structural mapping: irq_typ is the stored configuration register realizing this concept.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_typ",
+          "entity": "neorv32_gpio",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Per-pin interrupt polarity configuration (irq_pol)",
+      "security objective": "Integrity",
+      "reasoning": "bus_access process writes irq_pol on bus writes to addr_tp_c: when addr_tp_c => irq_pol <= bus_req_i.data(GPIO_NUM-1 downto 0). irq_trigger processes use irq_pol together with irq_typ (sel_v := irq_typ(i) & irq_pol(i)) to select the trigger condition (level or edge, polarity). The correct trigger expression depends on irq_pol, so its integrity is required. Structural mapping: irq_pol is the stored configuration register realizing this concept.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_pol",
+          "entity": "neorv32_gpio",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Per-pin interrupt enable (irq_en)",
+      "security objective": "Integrity",
+      "reasoning": "bus_access process writes irq_en on bus writes to addr_ie_c: when addr_ie_c => irq_en <= bus_req_i.data(GPIO_NUM-1 downto 0). irq_buffer uses irq_en in the pending update: irq_pend <= irq_en and ((irq_pend and irq_clrn) or irq_trig). Because irq_en directly gates which pending bits may be set (and thus which interrupts can propagate), its integrity is required to enforce the implemented enable behaviour. Structural mapping: irq_en is the stored enable register realizing this concept.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_en",
+          "entity": "neorv32_gpio",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Per-pin interrupt clear mask value written/read in irq_clrn",
+      "security objective": "Integrity",
+      "reasoning": "bus_access sets irq_clrn <= (others => '1') by default each rising edge and overrides it on writes to addr_ip_c (when addr_ip_c => irq_clrn <= bus_req_i.data(GPIO_NUM-1 downto 0)). irq_buffer uses irq_clrn in pending update as (irq_pend and irq_clrn) to selectively preserve or clear pending bits. The value presented in irq_clrn thus controls which pending bits are cleared; its integrity is required to ensure correct clear behavior. Structural mapping: irq_clrn is the internal signal that the logic uses to clear pending bits (stores).",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_clrn",
+          "entity": "neorv32_gpio",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Per-pin interrupt trigger decision (irq_trig) computed from inputs and configuration",
+      "security objective": "Integrity",
+      "reasoning": "The generate block's irq_trigger process computes per-bit triggers: sel_v := irq_typ(i) & irq_pol(i); case sel_v is when \"00\" => irq_trig(i) <= not port_in(i); when \"01\" => irq_trig(i) <= port_in(i); when \"10\" => irq_trig(i) <= (not port_in(i)) and port_in2(i); when \"11\" => irq_trig(i) <= port_in(i) and (not port_in2(i)). irq_trig is then used by irq_buffer in irq_pend <= ... or irq_trig. The computed trigger event is therefore a decision the module makes and its integrity is required for correct pending/IRQ behaviour. Structural mapping: irq_trig is the computed per-pin trigger signal (computes).",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_trig",
+          "entity": "neorv32_gpio",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Pending interrupt flags (irq_pend)",
+      "security objective": "Integrity",
+      "reasoning": "irq_buffer registers and updates pending flags on the clock: on reset irq_pend <= (others => '0'); else on rising_edge(clk_i) irq_pend <= irq_en and ((irq_pend and irq_clrn) or irq_trig). The pending vector is read back by bus reads for addr_ip_c and determines cpu_irq_o; corruption of irq_pend would produce incorrect readback and wrong CPU interrupt signalling, establishing Integrity. Structural mapping: irq_pend is the stored pending-flag register realizing this concept (stores).",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_pend",
+          "entity": "neorv32_gpio",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "CPU interrupt request output (cpu_irq_o) driven from pending flags",
+      "security objective": "Integrity",
+      "reasoning": "irq_buffer computes the CPU interrupt output on each clock: cpu_irq_o <= or_reduce_f(irq_pend). The CPU IRQ leaves the entity through the port cpu_irq_o; its correct value depends on irq_pend. An incorrect cpu_irq_o would break the implemented mapping from pending flags to the external IRQ signal, establishing Integrity. Structural mapping: cpu_irq_o is the entity exit port realizing the CPU-level IRQ signal.",
+      "related structural assets": [
+        {
+          "asset rtl": "cpu_irq_o",
+          "entity": "neorv32_gpio",
+          "realization": "exit port"
+        }
+      ]
+    }
+  ]
+}

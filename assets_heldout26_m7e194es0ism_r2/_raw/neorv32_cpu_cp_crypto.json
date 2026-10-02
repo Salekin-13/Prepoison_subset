@@ -1,0 +1,213 @@
+{
+  "module name": "neorv32_cpu_cp_crypto",
+  "conceptual assets": [
+    {
+      "concept": "Decoded command selection (which crypto sub-operation to execute)",
+      "security objective": "Integrity",
+      "reasoning": "Concurrent signal assignments compute the cmd vector from EN_* generics and instruction fields (cmd(...) <= '1' when EN_... and ctrl_i.ir_* conditions); or_reduce_f(cmd) is used to form cmd_valid and the control FSM tests cmd bits to choose S_BUSY or to set done in the control process. The selected cmd bits therefore determine which crypto flow executes; their corruption would select a wrong operation.",
+      "related structural assets": [
+        {
+          "asset rtl": "cmd",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Command-valid decision (start-of-crypto operation condition)",
+      "security objective": "Integrity",
+      "reasoning": "cmd_valid is computed by 'cmd_valid <= '1' when (ctrl_i.alu_cp_alu = '1') and (or_reduce_f(cmd) = '1') else '0'' and the control process uses 'if (cmd_valid = '1') then' to capture operands and instruction fields and to drive the FSM into S_BUSY. cmd_valid therefore gates input capture and operation start; its incorrect setting would cause spurious or suppressed starts.",
+      "related structural assets": [
+        {
+          "asset rtl": "cmd_valid",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Captured operand values used by crypto operations (rs1, rs2)",
+      "security objective": "Integrity",
+      "reasoning": "On a start the control process stores inputs 'rs1 <= rs1_i; rs2 <= rs2_i;' and those stored registers feed the crypto computations: xperm uses rs1 and rs2 slices, sha_core reads rs1/rs2 for rotations/xors, and block ciphers compute 'blk_res <= rs1 xor rol_res'. Corrupting the captured operands or their capture would alter all computed results.",
+      "related structural assets": [
+        {
+          "asset rtl": "rs1_i",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "rs2_i",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "rs1",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rs2",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Stored instruction fields that parameterize operations (funct12, funct3)",
+      "security objective": "Integrity",
+      "reasoning": "The control process captures instruction fields on start 'funct3 <= ctrl_i.ir_funct3; funct12 <= ctrl_i.ir_funct12;'. These stored fields control many behaviors (out_sel derivation, rs2_sel byte select, aes.mix2 selection via funct12(6), and other selectors). Corruption of funct12/funct3 changes which algorithm, which byte, or which mode is used.",
+      "related structural assets": [
+        {
+          "asset rtl": "funct12",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "funct3",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Operation completion indicator that gates result production (done/valid_o)",
+      "security objective": "Integrity",
+      "reasoning": "The control FSM sets 'done' in specific branches of the state machine and 'valid_o <= done;'. The result process assigns res_o only when 'done = '1''. Therefore done (and the output signal valid_o driven from it) gate delivery of results; incorrect done/valid_o would produce false or missing result indications.",
+      "related structural assets": [
+        {
+          "asset rtl": "done",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "valid_o",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Result data leaving the module (res_o)",
+      "security objective": "Integrity",
+      "reasoning": "The result process assigns res_o at clock edge when done = '1' and selects among internal results (xperm_res, blk_res, sha_res or sm3_res) based on out_sel and instruction fields; res_o is the module exit carrying computed crypto outputs, so its integrity is required to report the correct computed value.",
+      "related structural assets": [
+        {
+          "asset rtl": "res_o",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Selected rs2 byte (rs2_sel) used as S-box index and rol input selector",
+      "security objective": "Integrity",
+      "reasoning": "rs2_sel is computed by 'with funct12(11 downto 10) select rs2_sel <= rs2(07 downto 00) when \"00\", ...' and is used as the index for AES and SM4 S-box lookups ('aes.so <= aes_sbox_c(to_integer(unsigned(aes.dec & rs2_sel)));' and 'sm4.so1 <= sm4_sbox_c(to_integer(unsigned(rs2_sel)));') and to select rol_in; corrupting rs2_sel changes which S-box entry and byte are used.",
+      "related structural assets": [
+        {
+          "asset rtl": "rs2_sel",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "AES encrypt/decrypt mode decision (aes.dec) selecting S-box variant and mix-column behavior",
+      "security objective": "Integrity",
+      "reasoning": "aes.dec is computed from generics and instruction bits ('aes.dec <= '1' when (not EN_ZKNE) else '0' when (not EN_ZKND) else funct12(7);') and is concatenated with rs2_sel to index aes_sbox_c; aes.dec is also read in aes_mix_columns to choose gfmul coefficients. Altering aes.dec changes S-box variant and mix-column arithmetic, altering AES computations.",
+      "related structural assets": [
+        {
+          "asset rtl": "aes.dec",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "AES S-box output and mix result used by the block cipher (aes.so, aes.mix2)",
+      "security objective": "Integrity",
+      "reasoning": "AES S-box output is registered in the clocked process ('if rising_edge(clk_i) then aes.so <= aes_sbox_c(to_integer(unsigned(aes.dec & rs2_sel))); end if') and mix columns compute aes.mix1 in a clocked process; aes.mix2 is selected from mix1 or from aes.so and then used as rol_in for block ciphers. Integrity of aes.so/aes.mix2 affects later rol_res and blk_res and thus final block-cipher outputs.",
+      "related structural assets": [
+        {
+          "asset rtl": "aes.so",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "aes.mix2",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "SM4 S-box output and round result used by the block cipher (sm4.so1, sm4.rnd)",
+      "security objective": "Integrity",
+      "reasoning": "sm4.so1 is registered from sm4_sbox_c on rising_edge(clk_i) and sm4.rnd is produced in the clocked sm4_round process; sm4.rnd can be selected into rol_in and then into rol_res/blk_res. These stored SM4 intermediate results directly affect the block-cipher result when SM4 is selected.",
+      "related structural assets": [
+        {
+          "asset rtl": "sm4.so1",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "sm4.rnd",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Block-cipher result (blk_res) computed from rs1 and rotated operand",
+      "security objective": "Integrity",
+      "reasoning": "blk_res is computed as 'blk_res <= rs1 xor rol_res;' where rol_res is derived from rol_in under funct12-controlled rotation; result process assigns blk_res to res_o when out_sel selects block ciphers. Corruption of blk_res or rol_res changes the reported cipher output.",
+      "related structural assets": [
+        {
+          "asset rtl": "blk_res",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "rol_res",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Permutation result (xperm_res) produced by xperm8/xperm4 functions",
+      "security objective": "Integrity",
+      "reasoning": "When EN_ZBKX is enabled the design computes xperm8_res/xperm4_res from rs1 and rs2 via xperm8_f/xperm4_f and selects xperm_res accordingly ('xperm_res <= xperm8_res when (funct3(2) = '1') else xperm4_res'); the result process assigns xperm_res to res_o when out_sel indicates the permutation operation. Integrity of xperm_res is required for correct permutation results.",
+      "related structural assets": [
+        {
+          "asset rtl": "xperm_res",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "SHA result produced by the SHA combinational core (sha_res)",
+      "security objective": "Integrity",
+      "reasoning": "sha_res is computed in sha_core (process sensitive to funct12, rs1, rs2) by rotations and shifts of rs1/rs2 per funct12 branches; the result process uses sha_res as the reported result (unless sm3 case applies). Corruption of sha_res would yield incorrect hash outputs.",
+      "related structural assets": [
+        {
+          "asset rtl": "sha_res",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "SM3 result produced by the SM3 combinational expression (sm3_res)",
+      "security objective": "Integrity",
+      "reasoning": "When EN_ZKSH is enabled sm3_res is assigned combinationally ('sm3_res <= (rs1 xor rol_f(rs1,9) xor rol_f(rs1,17)) when (funct12(0) = '0') else ...'); the result process selects sm3_res for res_o in the SM3 case. Integrity of sm3_res is required to provide correct SM3 outputs.",
+      "related structural assets": [
+        {
+          "asset rtl": "sm3_res",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "computes"
+        }
+      ]
+    }
+  ]
+}

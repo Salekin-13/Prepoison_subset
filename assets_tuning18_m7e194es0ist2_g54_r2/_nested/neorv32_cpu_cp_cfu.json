@@ -1,0 +1,323 @@
+{
+  "module name": "neorv32_cpu_cp_cfu",
+  "module purpose": "neorv32_cpu_cp_cfu stores four 32-bit CSR-programmable words, latches rs1_i and rs2_i for an accepted r3-type request, updates internal operand/sum/result state according to funct3_i and the stored words, returns the addressed stored word on csr_rdata_o, and reports a 32-bit result with valid_o.",
+  "use-case flows": [
+    {
+      "flow": "configure",
+      "value": "a 32-bit CSR word written into the selected slot of the internal four-word memory",
+      "lines": [
+        178,
+        179
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "the selected stored CSR word returned on csr_rdata_o",
+      "lines": [
+        185
+      ]
+    },
+    {
+      "flow": "start",
+      "value": "acceptance of an r3-type request and capture of rs1_i and rs2_i into internal operand registers",
+      "lines": [
+        204,
+        205,
+        206,
+        207
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "update of the internal sum and result from the captured operands, the stored CSR words and funct3_i-selected arithmetic branches",
+      "lines": [
+        211,
+        213,
+        214,
+        215,
+        216,
+        217,
+        218,
+        221,
+        222,
+        224,
+        232,
+        233,
+        234,
+        235,
+        236,
+        237,
+        238
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "result_o and valid_o selected from the computed result, the done state, or constant zero/one according to rtype_i and funct3_i",
+      "lines": [
+        200,
+        201,
+        245,
+        247,
+        248,
+        249,
+        250,
+        251,
+        252,
+        253,
+        254,
+        255,
+        256,
+        261,
+        262
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "internal CSR memory and core state cleared to zero while rstn_i is low",
+      "lines": [
+        175,
+        176,
+        192,
+        193,
+        194,
+        195,
+        196,
+        197
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "CSR-programmed four-word lookup state",
+      "security objective": "Integrity",
+      "reasoning": "Lines 178-179 write csr_wdata_i into key_mem(to_integer(unsigned(csr_addr_i))) when csr_we_i='1'; line 185 reads the selected word back on csr_rdata_o; and lines 236-238 use a selected key_mem word as tmp_z for the arithmetic result path. Integrity is Established because both readout and computation depend on the exact stored 32-bit words and their addressed slot. Availability is also Established because key_mem stores the words across cycles until reset (lines 175-176, 179) and csr_rdata_o continuously returns the addressed word (line 185).",
+      "related structural assets": [
+        {
+          "asset rtl": "csr_wdata_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "key_mem"
+          }
+        },
+        {
+          "asset rtl": "csr_addr_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SELECTS",
+            "partner": "key_mem"
+          }
+        },
+        {
+          "asset rtl": "key_mem",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "csr_rdata_o",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "key_mem"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Requested operation code and start qualification",
+      "security objective": "Integrity",
+      "reasoning": "The module uses start_i and rtype_i to accept an operation at line 204, and uses funct3_i to choose the implemented branches: lines 213-218 select xtea.sum behavior, lines 221-237 select add/subtract and operand/key selection, and lines 247-256 select which result/valid branch is reported. Integrity is Established because a wrong request code makes the module execute a different operation or report the wrong branch outcome. Availability is Established only as implemented: when start_i='1' and rtype_i=r3type_c the request is accepted (lines 204-207), while unsupported funct3_i values are forced to zero/invalid (lines 254-256, 261-262).",
+      "related structural assets": [
+        {
+          "asset rtl": "start_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATES",
+            "partner": "xtea.done"
+          }
+        },
+        {
+          "asset rtl": "rtype_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATES",
+            "partner": "xtea.done"
+          }
+        },
+        {
+          "asset rtl": "funct3_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets",
+          "occurrence": 12,
+          "edge": {
+            "type": "SELECTS",
+            "partner": "result_o"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Latched operation operands",
+      "security objective": "Integrity",
+      "reasoning": "On an accepted start, xtea.opa <= rs1_i and xtea.opb <= rs2_i (lines 204-206). The core later uses these stored values to initialize xtea.sum (line 214) and to derive tmp_a/tmp_b/tmp_x/tmp_y (lines 232-235), which feed tmp_r and xtea.res (lines 238, 222-224). Integrity is Established because the reported arithmetic result depends on the exact captured operands; availability is also Established because xtea.opa and xtea.opb retain them until reset or a later accepted start (lines 194-195, 205-206).",
+      "related structural assets": [
+        {
+          "asset rtl": "rs1_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "xtea.opa"
+          }
+        },
+        {
+          "asset rtl": "xtea.opa",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "rs2_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "xtea.opb"
+          }
+        },
+        {
+          "asset rtl": "xtea.opb",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Internal running-sum state",
+      "security objective": "Integrity",
+      "reasoning": "When xtea.done(0)='1', xtea.sum is either loaded from xtea.opa, incremented by xtea_delta_c, or decremented by xtea_delta_c (lines 213-218). Lines 236-238 then use xtea.sum both to select which key_mem word becomes tmp_z and to contribute to tmp_r. Integrity is Established because wrong xtea.sum changes the selected stored word and the computed arithmetic state; availability is also Established because xtea.sum is held in a register and self-updated until reset (lines 196, 214, 216, 218).",
+      "related structural assets": [
+        {
+          "asset rtl": "xtea.sum",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Computed arithmetic result value",
+      "security objective": "Integrity",
+      "reasoning": "When xtea.done(0)='1', xtea.res stores tmp_b +/- tmp_r depending on funct3_i(1) (lines 221-224). The report path forwards xtea.res to result_o only for the four arithmetic funct3_i cases and only when rtype_i=r3type_c (lines 245, 247-250). Integrity is Established because consumers of result_o must receive exactly the value defined by those arithmetic relations; availability is also Established because xtea.res is registered and result_o exposes it in the selected report branch.",
+      "related structural assets": [
+        {
+          "asset rtl": "xtea.res",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "result_o",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "xtea.res"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Result-valid and operation-complete decision",
+      "security objective": "Integrity",
+      "reasoning": "xtea.done(0) is asserted on an accepted start (line 207), xtea.done(1) <= xtea.done(0) delays that state by one cycle (line 201), and valid_o reports xtea.done(1) for the four arithmetic funct3_i cases (line 250), '1' for xtea_init_c (line 253), and '0' otherwise or for non-r3type requests (lines 256, 262). Integrity is Established because the consumer depends on the exact result-valid/completion decision, not just the result value. Availability is also Established because the module explicitly produces one of these valid_o outcomes and clears the stored state on reset (lines 193, 200-201).",
+      "related structural assets": [
+        {
+          "asset rtl": "start_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATES",
+            "partner": "xtea.done"
+          }
+        },
+        {
+          "asset rtl": "rtype_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets",
+          "occurrence": 4,
+          "edge": {
+            "type": "GATES",
+            "partner": "valid_o"
+          }
+        },
+        {
+          "asset rtl": "funct3_i",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "sets",
+          "occurrence": 12,
+          "edge": {
+            "type": "SELECTS",
+            "partner": "valid_o"
+          }
+        },
+        {
+          "asset rtl": "xtea.done",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "valid_o",
+          "entity": "neorv32_cpu_cp_cfu",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "xtea.done"
+          }
+        }
+      ]
+    }
+  ]
+}

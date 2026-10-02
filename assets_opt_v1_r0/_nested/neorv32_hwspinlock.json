@@ -1,0 +1,62 @@
+{
+ "module name": "neorv32_hwspinlock",
+ "module purpose": "neorv32_hwspinlock holds 32 one-bit lock flags in lock_q; a strobed bus access with addr(7)='0' whose addr(6 downto 2) matches index i writes not rw into lock_q(i), so an rw='0' access sets the flag and an rw='1' access clears it, while a strobed rw='0' access is answered with the addressed flag's value from before that clock edge (addr(7)='0') or with all 32 flags (addr(7)='1'); every strobe is acknowledged one clock later.",
+ "use-case flows": [
+  {
+   "flow": "operate",
+   "value": "update of the addressed lock flag: lock_q(i) takes not rw when stb='1', addr(7)='0' and sel(i)='1', so an rw='0' access sets the flag to '1' and an rw='1' access clears it to '0'",
+   "lines": [43, 44, 45, 51]
+  },
+  {
+   "flow": "read out",
+   "value": "lock flags returned on a strobed rw='0' access: the addressed flag masked by sel (its value before the same clock edge that sets it) when addr(7)='0', or all 32 flags when addr(7)='1'",
+   "lines": [62, 65, 66, 67, 68, 69, 70]
+  },
+  {
+   "flow": "report",
+   "value": "access acknowledgment: ack follows stb one clock later and err is held at '0'",
+   "lines": [62, 63, 64]
+  },
+  {
+   "flow": "reset",
+   "value": "all lock flags cleared to '0' and the response set to rsp_terminate_c while rstn_i = '0'",
+   "lines": [41, 42, 60, 61]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Lock flag state -- the 32 one-bit flags, each set by an rw='0' access to its index and cleared by an rw='1' access, held between accesses and returned to requesters",
+   "security objective": "Integrity",
+   "reasoning": "The operate flow stores `lock_q(i) <= not bus_req_i.rw;` (line 45) only under `(bus_req_i.stb = '1') and (bus_req_i.addr(7) = '0') and (sel(i) = '1')` (line 44); the only other assignment is the reset `lock_q(i) <= '0';` (line 42, RESET_BY rstn_i). The read-out flow returns `bus_rsp_o.data <= lock_q and sel;` (line 68, lock_q SOURCES bus_rsp_o.data at occurrence 4) or `bus_rsp_o.data <= lock_q;` (line 70, CARRIES at occurrence 5). Both processes act on the same rising edge of clk_i (lines 43, 62), so by signal-assignment semantics an rw='0' access at addr(7)='0' returns the flag's value from before the edge and leaves the flag at '1': the returned value and the stored state must both follow this update rule. Integrity is Established: the flag value is delivered through the output field bus_rsp_o.data to a requester that is not supplied, which must receive exactly the value the flow defines, and the stored flag must change only under the line 44 guard. Availability is also Established: each flag holds its value between qualified accesses (storage edge, assigned only at lines 42 and 45) and is returned on every strobed rw='0' access (lines 66-70). Confidentiality is not established: any strobed rw='0' access with addr(7)='1' returns all 32 flags (line 70) and no line restricts the reader. lock_q stores the concept (CLOCKED_BY clk_i, occurrence 3, line 45) and its own records show the use (CARRIES and SOURCES into bus_rsp_o.data). bus_req_i (whose rw field supplies the value and whose stb and addr fields gate it) and bus_rsp_o (whose data field carries the flags out) are records carrying complete request and response transactions (addr, data, ben, stb, rw; ack, err, data), so section 7 excludes them whole and by field: no setting or exit reference survives, and lock_q is the in-block element that stores the value.",
+   "related structural assets": [
+    {
+     "asset rtl": "lock_q",
+     "entity": "neorv32_hwspinlock",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {
+      "type": "CLOCKED_BY",
+      "partner": "clk_i"
+     }
+    }
+   ]
+  },
+  {
+   "concept": "Lock index selection decision -- whether an access's address picks lock i, which decides which flag an access sets or clears and which flag a test-and-set read returns",
+   "security objective": "Integrity",
+   "reasoning": "`sel(i) <= '1' when (bus_req_i.addr(6 downto 2) = std_ulogic_vector(to_unsigned(i, 5))) else '0';` (line 51) computes a comparison result (GATED_BY bus_req_i.addr, occurrence 3). The operate flow depends on it: sel(i) is the per-index term of the update guard at line 44 (GATES lock_q, occurrence 2), and the read-out flow masks the returned word with it in `bus_rsp_o.data <= lock_q and sel;` (line 68, SOURCES bus_rsp_o.data, occurrence 4). Integrity is Established: the update at line 45 must reach exactly the flag whose index equals addr(6 downto 2), and the word returned at line 68 must expose exactly that flag; a wrong decision sets or clears a different flag and returns a different flag's prior value. sel is combinational and holds no state, so no separate availability claim is made; confidentiality is not established. The flow graph lists sel as not reached from an input by data because its value comes from the address comparison, a control relation, which makes it a decision rather than a forwarded value. The other operands of the line 44 guard (stb and addr(7)) are fields of the transport port bus_req_i and are not reported.",
+   "related structural assets": [
+    {
+     "asset rtl": "sel",
+     "entity": "neorv32_hwspinlock",
+     "realization": "computes",
+     "occurrence": 3,
+     "edge": {
+      "type": "GATED_BY",
+      "partner": "bus_req_i.addr"
+     }
+    }
+   ]
+  }
+ ]
+}

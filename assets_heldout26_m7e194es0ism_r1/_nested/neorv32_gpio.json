@@ -1,0 +1,123 @@
+{
+  "module name": "neorv32_gpio",
+  "conceptual assets": [
+    {
+      "concept": "GPIO output value stored in port_out and presented on gpio_o",
+      "security objective": "Integrity",
+      "reasoning": "The bus write flow updates port_out on writes to addr_out_c: \"when addr_out_c => port_out <= bus_req_i.data(GPIO_NUM-1 downto 0);\" reset sets port_out <= (others => '0'); the output_stage drives gpio_o(GPIO_NUM-1 downto 0) <= port_out. Corrupting the stored value or its exported port would change the driven GPIO outputs, violating the implemented output state.",
+      "related structural assets": [
+        {
+          "asset rtl": "port_out",
+          "entity": "neorv32_gpio",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "gpio_o",
+          "entity": "neorv32_gpio",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Sampled GPIO input state captured from gpio_i into port_in",
+      "security objective": "Integrity",
+      "reasoning": "The input sampling flow registers gpio_i into port_in on the clock: \"port_in <= gpio_i(GPIO_NUM-1 downto 0)\" (input_stage). port_in is returned on bus read at addr_in_c: \"when addr_in_c => bus_rsp_o.data(GPIO_NUM-1 downto 0) <= port_in\" and is used by irq_trigger logic. Corrupting the sampled value or its source would alter reads and IRQ decisions.",
+      "related structural assets": [
+        {
+          "asset rtl": "gpio_i",
+          "entity": "neorv32_gpio",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "port_in",
+          "entity": "neorv32_gpio",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Per-pin IRQ trigger decision computed into irq_trig",
+      "security objective": "Integrity",
+      "reasoning": "The generate block computes irq_trig(i) from irq_typ(i), irq_pol(i), port_in(i) and port_in2(i): sel_v := irq_typ(i) & irq_pol(i); case sel_v sets irq_trig(i) to expressions such as not port_in(i), port_in(i), (not port_in(i)) and port_in2(i), etc. irq_trig is used by irq_buffer to set pending bits: \"irq_pend <= irq_en and ((irq_pend and irq_clrn) or irq_trig)\". Corrupting the trigger decisions would change pending interrupts.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_trig",
+          "entity": "neorv32_gpio",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Per-pin interrupt-pending flags stored in irq_pend",
+      "security objective": "Integrity",
+      "reasoning": "The irq_buffer process updates irq_pend on clock: \"irq_pend <= irq_en and ((irq_pend and irq_clrn) or irq_trig)\" and reset clears irq_pend <= (others => '0'). irq_pend is returned on bus read at addr_ip_c: \"when addr_ip_c => bus_rsp_o.data(GPIO_NUM-1 downto 0) <= irq_pend\" and drives cpu_irq_o via reduction. Corrupting irq_pend would change CPU-visible interrupt state.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_pend",
+          "entity": "neorv32_gpio",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "CPU interrupt output signal driven from irq_pend",
+      "security objective": "Integrity",
+      "reasoning": "irq_buffer drives the module output cpu_irq_o from irq_pend on clock: \"cpu_irq_o <= or_reduce_f(irq_pend)\" and reset sets cpu_irq_o <= '0'. Corrupting cpu_irq_o would change the interrupt presented to the CPU.",
+      "related structural assets": [
+        {
+          "asset rtl": "cpu_irq_o",
+          "entity": "neorv32_gpio",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Per-pin IRQ enable mask stored in irq_en",
+      "security objective": "Integrity",
+      "reasoning": "irq_en is written by bus writes: \"when addr_ie_c => irq_en <= bus_req_i.data(GPIO_NUM-1 downto 0);\" and is used in irq_buffer to gate pending updates: \"irq_pend <= irq_en and ((...))\". Corrupting irq_en changes which events produce pending interrupts.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_en",
+          "entity": "neorv32_gpio",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Per-pin IRQ type configuration stored in irq_typ",
+      "security objective": "Integrity",
+      "reasoning": "irq_typ is programmed by bus writes: \"when addr_tt_c => irq_typ <= bus_req_i.data(GPIO_NUM-1 downto 0);\" and used by irq_trigger to select trigger behavior (sel_v := irq_typ(i) & irq_pol(i)). Corrupting irq_typ changes how events are detected.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_typ",
+          "entity": "neorv32_gpio",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Per-pin IRQ polarity configuration stored in irq_pol",
+      "security objective": "Integrity",
+      "reasoning": "irq_pol is programmed by bus writes: \"when addr_tp_c => irq_pol <= bus_req_i.data(GPIO_NUM-1 downto 0);\" and used by irq_trigger in sel_v := irq_typ(i) & irq_pol(i). Corrupting irq_pol changes trigger polarity and detected events.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_pol",
+          "entity": "neorv32_gpio",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Per-pin IRQ clear mask stored in irq_clrn",
+      "security objective": "Integrity",
+      "reasoning": "irq_clrn is driven to all ones each clock by default in the bus_access process (irq_clrn <= (others => '1')) and can be written via \"when addr_ip_c => irq_clrn <= bus_req_i.data(GPIO_NUM-1 downto 0);\". irq_buffer uses irq_clrn to clear pending bits: \"(irq_pend and irq_clrn)\". Corrupting irq_clrn would alter clearing behavior of pending interrupts.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_clrn",
+          "entity": "neorv32_gpio",
+          "realization": "stores"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,76 @@
+{"module name": "neorv32_sysinfo",
+ "conceptual assets": [
+  {
+   "concept": "Runtime sysinfo word 0 value (reset-initialized and bus-writable 32-bit field)",
+   "security objective": "Integrity",
+   "reasoning": "RTL shows sysinfo(0) is a stored, register-like value: on reset it is initialized (`if (rstn_i = '0') then sysinfo(0) <= std_ulogic_vector(to_unsigned(CLOCK_FREQUENCY, 32));`) and on rising clock it is updated from the bus when a qualified write occurs (`elsif rising_edge(clk_i) then if (bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(3 downto 2) = \"00\") then sysinfo(0) <= bus_req_i.data; end if;`). Readback of sysinfo words is delivered by `bus_rsp_o.data <= sysinfo(to_integer(unsigned(buf_adr))) when (buf_ack = '1') else (others => '0');`. Corruption or incorrect setting of sysinfo(0) therefore violates the implemented write/read semantics and the module's delivered read value, establishing an Integrity objective. The internal register sysinfo(0) is the storing element realizing this concept (bus_req_i and bus_rsp_o are transport ports and are not reported as structural references).",
+   "related structural assets": [
+    {
+     "asset rtl": "sysinfo(0)",
+     "entity": "neorv32_sysinfo",
+     "realization": "stores"
+    }
+   ]
+  },
+  {
+   "concept": "Static configuration word (sysinfo(1)) reporting memory sizes, hart count and boot mode",
+   "security objective": "Integrity",
+   "reasoning": "sysinfo(1) is computed from compile-time parameters and constants: `sysinfo(1)(7 downto 0) <= std_ulogic_vector(to_unsigned(log2_imem_size_c, 8)) when int_imem_en_c else (others => '0');`, `sysinfo(1)(15 downto 8) <= std_ulogic_vector(to_unsigned(log2_dmem_size_c, 8)) when int_dmem_en_c else (others => '0');`, `sysinfo(1)(23 downto 16) <= std_ulogic_vector(to_unsigned(NUM_HARTS, 8));` and `sysinfo(1)(31 downto 24) <= std_ulogic_vector(to_unsigned(BOOT_MODE_SELECT, 8));`. The module returns this word on bus read (`bus_rsp_o.data <= sysinfo(to_integer(unsigned(buf_adr))) when (buf_ack = '1') ...`). If these computed bits were incorrect or altered, the readback would be wrong; the RTL establishes Integrity for this reported configuration value. The internally computed signal sysinfo(1) realizes the concept.",
+   "related structural assets": [
+    {
+     "asset rtl": "sysinfo(1)",
+     "entity": "neorv32_sysinfo",
+     "realization": "computes"
+    }
+   ]
+  },
+  {
+   "concept": "Feature-bit vector (sysinfo(2)) reporting enabled/disabled optional features",
+   "security objective": "Integrity",
+   "reasoning": "sysinfo(2) is driven by explicit concurrent assignments of feature bits derived from generics/constants (examples: `sysinfo(2)(0) <= '1' when INT_BOOTLOADER_EN else '0';`, `sysinfo(2)(11) <= '1' when OCD_AUTH else '0';`, `sysinfo(2)(15) <= '1' when IO_GPIO_EN else '0';`, etc.). The word is returned to the bus via `bus_rsp_o.data <= sysinfo(to_integer(unsigned(buf_adr))) when (buf_ack = '1') ...`. Because the read response depends on these computed bits, their integrity is established by the RTL: incorrect sysinfo(2) values would make the module report incorrect feature flags. The internally-driven signal sysinfo(2) realizes this concept.",
+   "related structural assets": [
+    {
+     "asset rtl": "sysinfo(2)",
+     "entity": "neorv32_sysinfo",
+     "realization": "computes"
+    }
+   ]
+  },
+  {
+   "concept": "Cache-configuration word (sysinfo(3)) reporting cache block size and block-number fields",
+   "security objective": "Integrity",
+   "reasoning": "sysinfo(3) bits are computed from cache-related constants when caches are enabled: `sysinfo(3)(3 downto 0) <= std_ulogic_vector(to_unsigned(log2_c_bsize_c, 4)) when ICACHE_EN else (others => '0');`, `sysinfo(3)(7 downto 4) <= std_ulogic_vector(to_unsigned(log2_ic_bnum_c, 4)) when ICACHE_EN else (others => '0');`, and corresponding DCACHE fields. The module returns sysinfo elements on bus reads (`bus_rsp_o.data <= sysinfo(to_integer(unsigned(buf_adr))) when (buf_ack = '1') ...`), so integrity of these computed fields matters for correct reported configuration. The internal signal sysinfo(3) realizes the value the module computes and reports.",
+   "related structural assets": [
+    {
+     "asset rtl": "sysinfo(3)",
+     "entity": "neorv32_sysinfo",
+     "realization": "computes"
+    }
+   ]
+  },
+  {
+   "concept": "Buffered read address (captured index selecting which sysinfo word to return)",
+   "security objective": "Integrity",
+   "reasoning": "The access_buffer process captures the request address index into buf_adr on a qualified request: on reset `buf_adr <= (others => '0');` and on clock `buf_ack <= bus_req_i.stb; if (bus_req_i.stb = '1') then buf_adr <= bus_req_i.addr(3 downto 2); end if;`. The response multiplexer uses that captured value to select which sysinfo element to return (`bus_rsp_o.data <= sysinfo(to_integer(unsigned(buf_adr))) when (buf_ack = '1') else (others => '0');`). Corruption or incorrect capture of buf_adr directly causes the module to return the wrong sysinfo word, establishing an Integrity objective for the buffered index. The internal register buf_adr stores this selection.",
+   "related structural assets": [
+    {
+     "asset rtl": "buf_adr",
+     "entity": "neorv32_sysinfo",
+     "realization": "stores"
+    }
+   ]
+  },
+  {
+   "concept": "Buffered acknowledge flag (buf_ack) controlling when a sysinfo read response is driven",
+   "security objective": "Integrity",
+   "reasoning": "access_buffer sets buf_ack at reset and on clock edges (`if (rstn_i = '0') then buf_ack <= '0'; elsif rising_edge(clk_i) then buf_ack <= bus_req_i.stb; ... end if;`). The module exposes the handshake via `bus_rsp_o.ack <= buf_ack;` and gates read data with `bus_rsp_o.data <= sysinfo(to_integer(unsigned(buf_adr))) when (buf_ack = '1') else (others => '0');`. If buf_ack is incorrect or suppressed the module will assert or withhold responses incorrectly; the RTL therefore establishes Integrity (and also availability consequences) for buf_ack's correctness. The internal register buf_ack stores this flag.",
+   "related structural assets": [
+    {
+     "asset rtl": "buf_ack",
+     "entity": "neorv32_sysinfo",
+     "realization": "stores"
+    }
+   ]
+  }
+ ]
+}

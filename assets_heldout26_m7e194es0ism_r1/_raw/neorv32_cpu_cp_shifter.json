@@ -1,0 +1,65 @@
+{"module name": "neorv32_cpu_cp_shifter",
+ "conceptual assets": [
+  {
+    "concept": "Decoded shift command (instruction decode / start decision)",
+    "security objective": "Integrity",
+    "reasoning": "RTL computes a module-local command signal from the control bus and uses it to start or gate all shift activity. Explicit: \"valid_cmd <= '1' when (ctrl_i.alu_cp_alu = '1') and (...) else '0'\". Serial flow: \"if (valid_cmd = '1') then shifter.busy <= '1'; ... shifter.cnt <= shamt_i; shifter.sreg <= rs1_i;\". Barrel flow: bs_level(0) and bs_sign are driven only when valid_cmd='1' and \"valid_o <= valid_cmd\". Corrupting this decision changes whether/when the shifter loads, runs, or reports results, establishing an integrity requirement. The decision is produced here (valid_cmd) from the input control port (ctrl_i).",
+    "related structural assets": [
+      {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_cp_shifter", "realization": "sets"},
+      {"asset rtl": "valid_cmd", "entity": "neorv32_cpu_cp_shifter", "realization": "computes"}
+    ]
+  },
+  {
+    "concept": "Shift operand value (the data word to be shifted)",
+    "security objective": "Integrity",
+    "reasoning": "The value to be shifted enters the block and is stored/propagated by the shifter logic. Serial: on start \"shifter.sreg <= rs1_i\" and serial updates shift shifter.sreg each cycle; serial outputs use \"res_o <= shifter.sreg when (shifter.done_ff = '1') else (others => '0')\". Barrel: \"bs_level(0) <= ... bit_rev_f(rs1_i) ... else rs1_i\" and then \"bs_result <= bs_level(bs_level'left)\" is registered and used to form res_o. Corrupting the input or the stored operand changes the computed shift result, establishing integrity relevance.",
+    "related structural assets": [
+      {"asset rtl": "rs1_i", "entity": "neorv32_cpu_cp_shifter", "realization": "sets"},
+      {"asset rtl": "shifter.sreg", "entity": "neorv32_cpu_cp_shifter", "realization": "stores"},
+      {"asset rtl": "bs_result", "entity": "neorv32_cpu_cp_shifter", "realization": "stores"}
+    ]
+  },
+  {
+    "concept": "Shift amount (distance) controlling how far the operand is shifted",
+    "security objective": "Integrity",
+    "reasoning": "The module takes the supplied shift amount and uses it to control the shift iteration or the barrel stages. Serial: on start \"shifter.cnt <= shamt_i\" and runtime decrements it (\"shifter.cnt <= std_ulogic_vector(unsigned(shifter.cnt) - 1)\"); run/done derive from cnt (\"shifter.run <= or_reduce_f(shifter.cnt)\" and \"shifter.done <= not or_reduce_f(shifter.cnt(...))\"). Barrel: each stage tests \"shamt_i(i) = '1'\" to select bs_level movement. Corrupting shamt_i or the stored count changes the effective distance and so breaks correctness (integrity).",
+    "related structural assets": [
+      {"asset rtl": "shamt_i", "entity": "neorv32_cpu_cp_shifter", "realization": "sets"},
+      {"asset rtl": "shifter.cnt", "entity": "neorv32_cpu_cp_shifter", "realization": "stores"},
+      {"asset rtl": "shifter.run", "entity": "neorv32_cpu_cp_shifter", "realization": "computes"}
+    ]
+  },
+  {
+    "concept": "Shift result (the final shifted word delivered by the block)",
+    "security objective": "Integrity",
+    "reasoning": "The module produces an explicit result output that must equal the implemented shift transformation. Serial: result leaves when captured by done_ff: \"res_o <= shifter.sreg when (shifter.done_ff = '1') else (others => '0')\". Barrel: result is formed from the registered level: \"res_o <= bit_rev_f(bs_result) when (ctrl_i.ir_funct3(2) = '0') else bs_result\" and \"bs_result <= bs_level(...)\" on the clock edge. Corrupting the stored source values or the gating (done_ff) changes the exported word, establishing an integrity requirement for the exit value and the registers that realize it.",
+    "related structural assets": [
+      {"asset rtl": "res_o", "entity": "neorv32_cpu_cp_shifter", "realization": "exit port"},
+      {"asset rtl": "shifter.sreg", "entity": "neorv32_cpu_cp_shifter", "realization": "stores"},
+      {"asset rtl": "bs_result", "entity": "neorv32_cpu_cp_shifter", "realization": "stores"},
+      {"asset rtl": "shifter.done_ff", "entity": "neorv32_cpu_cp_shifter", "realization": "stores"}
+    ]
+  },
+  {
+    "concept": "Result-ready indicator (valid_o) that signals when the result is available",
+    "security objective": "Integrity",
+    "reasoning": "The module reports result readiness on valid_o using internal state. Serial: \"valid_o <= shifter.busy and shifter.done\". Barrel: \"valid_o <= valid_cmd\". An incorrect valid_o (stuck, flipped or forged) would cause consumers to accept or ignore results incorrectly; this outcome is implemented in RTL and thus integrity of the readiness signal is required. The ready decision is computed here (shifter.done, valid_cmd) and exported on the port valid_o.",
+    "related structural assets": [
+      {"asset rtl": "valid_o", "entity": "neorv32_cpu_cp_shifter", "realization": "exit port"},
+      {"asset rtl": "shifter.done", "entity": "neorv32_cpu_cp_shifter", "realization": "computes"},
+      {"asset rtl": "shifter.busy", "entity": "neorv32_cpu_cp_shifter", "realization": "stores"},
+      {"asset rtl": "valid_cmd", "entity": "neorv32_cpu_cp_shifter", "realization": "computes"}
+    ]
+  },
+  {
+    "concept": "Fill-bit selection for right shifts (arithmetic vs. logical fill)",
+    "security objective": "Integrity",
+    "reasoning": "The bit used to fill vacated positions on right shifts is computed from the operand sign and a control bit and is used by both implementations. Barrel: \"bs_sign <= rs1_i(XLEN-1) and ctrl_i.ir_funct12(10) and valid_cmd\" and bs_sign is used to populate upper bits when shifting (bs_level assignments). Serial: the right-shift update uses \"(shifter.sreg(shifter.sreg'left) and ctrl_i.ir_funct12(10))\" as the new MSB. Thus the selection of arithmetic (sign) versus zero fill is realized here (bs_sign / control inputs) and must have integrity to produce correct arithmetic/logical shift behavior.",
+    "related structural assets": [
+      {"asset rtl": "bs_sign", "entity": "neorv32_cpu_cp_shifter", "realization": "computes"},
+      {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_cp_shifter", "realization": "sets"},
+      {"asset rtl": "rs1_i", "entity": "neorv32_cpu_cp_shifter", "realization": "sets"}
+    ]
+  }
+ ]
+}

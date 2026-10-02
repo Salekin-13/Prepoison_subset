@@ -1,0 +1,359 @@
+{
+  "module name": "neorv32_cpu_pmp",
+  "module purpose": "This block stores per-region configuration and address registers written via ctrl_i.csr_* inputs, reads them back on csr_o, selects an instruction or load/store access context, compares that access against the stored regions, derives per-region permissions, and registers fault_o when the current access is denied.",
+  "use-case flows": [
+    {
+      "flow": "configure",
+      "value": "per-region protection configuration bytes written from ctrl_i.csr_wdata into pmpcfg when the addressed CSR word is selected and unlocked",
+      "lines": [
+        110,
+        112,
+        113,
+        114,
+        121,
+        124,
+        127,
+        129,
+        130,
+        131,
+        133,
+        138,
+        140,
+        143,
+        145
+      ]
+    },
+    {
+      "flow": "configure",
+      "value": "per-region address or boundary values written from ctrl_i.csr_wdata into pmpaddr when the addressed CSR entry is selected and writable",
+      "lines": [
+        154,
+        156,
+        157,
+        158,
+        165,
+        167,
+        170,
+        171,
+        172,
+        173,
+        176
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "packed configuration bytes or formatted address values returned on csr_o according to ctrl_i.csr_addr",
+      "lines": [
+        186,
+        188,
+        189,
+        190,
+        192,
+        195,
+        203,
+        205,
+        207,
+        208,
+        209,
+        211,
+        215,
+        219,
+        229,
+        230,
+        236
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "selected access address and privilege, address masks, region-match results, and per-region allow decisions for the current access",
+      "lines": [
+        244,
+        245,
+        251,
+        254,
+        257,
+        261,
+        263,
+        265,
+        266,
+        267,
+        269,
+        277,
+        278,
+        279,
+        285,
+        289,
+        295,
+        296,
+        301,
+        303,
+        305,
+        307,
+        309,
+        310,
+        318,
+        321,
+        323,
+        325,
+        328,
+        330,
+        332,
+        335,
+        337,
+        339
+      ]
+    },
+    {
+      "flow": "lock",
+      "value": "lock bits in pmpcfg that block later configuration/address writes and contribute to the permission decision",
+      "lines": [
+        127,
+        145,
+        170,
+        172,
+        323,
+        330,
+        337
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "fault result for the current access, suppressed when ctrl_i.cpu_debug is asserted",
+      "lines": [
+        351,
+        354,
+        358,
+        360,
+        363
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "pmpcfg, pmpaddr, addr_mask, and fault_o cleared to zero when rstn_i = '0'",
+      "lines": [
+        124,
+        125,
+        167,
+        168,
+        263,
+        264,
+        360,
+        361
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "CSR write-target decision for protection-state updates",
+      "security objective": "Integrity",
+      "reasoning": "The configure flows first decode ctrl_i.csr_addr together with ctrl_i.csr_we into pmpcfg_we and pmpaddr_we at lines 113-114 and 157-158. Those enables are then tested before updating stored protection state at lines 127 and 170. Integrity matters because a wrong selection writes the wrong protection register or misses the addressed update; availability also matters because the enable decision is produced whenever the address and write predicate on those lines is true.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATES",
+            "partner": "pmpcfg_we"
+          }
+        },
+        {
+          "asset rtl": "pmpcfg_we",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "SELECTED_BY",
+            "partner": "ctrl_i.csr_addr"
+          }
+        },
+        {
+          "asset rtl": "pmpaddr_we",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "SELECTED_BY",
+            "partner": "ctrl_i.csr_addr"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Per-region protection settings: permission bits, match mode, and lock state",
+      "security objective": "Integrity",
+      "reasoning": "On selected writes, lines 127-145 store bits from ctrl_i.csr_wdata into pmpcfg, with unavailable or invalid mode encodings forced to mode_off_c at lines 133-140 and the lock bit written at line 145. The stored settings are then used to qualify later address writes at lines 170-172, to select address-mask behavior at lines 266-269, to choose the region-matching rule at lines 303-310, and to derive per-region permissions at lines 323-339. The same stored settings are read back through cfg_rd and cfg_rd32 at lines 203 and 236 and leave on csr_o at line 190. Integrity matters because these flows depend on the exact retained settings; availability also matters because the values are held until rewrite or reset and can be read out.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "sets",
+          "occurrence": 6,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "pmpcfg"
+          }
+        },
+        {
+          "asset rtl": "pmpcfg",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "csr_o",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "cfg_rd32"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Per-region address or boundary values used for range comparison",
+      "security objective": "Integrity",
+      "reasoning": "Lines 170-176 store pmpaddr from ctrl_i.csr_wdata when the addressed register is selected and unlocked, with the extra check at lines 171-174 suppressing an update when the next region is locked in the TOR mode case. The stored address values feed mask generation and comparisons at lines 257, 285, 295, and 296, are formatted for readback at lines 207-219, and leave on csr_o at line 192. Integrity matters because wrong stored address or boundary values change which accesses hit a region; availability also matters because the values are retained until rewrite or reset and can be read out.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "sets",
+          "occurrence": 15,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "pmpaddr"
+          }
+        },
+        {
+          "asset rtl": "pmpaddr",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "csr_o",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "addr_rd"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Selected access context under check: the address and privilege values used for the current comparison",
+      "security objective": "Integrity",
+      "reasoning": "The block explicitly selects the address to check with `acc_addr <= ctrl_i.pc_nxt when (ctrl_i.lsu_mo_we = '0') else addr_ls_i;` at line 244 and the privilege to check with `acc_priv <= ctrl_i.cpu_priv when (ctrl_i.lsu_mo_we = '0') else ctrl_i.lsu_priv;` at line 245. These selected values are then consumed by the address comparisons at lines 285, 295, and 296, by the permission logic at lines 322-339, and by the default failure seed at line 351. Integrity matters because the later match, allow, and fail decisions must be based on the intended current access context; availability also matters because both values are always driven from one source or the other by lines 244-245.",
+      "related structural assets": [
+        {
+          "asset rtl": "addr_ls_i",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "acc_addr"
+          }
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "sets",
+          "occurrence": 22,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "acc_addr"
+          }
+        },
+        {
+          "asset rtl": "acc_addr",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "ctrl_i.lsu_mo_we"
+          }
+        },
+        {
+          "asset rtl": "acc_priv",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "ctrl_i.lsu_mo_we"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Per-region access qualification decision for the current access",
+      "security objective": "Integrity",
+      "reasoning": "The block computes whether each region applies and whether it permits the requested operation. Address comparisons are formed at lines 285, 295, and 296, and match_gen then produces match from TOR or NAPOT rules at lines 303-312. perm_gen produces allow from the selected access type and privilege together with stored permission and lock bits at lines 321-340. The failure chain consumes both decisions at line 354. Integrity matters because an incorrect qualification result either applies the wrong region or returns the wrong per-region permission outcome to the failure logic; availability also matters because these decisions are recomputed for the current access from the live context and stored settings. The flow graph lists match as not reached from an input, but the RTL lines 285-312 and the match/cmp_* records are the authority for this computed decision.",
+      "related structural assets": [
+        {
+          "asset rtl": "match",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "computes",
+          "occurrence": 4,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "cmp_na"
+          }
+        },
+        {
+          "asset rtl": "allow",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "pmpcfg"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Access-fault result reported for the current access",
+      "security objective": "Integrity",
+      "reasoning": "Line 351 seeds fail(NUM_REGIONS) from the selected privilege case, and line 354 forms the prioritized failure result by returning `not allow(r)` when `match(r) = '1'` and otherwise propagating fail(r+1). The registered output process then clears fault_o on reset at lines 360-361 and updates it to `(not ctrl_i.cpu_debug) and fail(0)` on each rising edge at line 363. Integrity matters because the reported fault must agree with the computed qualification result and the debug-suppression condition; availability also matters because, with rstn_i high, the output is produced on each clock edge from the current fail(0) value.",
+      "related structural assets": [
+        {
+          "asset rtl": "fail",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "allow"
+          }
+        },
+        {
+          "asset rtl": "fault_o",
+          "entity": "neorv32_cpu_pmp",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "fail"
+          }
+        }
+      ]
+    }
+  ]
+}

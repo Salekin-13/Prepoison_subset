@@ -1,0 +1,186 @@
+{
+ "module name": "neorv32_cpu_cp_crypto",
+ "module purpose": "neorv32_cpu_cp_crypto decodes crypto instructions from the control record ctrl_i (ir_opcode, ir_funct3, ir_funct12, alu_cp_alu), captures the operand words rs1_i and rs2_i and the function fields when it accepts one, computes a bit permutation, a SHA-2 sigma function, an SM3 permutation or one AES/SM4 round step (S-box lookup, mix-column or SM4 linear transform, rotation, XOR with rs1) as allowed by the build generics, sequences multi-cycle operations through an idle/busy/done state register, and returns the result on res_o with a completion pulse on valid_o.",
+ "use-case flows": [
+  {
+   "flow": "start",
+   "value": "instruction acceptance: decoded operation vector cmd and start decision cmd_valid, which capture rs1_i, rs2_i, ir_funct3 and ir_funct12",
+   "lines": [274, 275, 277, 278, 280, 281, 283, 284, 286, 287, 289, 290, 292, 293, 296, 312, 313, 314, 315, 316]
+  },
+  {
+   "flow": "operate",
+   "value": "bit-permutation result of rs1 indexed by the bytes or nibbles of rs2, chosen by funct3 (build EN_ZBKX)",
+   "lines": [383, 389, 393]
+  },
+  {
+   "flow": "operate",
+   "value": "SHA-256/SHA-512 sigma function of rs1 (and rs2), chosen by funct12 (build EN_ZKNH)",
+   "lines": [411, 412, 413, 414, 415, 416, 419, 420, 421, 422, 423, 424, 425]
+  },
+  {
+   "flow": "operate",
+   "value": "SM3 permutation of rs1, chosen by funct12(0) (build EN_ZKSH)",
+   "lines": [441]
+  },
+  {
+   "flow": "operate",
+   "value": "AES/SM4 round step: byte of rs2 selected by funct12, S-box substituted (registered), AES mix-column or SM4 linear transform (registered), rotated and XORed with rs1",
+   "lines": [456, 457, 458, 459, 460, 463, 464, 465, 468, 469, 470, 471, 472, 475, 494, 500, 510, 511, 512, 513, 514, 516, 517, 518, 519, 525, 547, 552, 560, 561, 562, 564, 565]
+  },
+  {
+   "flow": "operate",
+   "value": "sequencing of a multi-cycle instruction through S_IDLE, S_BUSY and S_DONE",
+   "lines": [320, 322, 323, 324, 325, 332, 333, 335, 336, 337]
+  },
+  {
+   "flow": "report",
+   "value": "completion pulse done driven on valid_o",
+   "lines": [319, 327, 336, 343]
+  },
+  {
+   "flow": "read out",
+   "value": "selected result loaded into res_o at the clock edge where done is '1', zero at every other edge",
+   "lines": [353, 354, 355, 357, 359, 361, 362, 364, 372]
+  },
+  {
+   "flow": "reset",
+   "value": "rs1, rs2, funct3, funct12, done, res_o, aes.mix1 and sm4.rnd cleared and state forced to S_IDLE while rstn_i is '0'",
+   "lines": [303, 304, 305, 306, 307, 308, 309, 350, 351, 507, 508, 557, 558]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Instruction acceptance decision -- whether the current CPU instruction is a crypto operation this build supports, which one it is, and whether the unit starts it",
+   "security objective": "Integrity",
+   "reasoning": "The start flow decides acceptance from ctrl_i fields, for example `cmd(cmd_aesenc_c) <= '1' when EN_ZKNE and (ctrl_i.ir_opcode(5) = '1') and (ctrl_i.ir_funct3 = \"000\") and (ctrl_i.ir_funct12(9 downto 7) = \"100\") and (ctrl_i.ir_funct12(5) = '1') else '0';` (lines 283-284; the other operation bits at lines 274-293) and `cmd_valid <= '1' when (ctrl_i.alu_cp_alu = '1') and (or_reduce_f(cmd) = '1') else '0';` (line 296). cmd_valid gates the capture of rs1, rs2, funct3 and funct12 (GATES, occurrence 3, line 312) and the start of the state machine (GATES done and state, occurrence 4, line 323); cmd chooses between the multi-cycle path (state <= S_BUSY, line 325) and immediate completion (done <= '1', line 327) through its GATES records at line 324. Integrity is Established: operands and function fields may be captured, and an operation started, only when these predicates hold; a wrong decision captures data for an instruction that was not issued, or sends a multi-cycle operation down the single-cycle path. Availability is Established under the implemented conditions: when cmd_valid is '1' in S_IDLE, done is set at that edge (line 327) or state passes S_BUSY and S_DONE and done is set (lines 325, 333, 336). Build condition: each cmd bit is constant '0' when its EN_* generic is false (lines 274-293). ctrl_i sets the decision: it is named whole, and its field ctrl_i.alu_cp_alu GATES cmd_valid at line 296 (occurrence 28); this entity reads only its alu_cp_alu, ir_opcode, ir_funct3 and ir_funct12 fields and no address, data or acknowledge transaction, so the transport rule does not exclude it. cmd computes the decoded operation (GATED_BY ctrl_i.ir_opcode, occurrence 2, line 274) and cmd_valid computes the start decision (GATED_BY cmd, occurrence 2, line 296). The flow graph lists cmd and cmd_valid as not reached by data; this only reflects that they are decided, not carried.",
+   "related structural assets": [
+    {
+     "asset rtl": "ctrl_i",
+     "entity": "neorv32_cpu_cp_crypto",
+     "realization": "sets",
+     "occurrence": 28,
+     "edge": {"type": "GATES", "partner": "cmd_valid"}
+    },
+    {
+     "asset rtl": "cmd",
+     "entity": "neorv32_cpu_cp_crypto",
+     "realization": "computes",
+     "occurrence": 2,
+     "edge": {"type": "GATED_BY", "partner": "ctrl_i.ir_opcode"}
+    },
+    {
+     "asset rtl": "cmd_valid",
+     "entity": "neorv32_cpu_cp_crypto",
+     "realization": "computes",
+     "occurrence": 2,
+     "edge": {"type": "GATED_BY", "partner": "cmd"}
+    }
+   ]
+  },
+  {
+   "concept": "Requested operation variant -- the captured instruction function fields, and the AES direction derived from them, that select which function the unit computes",
+   "security objective": "Integrity",
+   "reasoning": "`funct3 <= ctrl_i.ir_funct3;` and `funct12 <= ctrl_i.ir_funct12;` (lines 315-316, under cmd_valid at line 312) hold the requested variant for the rest of the operation. funct12 selects the SHA sigma variant (SELECTS sha_res, lines 412 and 419), the rs2 byte (SELECTS rs2_sel, line 456), the rotation (SELECTS rol_res, line 468), the SM3 variant (GATES sm3_res, line 441), the AES or SM4 path (GATES rol_in, line 465), mix-column versus S-box output (GATES aes.mix2, line 525), the SM4 transform (GATES sm4.rnd, line 560), the SM3/SHA choice at the output (GATES res_o, line 361) and the output source through out_sel (line 372, SELECTS res_o at line 355); funct3 selects the byte or nibble permutation (GATES xperm_res, line 393). aes.dec computes the AES direction: `aes.dec <= '1' when (not EN_ZKNE) else '0' when (not EN_ZKND) else funct12(7);` (line 494, present when EN_ZKNE or EN_ZKND; constant '0' at line 531 otherwise), which selects the inverse half of aes_sbox_c (SELECTS aes.so, line 500) and the inverse mix-column coefficients (GATES aes.mix1, lines 510-514). Integrity is Established: the computed result must follow the variant decoded at acceptance (the decode at lines 283-287 separates encryption and decryption on funct12(9 downto 7), consistent with funct12(7) at line 494). Availability is Established: the fields are held from the accepting edge until the next accepted instruction (line 312), across the S_BUSY and S_DONE cycles. ctrl_i sets the variant (field ctrl_i.ir_funct12 CARRIES funct12, occurrence 30, line 316); funct12 and funct3 store it (CLOCKED_BY clk_i, occurrence 3, with use records SELECTS rs2_sel and GATES xperm_res); they copy an input port, so the copy rule keeps them. out_sel only concatenates funct12 bits (DERIVES_FROM funct12, line 372) and forwards part of the stored setting, so it is not listed. ctrl_i.ir_opcode is also read uncaptured at line 361.",
+   "related structural assets": [
+    {
+     "asset rtl": "ctrl_i",
+     "entity": "neorv32_cpu_cp_crypto",
+     "realization": "sets",
+     "occurrence": 30,
+     "edge": {"type": "CARRIES", "partner": "funct12"}
+    },
+    {
+     "asset rtl": "funct12",
+     "entity": "neorv32_cpu_cp_crypto",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "funct3",
+     "entity": "neorv32_cpu_cp_crypto",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "aes.dec",
+     "entity": "neorv32_cpu_cp_crypto",
+     "realization": "computes",
+     "occurrence": 2,
+     "edge": {"type": "DERIVES_FROM", "partner": "funct12"}
+    }
+   ]
+  },
+  {
+   "concept": "Instruction source operands -- the two data words on which every crypto function computes",
+   "security objective": "Integrity",
+   "reasoning": "`rs1 <= rs1_i;` and `rs2 <= rs2_i;` (lines 313-314, under cmd_valid at line 312) bring the two operand words in, and every function computes on them: rs1 in the permutations (lines 383, 389), SHA (lines 413-425), SM3 (line 441) and the final XOR `blk_res <= rs1 xor rol_res;` (line 475); rs2 in the permutation selectors (lines 383, 389), the SHA-512 terms (lines 420-425) and the S-box index byte (lines 456-460, used at lines 500 and 547). Integrity is Established: each result is a fixed function of these words, so a corrupted operand changes the value returned on res_o. Availability is Established: the words are captured at the accepting edge and held through the multi-cycle operation (lines 312-314, 320-337). rs1_i sets the first operand (CARRIES rs1, occurrence 2, line 313) and rs2_i the second (CARRIES rs2, occurrence 2, line 314). The registers rs1 and rs2 capture them unchanged, and their records show only SOURCES into internal signals (xperm8_res, xperm4_res, sha_res, sm3_res, blk_res, rs2_sel), with no GATES, SELECTS or CONSTRAINS record, no record into an output port and no sub-unit connection, so under the storage rule they hold one step of the value and are secondary. rs2_sel forwards one byte of rs2 (DERIVES_FROM rs2, SELECTED_BY funct12, line 456) and is not listed. Confidentiality is not established: no line restricts who observes these words.",
+   "related structural assets": [
+    {
+     "asset rtl": "rs1_i",
+     "entity": "neorv32_cpu_cp_crypto",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "CARRIES", "partner": "rs1"}
+    },
+    {
+     "asset rtl": "rs2_i",
+     "entity": "neorv32_cpu_cp_crypto",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "CARRIES", "partner": "rs2"}
+    }
+   ]
+  },
+  {
+   "concept": "Crypto instruction result -- the computed value returned to the CPU",
+   "security objective": "Integrity",
+   "reasoning": "The read-out flow clears `res_o <= (others => '0');` (line 353) and, when done = '1' (line 354), loads xperm_res (line 357), blk_res (line 359), sm3_res (line 362) or sha_res (line 364), chosen by out_sel and funct12 (lines 355, 361). These values are computed at lines 383-393 (permutation), 411-425 (SHA), 441 (SM3) and 456-475 with 494-525 and 547-565 (AES/SM4 round step). res_o delivers the result across the entity boundary to a consumer that is not supplied, so its integrity property is that the consumer receives exactly the function selected for the accepted instruction (Established from lines 353-364). Availability is Established under the implemented condition: the result is loaded at the clock edge where done is '1' and is zero at every other edge (lines 353-354). res_o is the exit port (COPIES blk_res, occurrence 5, line 359), ahead of its register role (CLOCKED_BY clk_i). Not listed: sha_res, sm3_res, xperm8_res, xperm4_res, xperm_res, rol_res and blk_res are parts of the computation or its routing whose result leaves at res_o; rol_in, aes.mix2 and sm4.so2 only route or zero-extend; the registers aes.so, aes.mix1, sm4.so1 and sm4.rnd have records only toward internal elements (aes.mix1, aes.mix2, sm4.so2, rol_in), so under the storage rule they hold one step of the value and are secondary. Build conditions: each source is constant zero when its generic is false (lines 399-401, 433, 446, 481-484, 531-534, 574-576).",
+   "related structural assets": [
+    {
+     "asset rtl": "res_o",
+     "entity": "neorv32_cpu_cp_crypto",
+     "realization": "exit port",
+     "occurrence": 5,
+     "edge": {"type": "COPIES", "partner": "blk_res"}
+    }
+   ]
+  },
+  {
+   "concept": "Operation sequencing state -- the phase (idle, busy, done) of a crypto instruction in the unit",
+   "security objective": "Integrity",
+   "reasoning": "The sequencing flow: in S_IDLE an accepted aesenc, aesdec, sm3 or sm4 instruction moves to S_BUSY (lines 322-325), S_BUSY moves to S_DONE (lines 332-333), and S_DONE raises done and returns to S_IDLE (lines 335-337). The state decides when done is raised (SELECTS done, line 320), and the S_BUSY cycle gives the registered S-box stage (line 500) and the mix-column or SM4 stage (lines 511-519, 561-565) their clock edges before done. Integrity is Established: a wrong state raises done before those stages hold their values, or stops new instructions from being acted on (cmd_valid is acted on only in S_IDLE, line 323). Availability is Established: after S_BUSY the unit reaches S_DONE and S_IDLE on the next two edges unconditionally (lines 333, 336-337); reset forces S_IDLE (line 309). state stores this state (CLOCKED_BY clk_i, occurrence 4, line 325; use record SELECTS done at line 320); it is a self-updating element (SELECTED_BY state).",
+   "related structural assets": [
+    {
+     "asset rtl": "state",
+     "entity": "neorv32_cpu_cp_crypto",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Result-valid completion event -- the one-cycle pulse that reports a finished instruction",
+   "security objective": "Integrity",
+   "reasoning": "The report flow: `done <= '0';` by default (line 319), `done <= '1';` for an accepted single-cycle instruction (line 327) or in S_DONE (line 336), and `valid_o <= done;` (line 343). done also gates the loading of res_o (GATES res_o, line 354). Integrity is Established: the pulse is delivered through valid_o to a consumer that is not supplied, which must receive exactly the event the sequence at lines 319-337 defines, and it decides whether res_o receives a result or zero (lines 353-354). Availability is Established: every accepted instruction raises done within the implemented sequence (lines 323-337). done stores the event (CLOCKED_BY clk_i, occurrence 4, line 327; use records GATES res_o and CARRIES valid_o) and valid_o is the exit port (COPIES done, occurrence 2, line 343).",
+   "related structural assets": [
+    {
+     "asset rtl": "done",
+     "entity": "neorv32_cpu_cp_crypto",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "valid_o",
+     "entity": "neorv32_cpu_cp_crypto",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "COPIES", "partner": "done"}
+    }
+   ]
+  }
+ ]
+}

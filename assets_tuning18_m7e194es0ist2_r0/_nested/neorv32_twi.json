@@ -1,0 +1,507 @@
+{
+  "module name": "neorv32_twi",
+  "module purpose": "neorv32_twi decodes bus requests to configure TWI control registers and to enqueue/dequeue FIFO words, produces status and interrupt outputs, runs a programmable clock generator and a bit-level TWI engine that drives/reads the SDA and SCL pins.",
+  "use-case flows": [
+    {
+      "flow": "configure",
+      "value": "write TWI control registers (ctrl.enable, ctrl.prsc, ctrl.cdiv, ctrl.clkstr)",
+      "lines": [
+        122,
+        124,
+        125,
+        126,
+        135,
+        136,
+        137,
+        138,
+        139
+      ]
+    },
+    {
+      "flow": "start",
+      "value": "enqueue a transmit command into the TX FIFO from a bus write (tx_wdata/tx_we), making it available to the engine",
+      "lines": [
+        172,
+        188,
+        197,
+        198,
+        199,
+        327,
+        328,
+        329,
+        330
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "timed TWI bit-transfer operation driven by the clock generator and the engine (phase sequencing, sda/scl outputs, shift/bitcount, done)",
+      "lines": [
+        246,
+        257,
+        258,
+        259,
+        260,
+        270,
+        273,
+        279,
+        282,
+        289,
+        290,
+        291,
+        292,
+        301,
+        321,
+        327,
+        334,
+        340,
+        349,
+        356,
+        371,
+        377,
+        381,
+        385,
+        386
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "status and register readback returned on bus_rsp_o.data (control bits, FIFO size, sense bits, busy/avail flags)",
+      "lines": [
+        129,
+        130,
+        131,
+        143,
+        144,
+        145,
+        146,
+        150,
+        151,
+        152,
+        153,
+        154
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "read out received bytes from RX FIFO onto the bus (fifo.rx_rdata -> bus_rsp_o.data)",
+      "lines": [
+        156,
+        219,
+        224,
+        230
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "interrupt event asserted to CPU (irq_o) when enabled and a TX slot is empty and engine idle",
+      "lines": [
+        234,
+        237,
+        239
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "what is cleared or forced on rstn_i active: bus_rsp_o, control registers, clock-generator counters and phases, engine state and io_con registers",
+      "lines": [
+        122,
+        123,
+        124,
+        125,
+        126,
+        249,
+        250,
+        251,
+        275,
+        276,
+        277,
+        303,
+        304,
+        305,
+        306,
+        307,
+        308,
+        309,
+        310,
+        311,
+        236,
+        237
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Module enable configuration (ctrl.enable): the stored enable bit that turns TWI operation on/off",
+      "security objective": "Integrity",
+      "reasoning": "Bus writes set the enable bit (bus_access: ctrl.enable <= bus_req_i.data(ctrl_en_c); line 136) and reset clears it (line 124). The register holds the setting (ctrl.enable is clocked; see ctrl.enable CLOCKED_BY at line 136) and this bit is copied into the engine state bit (engine.state(2) <= ctrl.enable; line 321), exported on reads (bus_rsp_o.data copies it at line 143) and exported to the external clock-generator enable output (clkgen_en_o <= ctrl.enable; line 270). The irq generator uses it to gate irq_o (irq_o <= ctrl.enable and ...; line 239). These RTL lines and the map records that copy/clock/control the field establish that the correctness (integrity) of ctrl.enable is required for correct gating of the clock generator, engine start/stop and IRQ behavior (lines 136, 143, 239, 270, 321).",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.enable",
+          "entity": "neorv32_twi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "bus_req_i",
+          "entity": "neorv32_twi",
+          "realization": "sets",
+          "occurrence": 6,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "ctrl.enable"
+          }
+        },
+        {
+          "asset rtl": "bus_rsp_o",
+          "entity": "neorv32_twi",
+          "realization": "exit port",
+          "occurrence": 6,
+          "edge": {
+            "type": "COPIES",
+            "partner": "ctrl.enable"
+          }
+        },
+        {
+          "asset rtl": "clkgen_en_o",
+          "entity": "neorv32_twi",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "ctrl.enable"
+          }
+        },
+        {
+          "asset rtl": "engine.state",
+          "entity": "neorv32_twi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Clock prescaler selection (ctrl.prsc) that chooses which clkgen_i bit gates the clock counter",
+      "security objective": "Integrity",
+      "reasoning": "A bus write loads ctrl.prsc from bus_req_i.data (bus_access: ctrl.prsc <= bus_req_i.data(ctrl_prsc2_c downto ctrl_prsc0_c); line 137) and the value is read back on bus reads (line 144). The clock generator uses ctrl.prsc to index clkgen_i in the tick-generation check (clkgen_i(to_integer(unsigned(ctrl.prsc))) = '1'; line 257). The RTL assignment and the map's SELECTS/GATES and CLOCKED_BY records (line 137 and line 257) establish that ctrl.prsc is a configuration whose integrity matters to which source bit is sampled for tick generation (lines 137, 257).",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.prsc",
+          "entity": "neorv32_twi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "bus_req_i",
+          "entity": "neorv32_twi",
+          "realization": "sets",
+          "occurrence": 7,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "ctrl.prsc"
+          }
+        },
+        {
+          "asset rtl": "bus_rsp_o",
+          "entity": "neorv32_twi",
+          "realization": "exit port",
+          "occurrence": 7,
+          "edge": {
+            "type": "COPIES",
+            "partner": "ctrl.prsc"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Clock divider setting (ctrl.cdiv) used to compare the counter and generate the clock tick",
+      "security objective": "Integrity",
+      "reasoning": "Bus writes set ctrl.cdiv (ctrl.cdiv <= bus_req_i.data(ctrl_cdiv3_c downto ctrl_cdiv0_c); line 138) and bus reads return it (line 145). The clock generator compares clk_gen.cnt to ctrl.cdiv to decide when to assert clk_gen.tick (if clk_gen.cnt = ctrl.cdiv then clk_gen.tick <= '1'; lines 258-260). The RTL assignment and the map's CONSTRAINS/SELECTS records on clk_gen.cnt/tick show that the numeric value stored in ctrl.cdiv determines tick timing, so its integrity is established by lines 138 and 258-260.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.cdiv",
+          "entity": "neorv32_twi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "bus_req_i",
+          "entity": "neorv32_twi",
+          "realization": "sets",
+          "occurrence": 8,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "ctrl.cdiv"
+          }
+        },
+        {
+          "asset rtl": "bus_rsp_o",
+          "entity": "neorv32_twi",
+          "realization": "exit port",
+          "occurrence": 8,
+          "edge": {
+            "type": "COPIES",
+            "partner": "ctrl.cdiv"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Clock-stretch enable (ctrl.clkstr) that allows the engine to halt the phase generator on a stretched SCL",
+      "security objective": "Integrity",
+      "reasoning": "Bus writes set ctrl.clkstr (ctrl.clkstr <= bus_req_i.data(ctrl_clkstr_en_c); line 139) and bus reads return it (line 146). The clock-generator halt signal is computed as (io_con.scl_out = '1') and (io_con.scl_in_ff(1) = '0') and (ctrl.clkstr = '1') (clk_gen.halt assignment at line 296), so ctrl.clkstr selects whether external SCL stretching can stop phase progression. The RTL assignment and the map's GATED_BY/SELECTS records at lines 139 and 296 establish the integrity property of this setting for correct clock-stretch behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.clkstr",
+          "entity": "neorv32_twi",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "bus_req_i",
+          "entity": "neorv32_twi",
+          "realization": "sets",
+          "occurrence": 9,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "ctrl.clkstr"
+          }
+        },
+        {
+          "asset rtl": "bus_rsp_o",
+          "entity": "neorv32_twi",
+          "realization": "exit port",
+          "occurrence": 9,
+          "edge": {
+            "type": "COPIES",
+            "partner": "ctrl.clkstr"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "TX command buffer contents (items enqueued into the TX FIFO by bus writes and later consumed by the engine)",
+      "security objective": "Integrity",
+      "reasoning": "Bus writes place command words onto fifo.tx_wdata and assert fifo.tx_we (fifo.tx_we <= '1' when bus_req_i.stb and bus_req_i.rw and addr(2)='1'; line 197; fifo.tx_wdata <= bus_req_i.data(...); line 198). The tx FIFO sub-unit receives those wdata inputs (tx_fifo_inst port map lines 172-195) and later presents them as fifo.tx_rdata which the engine loads into engine.sreg and the low bits into engine.state when appropriate (engine load at lines 327-330). The RTL assignments and the map records that connect the bus input, the local fifo signals and the tx FIFO instance (lines 188, 193, 197-199, 327-330) establish that the FIFO contents (what the engine will execute) must have integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "bus_req_i",
+          "entity": "neorv32_twi",
+          "realization": "sets",
+          "occurrence": 14,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "fifo.tx_wdata"
+          }
+        },
+        {
+          "asset rtl": "fifo.tx_wdata",
+          "entity": "neorv32_twi",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "bus_req_i.data"
+          }
+        },
+        {
+          "asset rtl": "fifo.tx_wdata",
+          "entity": "neorv32_twi",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "CONNECTS",
+            "partner": "tx_fifo_inst.wdata_i"
+          }
+        },
+        {
+          "asset rtl": "fifo.tx_rdata",
+          "entity": "neorv32_twi",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "CONNECTS",
+            "partner": "tx_fifo_inst.rdata_o"
+          }
+        },
+        {
+          "asset rtl": "engine.sreg",
+          "entity": "neorv32_twi",
+          "realization": "computes",
+          "occurrence": 5,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "fifo.tx_rdata"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "RX received-byte buffer (bytes produced by the engine and stored in RX FIFO for bus readout)",
+      "security objective": "Integrity",
+      "reasoning": "When the engine completes a received byte it drives fifo.rx_wdata from engine.sreg and asserts fifo.rx_we (fifo.rx_wdata <= engine.sreg(0) & engine.sreg(8 downto 1); line 228; fifo.rx_we <= engine.done; line 229). The rx FIFO sub-unit consumes these writes (rx_fifo_inst port map lines 203-226) and makes rx_rdata available to bus reads (bus_rsp_o.data <= fifo.rx_rdata when addr(2)='1' on a read; line 156). The RTL assignments and the map records (lines 228-229, 224, 156) show that the RX FIFO contents are the values returned to the bus and therefore their integrity is Established.",
+      "related structural assets": [
+        {
+          "asset rtl": "engine.sreg",
+          "entity": "neorv32_twi",
+          "realization": "stores",
+          "occurrence": 5,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "fifo.rx_wdata",
+          "entity": "neorv32_twi",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "engine.sreg"
+          }
+        },
+        {
+          "asset rtl": "fifo.rx_wdata",
+          "entity": "neorv32_twi",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "CONNECTS",
+            "partner": "rx_fifo_inst.wdata_i"
+          }
+        },
+        {
+          "asset rtl": "fifo.rx_we",
+          "entity": "neorv32_twi",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "COPIES",
+            "partner": "engine.done"
+          }
+        },
+        {
+          "asset rtl": "fifo.rx_rdata",
+          "entity": "neorv32_twi",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "CONNECTS",
+            "partner": "rx_fifo_inst.rdata_o"
+          }
+        },
+        {
+          "asset rtl": "bus_rsp_o",
+          "entity": "neorv32_twi",
+          "realization": "exit port",
+          "occurrence": 16,
+          "edge": {
+            "type": "COPIES",
+            "partner": "fifo.rx_rdata"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "TWI serial-line driving values (the SDA and SCL outputs that leave the module)",
+      "security objective": "Integrity",
+      "reasoning": "The module drives SDA and SCL pins from internal io_con outputs: twi_sda_o <= io_con.sda_out; twi_scl_o <= io_con.scl_out (lines 406-407). io_con.sda_out and io_con.scl_out are set by the engine's state-machine under phase timing (many assignments in the engine case arms, e.g. lines 334-374) and are clocked registers (phase-clocked; see the clocked records at lines 335/341 etc). The RTL shows the outputs leave the entity (lines 406-407) and that their values are supplied by internal registers under engine/phase control, so the integrity of these outputs is established by lines 334-374 and 406-407.",
+      "related structural assets": [
+        {
+          "asset rtl": "twi_sda_o",
+          "entity": "neorv32_twi",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "io_con.sda_out"
+          }
+        },
+        {
+          "asset rtl": "io_con.sda_out",
+          "entity": "neorv32_twi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "twi_scl_o",
+          "entity": "neorv32_twi",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "io_con.scl_out"
+          }
+        },
+        {
+          "asset rtl": "io_con.scl_out",
+          "entity": "neorv32_twi",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Interrupt request event (irq_o) asserted to the CPU when enabled, TX empty and engine idle",
+      "security objective": "Integrity",
+      "reasoning": "irq_o is driven from ctrl.enable and the status of fifo.tx_avail and engine.busy (irq_o <= ctrl.enable and (not fifo.tx_avail) and (not engine.busy); line 239) and is reset to '0' on rstn_i (line 237). The RTL implements irq_o as a clocked output (line 239) and the map records show irq_o is gated by ctrl.enable, fifo.tx_avail and engine.busy at that assignment; therefore the integrity of the computed IRQ event (when it is asserted) is established by the RTL lines 237-239 and the map gating records.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_o",
+          "entity": "neorv32_twi",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "ctrl.enable"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Engine run-time state (engine.state) that sequences bit-transfer phases and determines busy/done transitions",
+      "security objective": "Integrity",
+      "reasoning": "engine.state is a clocked internal state register (initialized on reset at line 308 and clocked/updated in the twi_engine process; see engine.state assignments at lines 321 and 327-330). The engine's case arms use engine.state to select operations for io_con.sda_out/scl_out, shifting and done assertions (lines 324..396). The map records show engine.state is CLOCKED_BY clk_i at the engine assignments and SELECTED_BY the case arms (line 321 and the case labels at lines 322-329), establishing that the correctness of engine.state is required for correct sequencing of TWI transfers.",
+      "related structural assets": [
+        {
+          "asset rtl": "engine.state",
+          "entity": "neorv32_twi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    }
+  ]
+}

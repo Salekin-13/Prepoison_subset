@@ -1,0 +1,246 @@
+{
+  "module name": "neorv32_slink",
+  "conceptual assets": [
+    {
+      "concept": "Module enable control (ctrl.enable) that gates operation, FIFO clear and interrupt outputs",
+      "security objective": "Integrity",
+      "reasoning": "bus_access writes the enable bit: \"ctrl.enable <= bus_req_i.data(ctrl_en_c);\" (on bus write to addr(3 downto 2) = \"00\"). The enable value is used to force FIFO clear: \"rx_fifo.clear <= (not ctrl.enable) or ctrl.rx_clr;\" and \"tx_fifo.clear <= (not ctrl.enable) or ctrl.tx_clr;\" and to gate interrupts: \"rx_irq_o <= ctrl.enable and (... )\" and \"tx_irq_o <= ctrl.enable and (... )\". The RTL therefore implements behaviors (FIFO clear and interrupt gating) that depend on ctrl.enable; corruption or incorrect setting of this stored bit changes those behaviors.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.enable",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "RX interrupt configuration bits controlling when rx_irq_o asserts (irq_rx_nempty, irq_rx_half, irq_rx_full)",
+      "security objective": "Integrity",
+      "reasoning": "bus_access writes the RX IRQ configuration bits from bus data on writes to addr group \"00\": e.g. \"ctrl.irq_rx_nempty <= bus_req_i.data(ctrl_irq_rx_nempty_c);\". The rx_interrupt process computes the interrupt: \"rx_irq_o <= ctrl.enable and ((ctrl.irq_rx_nempty and (    rx_fifo.avail)) or (ctrl.irq_rx_half and (    rx_fifo.half)) or (ctrl.irq_rx_full and (not rx_fifo.free)));\". These stored bits directly determine the interrupt condition; modifying them changes interrupt behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.irq_rx_nempty",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_rx_half",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_rx_full",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "TX interrupt configuration bits controlling when tx_irq_o asserts (irq_tx_empty, irq_tx_nhalf, irq_tx_nfull)",
+      "security objective": "Integrity",
+      "reasoning": "bus_access writes the TX IRQ configuration bits from bus data on writes to addr group \"00\": e.g. \"ctrl.irq_tx_empty <= bus_req_i.data(ctrl_irq_tx_empty_c);\". The tx_interrupt process computes: \"tx_irq_o <= ctrl.enable and ((ctrl.irq_tx_empty and (not tx_fifo.avail)) or (ctrl.irq_tx_nhalf and (not tx_fifo.half)) or (ctrl.irq_tx_nfull and ( tx_fifo.free)));\". These stored bits directly control tx_irq_o assertions; corruption alters interrupt signaling.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.irq_tx_empty",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_tx_nhalf",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_tx_nfull",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "RX FIFO clear control bit (ctrl.rx_clr) that triggers clearing RX FIFO/attributes",
+      "security objective": "Integrity",
+      "reasoning": "bus_access writes ctrl.rx_clr from bus data on writes to addr group \"00\": \"ctrl.rx_clr <= bus_req_i.data(ctrl_rx_clr_c);\". The clear feeds the FIFO clear input: \"rx_fifo.clear <= (not ctrl.enable) or ctrl.rx_clr;\" and rx_attributes reacts to clears: on rx_fifo.clear = '1' the code sets \"rx_last <= '0'\". Therefore the stored ctrl.rx_clr directly controls FIFO clear and attribute reset; incorrect setting changes stored-frame availability and attributes.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.rx_clr",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "TX FIFO clear control bit (ctrl.tx_clr) that triggers clearing TX FIFO",
+      "security objective": "Integrity",
+      "reasoning": "bus_access writes ctrl.tx_clr from bus data on writes to addr group \"00\": \"ctrl.tx_clr <= bus_req_i.data(ctrl_tx_clr_c);\". The clear feeds the FIFO clear input: \"tx_fifo.clear <= (not ctrl.enable) or ctrl.tx_clr;\". The stored ctrl.tx_clr therefore directly controls clearing of queued transmit frames; corruption changes queued-data retention.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.tx_clr",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Route destination register (route_dst) used to tag enqueued TX frames",
+      "security objective": "Integrity",
+      "reasoning": "bus_access stores the destination: \"if (bus_req_i.addr(3 downto 2) = \\\"01\\\") then route_dst <= bus_req_i.data(3 downto 0); end if;\". tx_fifo.wdata is built from route_dst: \"tx_fifo.wdata <= bus_req_i.addr(2) & route_dst & bus_req_i.data;\". Thus route_dst is embedded into enqueued TX words; corrupting it changes the destination tag placed on outgoing frames.",
+      "related structural assets": [
+        {
+          "asset rtl": "route_dst",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Received-frame attributes (last-dequeued frame source ID and last flag: route_src, rx_last)",
+      "security objective": "Integrity",
+      "reasoning": "rx_attributes captures attributes when a FIFO read occurs: \"if (rx_fifo.re = '1') then route_src <= rx_fifo.rdata(35 downto 32);\" and \"elsif (rx_fifo.re = '1') then rx_last <= rx_fifo.rdata(36);\". bus_access returns route_src and rx_last in reads (route_src in addr group \"01\" and rx_last via ctrl_rx_last_c in group \"00\"). These stored attributes represent the last dequeued frame's source and last flag; corruption or incorrect storage misreports frame attributes.",
+      "related structural assets": [
+        {
+          "asset rtl": "route_src",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rx_last",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "RX FIFO contents and occupancy flags (received frames, rx_fifo.rdata and rx_fifo.avail/free/half)",
+      "security objective": "Integrity",
+      "reasoning": "The module connects an instantiated FIFO and drives/reads its interface: rx_fifo.we <= slink_rx_valid_i; rx_fifo.wdata(31 downto 0) <= slink_rx_data_i; rx_fifo.wdata(35 downto 32) <= slink_rx_src_i; rx_fifo.wdata(36) <= slink_rx_last_i; rx_fifo.re is asserted on bus reads: \"rx_fifo.re <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(3) = '1')\"; bus_access returns rx_fifo.rdata for reads and uses rx_fifo.avail/half/free in status fields; rx_interrupt also uses rx_fifo.avail/half/free to drive rx_irq_o. The FIFO rdata and occupancy flags are therefore the stored/observable RX-frame state that flows to reads and interrupts.",
+      "related structural assets": [
+        {
+          "asset rtl": "rx_fifo.wdata",
+          "entity": "neorv32_slink",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "rx_fifo.rdata",
+          "entity": "neorv32_slink",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "rx_fifo.avail",
+          "entity": "neorv32_slink",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "rx_fifo.free",
+          "entity": "neorv32_slink",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "rx_fifo.half",
+          "entity": "neorv32_slink",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "TX FIFO contents and occupancy flags (enqueued frames, tx_fifo.rdata and tx_fifo.avail/free/half)",
+      "security objective": "Integrity",
+      "reasoning": "tx_fifo is written from bus writes and read by the link: \"tx_fifo.we <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(3) = '1')\" and \"tx_fifo.wdata <= bus_req_i.addr(2) & route_dst & bus_req_i.data;\". tx_fifo.re <= slink_tx_ready_i; outputs are driven from tx_fifo.rdata and tx_fifo.avail (see slink_tx_* assignments) and tx_interrupt uses tx_fifo.avail/half/free. The FIFO rdata and occupancy flags therefore realize the enqueued-TX-frame state that the module presents and uses.",
+      "related structural assets": [
+        {
+          "asset rtl": "tx_fifo.wdata",
+          "entity": "neorv32_slink",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "tx_fifo.rdata",
+          "entity": "neorv32_slink",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "tx_fifo.avail",
+          "entity": "neorv32_slink",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "tx_fifo.free",
+          "entity": "neorv32_slink",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "tx_fifo.half",
+          "entity": "neorv32_slink",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Outgoing slink transmit outputs (slink_tx_data_o, slink_tx_dst_o, slink_tx_last_o, slink_tx_valid_o) presenting TX frames to the link",
+      "security objective": "Integrity",
+      "reasoning": "The module drives transmit outputs directly from the FIFO outputs: \"slink_tx_data_o <= tx_fifo.rdata(31 downto 0);\" \"slink_tx_dst_o <= tx_fifo.rdata(35 downto 32);\" \"slink_tx_last_o <= tx_fifo.rdata(36);\" \"slink_tx_valid_o <= tx_fifo.avail;\". These exit ports are the module's actual presentation of TX frames/validity to downstream logic; incorrect values violate the final transmitted frame semantics.",
+      "related structural assets": [
+        {
+          "asset rtl": "slink_tx_data_o",
+          "entity": "neorv32_slink",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "slink_tx_dst_o",
+          "entity": "neorv32_slink",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "slink_tx_last_o",
+          "entity": "neorv32_slink",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "slink_tx_valid_o",
+          "entity": "neorv32_slink",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Incoming slink ready output (slink_rx_ready_o) that advertises RX acceptance",
+      "security objective": "Integrity",
+      "reasoning": "slink_rx_ready_o is driven from FIFO free: \"slink_rx_ready_o <= rx_fifo.free;\". The ready signal is the module's communicated capacity to accept incoming frames; incorrect presentation of this exit port misleads a peer about acceptance and changes the receive flow.",
+      "related structural assets": [
+        {
+          "asset rtl": "slink_rx_ready_o",
+          "entity": "neorv32_slink",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "rx_fifo.free",
+          "entity": "neorv32_slink",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "RX interrupt output signal (rx_irq_o) sent to CPU",
+      "security objective": "Integrity",
+      "reasoning": "rx_interrupt computes the output: \"rx_irq_o <= ctrl.enable and ((ctrl.irq_rx_nempty and (    rx_fifo.avail)) or (ctrl.irq_rx_half and (    rx_fifo.half)) or (ctrl.irq_rx_full and (not rx_fifo.free)));\". rx_irq_o is an exit port that signals RX conditions to software; corruption or incorrect assertion/failure to assert violates the implemented interrupt semantics.",
+      "related structural assets": [
+        {
+          "asset rtl": "rx_irq_o",
+          "entity": "neorv32_slink",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "TX interrupt output signal (tx_irq_o) sent to CPU",
+      "security objective": "Integrity",
+      "reasoning": "tx_interrupt computes the output: \"tx_irq_o <= ctrl.enable and ((ctrl.irq_tx_empty and (not tx_fifo.avail)) or (ctrl.irq_tx_nhalf and (not tx_fifo.half)) or (ctrl.irq_tx_nfull and (    tx_fifo.free)));\". tx_irq_o is an exit port that signals TX conditions to software; corruption or incorrect assertion/failure to assert violates the implemented interrupt semantics.",
+      "related structural assets": [
+        {
+          "asset rtl": "tx_irq_o",
+          "entity": "neorv32_slink",
+          "realization": "exit port"
+        }
+      ]
+    }
+  ]
+}

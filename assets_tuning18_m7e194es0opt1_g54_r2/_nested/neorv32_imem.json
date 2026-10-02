@@ -1,0 +1,154 @@
+{
+  "module name": "neorv32_imem",
+  "module purpose": "neorv32_imem implements a processor-internal memory behind a request/response bus. Depending on IMEM_INIT, it either returns words from a pre-initialized constant image or performs byte-enabled writes into internal RAM byte arrays, stages addressed read data, and returns data with an acknowledge while err is tied low.",
+  "use-case flows": [
+    {
+      "flow": "configure",
+      "value": "byte-enabled RAM update from the request data into the internal memory arrays when IMEM_INIT = false",
+      "lines": [
+        106,
+        107,
+        114,
+        115,
+        116,
+        118,
+        119,
+        121,
+        122,
+        124,
+        125
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "addressed IMEM word captured into rdata and returned on the response data path for read requests",
+      "lines": [
+        74,
+        77,
+        80,
+        81,
+        101,
+        106,
+        109,
+        113,
+        128,
+        129,
+        130,
+        131,
+        176,
+        185
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "bus acknowledge event; read-only acknowledge in ROM builds, any-strobe acknowledge in RAM builds",
+      "lines": [
+        172,
+        174,
+        175,
+        177,
+        178,
+        179,
+        180
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "read-enable state and acknowledge output cleared when rstn_i = '0'",
+      "lines": [
+        172,
+        173,
+        174
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Writable internal memory contents in RAM builds",
+      "security objective": "Integrity",
+      "reasoning": "When `if not IMEM_INIT generate` is selected (lines 106-107), the reachable implementation is the default style because `alt_style_c` is a constant false (line 38). On each rising edge, lines 114-125 update the selected byte lanes of `mem_ram_b0..b3` from `bus_req_i.data` only when `bus_req_i.stb = '1'`, `bus_req_i.rw = '1'`, and the corresponding `bus_req_i.ben` bit is set. Those same arrays are read into `rdata` at lines 128-131 and then returned at line 185. Integrity is established because corrupting the stored bytes makes later addressed read-out incorrect; availability is also established because these edge-storage arrays preserve their values between writes and feed the read path.",
+      "related structural assets": [
+        {
+          "asset rtl": "mem_ram_b0",
+          "entity": "neorv32_imem",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "mem_ram_b1",
+          "entity": "neorv32_imem",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "mem_ram_b2",
+          "entity": "neorv32_imem",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "mem_ram_b3",
+          "entity": "neorv32_imem",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Addressed IMEM read data word",
+      "security objective": "Integrity",
+      "reasoning": "The module derives the word address at line 101 and then stages the addressed memory value in `rdata`: in ROM builds, `rdata <= mem_rom_c(to_integer(addr));` at line 81; in RAM builds, `rdata(7 downto 0)` through `rdata(31 downto 24)` are loaded from `mem_ram_b0..b3` at lines 128-131. Line 185 delivers `rdata` on the response data path when `rden = '1'`. Integrity is established because the read-out flow depends on returning exactly the addressed stored word. Availability is also established because the reachable implementation captures `rdata` on a rising edge before delivery; the map shows mixed storage only because unreachable alternative-style assignments are also recorded, but `alt_style_c` is fixed false at line 38.",
+      "related structural assets": [
+        {
+          "asset rtl": "rdata",
+          "entity": "neorv32_imem",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Read-response qualification decision",
+      "security objective": "Integrity",
+      "reasoning": "`rden <= bus_req_i.stb and (not bus_req_i.rw);` at line 176 records whether the current request is a read, and reset forces `rden <= '0'` at line 173. Line 185 uses that stored decision to either forward `rdata` or force the response data to zero. This is an established decision asset: if it is corrupted, the module can expose data on non-read cycles or suppress data on reads. Availability is also established because, with `rstn_i = '1'`, a qualified read request produces the enabling state on the next rising edge.",
+      "related structural assets": [
+        {
+          "asset rtl": "rden",
+          "entity": "neorv32_imem",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Bus acknowledge event",
+      "security objective": "Integrity",
+      "reasoning": "The response acknowledge is reset low at line 174 and updated on each rising edge: in ROM builds `bus_rsp_o.ack <= bus_req_i.stb and (not bus_req_i.rw);` at lines 177-178, while in RAM builds `bus_rsp_o.ack <= bus_req_i.stb;` at lines 179-180. The consumer of this interface depends on that event to observe request completion, so its integrity and availability are established from these update rules. No eligible structural reference survives reporting rules because the only realization is the field `bus_rsp_o.ack` of the transport record port `bus_rsp_o`, and transport ports and their fields are excluded.",
+      "related structural assets": []
+    }
+  ]
+}

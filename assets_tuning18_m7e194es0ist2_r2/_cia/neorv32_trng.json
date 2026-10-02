@@ -1,0 +1,237 @@
+{
+ "module name": "neorv32_trng",
+ "concepts": [
+  {
+   "concept": "Peripheral write decision that sets TRNG control bits (the bus write that stores enable and fifo_clr)",
+   "kind": "configuration",
+   "writers": "In the bus_access process: when bus_req_i.stb='1' and bus_req_i.rw='1' the bus write assignments set enable <= bus_req_i.data(ctrl_en_c) (line 105) and fifo_clr <= bus_req_i.data(ctrl_fifo_clr_c) (line 106); reset drives enable <= '0' (line 95) and fifo_clr <= '0' (line 94); fifo_clr is also driven to '0' each cycle before write handling at line 101.",
+   "observers": "enable is read-back via bus_rsp_o.data(ctrl_en_c) <= enable (line 109) and bus writes are acknowledged via bus_rsp_o.ack <= bus_req_i.stb (line 98); fifo_clr's effect is observable because fifo.clear <= '1' when (enable='0') or (fifo_clr='1') (line 170) is connected to rnd_pool_fifo_inst.clear_i (line 157) and the FIFO availability/data are exposed via bus_rsp_o.data(ctrl_avail_c) (line 112) and the data return path (lines 115-117).",
+   "answers": {
+    "confidentiality": {
+     "answer": "no",
+     "line": 109,
+     "via": "bus_rsp_o.data",
+     "reason": "The control bits are written by the bus master and at least enable is explicitly read back via bus_rsp_o.data at line 109, so the RTL does not hide this setting."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 105,
+     "via": "bus_req_i.data",
+     "reason": "enable and fifo_clr are assigned directly from bus_req_i.data at lines 105-106 under the bus write guard (bus_req_i.stb/rw) and there is no RTL guard that prevents these writes while sampling/FIFO are in use."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 170,
+     "via": "bus_req_i.data",
+     "reason": "An external bus write to enable or fifo_clr (lines 105-106) can cause fifo.clear to assert (line 170) or disable sampling, thereby stopping or forcing unavailability of entropy."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 105,
+     "via": "bus_req_i.data",
+     "reason": "These control bits have a single register driver from the bus write/reset (lines 105-106 and 94-95) and there is no runtime debug/test override in the RTL."
+    }
+   },
+   "security objective": "Integrity"
+  },
+  {
+   "concept": "TRNG enable state (the stored enable bit that starts/stops sampling)",
+   "kind": "configuration",
+   "writers": "enable is a clocked register reset on rstn_i (enable <= '0' at line 95) and written by bus_access on bus write via enable <= bus_req_i.data(ctrl_en_c) at line 105 when bus_req_i.stb='1' and bus_req_i.rw='1'.",
+   "observers": "enable is provided to the neoTRNG instance (neoTRNG_inst port map enable_i => enable at line 137) and is read back to the bus via bus_rsp_o.data(ctrl_en_c) <= enable at line 109; its effect on sampling is visible inside neoTRNG where sample_en <= enable_i (line 354) and valid/data outputs (lines 366-367) are influenced.",
+   "answers": {
+    "confidentiality": {
+     "answer": "no",
+     "line": 109,
+     "via": "bus_rsp_o.data",
+     "reason": "The enable register is written by the bus master and explicitly readable via bus_rsp_o.data at line 109, so the RTL does not keep it confidential."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 105,
+     "via": "bus_req_i.data",
+     "reason": "enable is updated directly from bus_req_i.data at line 105 under bus write control and can be changed while the TRNG is running (it is consumed by neoTRNG via the port mapping at line 137 and used at line 354)."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 354,
+     "via": "enable",
+     "reason": "sample_en <= enable_i at line 354 shows sampling depends on enable, so an external write that clears enable (line 105) can stop sampling and prevent progress."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 105,
+     "via": "bus_req_i.data",
+     "reason": "enable has a single driver (bus write and reset) with no alternate runtime override in the RTL."
+    }
+   },
+   "security objective": "Integrity"
+  },
+  {
+   "concept": "FIFO-clear control (the stored fifo_clr bit that forces the FIFO clear signal)",
+   "kind": "configuration",
+   "writers": "fifo_clr is written by bus_access: fifo_clr <= bus_req_i.data(ctrl_fifo_clr_c) at line 106 when bus_req_i.stb='1' and bus_req_i.rw='1'; it is cleared by reset (fifo_clr <= '0' at line 94) and driven to '0' each cycle before write handling at line 101.",
+   "observers": "fifo_clr itself is not read back directly, but it drives fifo.clear <= '1' when (enable='0') or (fifo_clr='1') at line 170 which connects to rnd_pool_fifo_inst.clear_i (line 157); that clear affects FIFO availability (rnd_pool_fifo_inst.avail_o -> fifo.avail at line 167) and is observable via bus_rsp_o.data(ctrl_avail_c) (line 112) and the bus data return path (lines 115-117).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 170,
+     "via": "fifo.clear",
+     "reason": "fifo_clr controls fifo.clear at line 170, and that clear is connected to the FIFO input (line 157) producing externally observable changes in FIFO availability/data (lines 112, 115-117), so the bit's effect is visible outside the module."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 106,
+     "via": "bus_req_i.data",
+     "reason": "fifo_clr is directly assigned from bus_req_i.data at line 106 under the bus write guard and can be asserted while FIFO holds entropy, affecting FIFO contents."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 170,
+     "via": "fifo_clr",
+     "reason": "fifo.clear is asserted when fifo_clr='1' (line 170) and that clear is connected to the FIFO (line 157), so an external write to fifo_clr can force the FIFO to be cleared and make entropy unavailable."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 106,
+     "via": "bus_req_i.data",
+     "reason": "fifo_clr has a single register driver from the bus write/reset (lines 106 and 94) and there is no runtime override in the RTL."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Random output bytes (entropy) produced by neoTRNG and delivered to consumers via the FIFO and bus",
+   "kind": "data",
+   "writers": "Bytes are formed inside neoTRNG: sample_sreg is updated in sampling_control when debias_valid='1' (sample_sreg <= sample_sreg(6 downto 0) & (sample_sreg(7) xor debias_data) at line 360), data_o <= sample_sreg (line 366); neoTRNG_inst.data_o is mapped to the FIFO wdata (neoTRNG_inst port map data_o => fifo.wdata at line 139 and FIFO wdata_i mapping at line 161), and the FIFO provides fifo.rdata from rnd_pool_fifo_inst.rdata_o (line 166) which is copied to the bus response on reads (bus_rsp_o.data <= fifo.rdata at line 117).",
+   "observers": "External consumers receive bytes via the bus read path: bus_rsp_o.data(ctrl_data_msb_c downto ctrl_data_lsb_c) <= fifo.rdata when fifo.avail='1' (lines 115-117); FIFO availability and returned zeros (lines 115-117) also let observers infer presence/absence of bytes.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 117,
+     "via": "bus_rsp_o.data",
+     "reason": "Entropy bytes are written into the FIFO and returned on bus reads (bus_rsp_o.data <= fifo.rdata at line 117), so the RTL exposes the generated bytes to external observation."
+    },
+    "integrity": {
+     "answer": "no",
+     "line": 161,
+     "via": "fifo.wdata",
+     "reason": "Only the internal neoTRNG writes entropy bytes into the FIFO (neoTRNG.data_o -> fifo.wdata mapping at lines 139/161); there is no bus write path for injecting arbitrary FIFO data, so data replacement is the intended FIFO behavior, not an integrity violation in RTL."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 171,
+     "via": "bus_req_i",
+     "reason": "External bus reads assert fifo.re (line 171) and external writes can assert fifo_clr that drives fifo.clear (line 170 -> FIFO clear_i line 157), both of which can remove or prevent availability of stored entropy."
+    },
+    "undermined behavior": {
+     "answer": "yes-RTL",
+     "line": 445,
+     "via": "SIM_MODE",
+     "reason": "neoTRNG_cell uses a SIM_MODE generic to select a synchronous simulation inverter implementation instead of the physical (asynchronous) inverter (generate blocks lines 439-451), providing an alternate (non-physical / lower-entropy) implementation."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "FIFO available flag (fifo.avail) used to select returning data versus zeros",
+   "kind": "state",
+   "writers": "fifo.avail is driven by the FIFO instance via rnd_pool_fifo_inst.avail_o mapped to fifo.avail (connection at line 167).",
+   "observers": "fifo.avail is copied into the control read field bus_rsp_o.data(ctrl_avail_c) <= fifo.avail at line 112 and is used to choose returning zeros versus fifo.rdata on bus reads (lines 115-117), so its value is externally observable through the bus response.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 112,
+     "via": "bus_rsp_o.data",
+     "reason": "fifo.avail is reported on the bus response (line 112) and also affects whether data or zeros are returned (lines 115-117), so the occupancy/state is externally observable."
+    },
+    "integrity": {
+     "answer": "unknown",
+     "line": 167,
+     "via": "rnd_pool_fifo_inst.avail_o",
+     "reason": "fifo.avail is produced by the FIFO sub-unit (rnd_pool_fifo_inst.avail_o at line 167); the FIFO internals and their guards are inside that sub-unit and not supplied, so the integrity (who/when may change it) cannot be judged from this RTL alone."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 170,
+     "via": "fifo_clr",
+     "reason": "fifo.clear (connected to the FIFO clear input at line 157) is asserted when (enable='0') or (fifo_clr='1') at line 170, and bus reads assert fifo.re at line 171, so external inputs can force or starve availability of fifo.avail."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 167,
+     "via": "rnd_pool_fifo_inst.avail_o",
+     "reason": "fifo.avail has a single driver from the FIFO sub-unit (line 167) in this RTL and there is no runtime override present here."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Debiasing state (debias_state) that controls acceptance of debiased bits into the sampling path",
+   "kind": "state",
+   "writers": "debias_state is a clocked register reset on rstn_i (debias_state <= '0' at line 332) and updated in the debiasing process on clock by debias_state <= (not debias_state) and cell_en_out(cell_en_out'left) at line 336 (process lines 328-337).",
+   "observers": "debias_state is not an external output but drives debias_valid (debias_valid <= debias_state and (debias_sreg(1) xor debias_sreg(0)) at line 341) which gates sampling (sampling_control lines 358-361) and thus affects the timing/occurrence of valid/data outputs (lines 366-367), so external observers can infer debias_state from the stream/valid timing.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 341,
+     "via": "debias_valid/valid_o",
+     "reason": "debias_state directly controls debias_valid at line 341 which gates sampling and therefore influences externally visible valid/data timing (lines 358-367), making the internal state externally inferable."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 336,
+     "via": "cell_en_out",
+     "reason": "debias_state is updated by the debiasing process at line 336 using cell_en_out(cell_en_out'left); cell_en_out is driven by the sampling enable chain that external writes (enable) can change, so the state can be influenced while in use."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 336,
+     "via": "enable",
+     "reason": "debias_state's update depends on cell_en_out (line 336) which is derived from the sample enable chain (sample_en <= enable_i at line 354, top-level enable written at line 105), so external writes can prevent debias_state from progressing or force its value, affecting availability of debiased bits."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 336,
+     "via": "debias_state",
+     "reason": "debias_state has a single controlled update in the debiasing process (line 336) and there is no runtime debug/test bypass in this RTL that directly replaces it."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Sample-byte counter (sample_cnt) that determines when a full sampled byte is valid",
+   "kind": "state",
+   "writers": "sample_cnt is reset to (others => '0') on rstn_i (line 351) and in sampling_control is cleared when (sample_en = '0') or (sample_cnt(sample_cnt'left) = '1') (lines 355-356) and incremented when debias_valid='1' (sample_cnt <= std_ulogic_vector(unsigned(sample_cnt) + 1) at line 359).",
+   "observers": "valid_o is derived from sample_cnt(sample_cnt'left) at line 367 and data_o (line 366) becomes valid when the counter indicates a full byte, so external observers can infer sample_cnt behavior via valid/data outputs and FIFO writes.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 367,
+     "via": "valid_o",
+     "reason": "sample_cnt directly determines valid_o at line 367 and thus the timing of bytes on data_o, making the sequencing state observable externally through valid/data behavior."
+    },
+    "integrity": {
+     "answer": "no",
+     "line": 359,
+     "via": "sampling_control process",
+     "reason": "sample_cnt is updated only by the internal sampling_control process (increment at line 359 and clear at lines 355-356) as intended operation; there is no external write that directly mutates the counter."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 355,
+     "via": "sample_en/enable",
+     "reason": "sampling_control clears sample_cnt when sample_en='0' (line 355) and sample_en is driven from enable (sample_en <= enable_i at line 354, top-level enable written at line 105), so external writes can stop or reset the counter and prevent bytes from becoming valid."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 359,
+     "via": "sample_cnt",
+     "reason": "sample_cnt has a single update mechanism in the sampling_control process (lines 358-360) and there is no runtime override in this RTL that substitutes a different driver."
+    }
+   },
+   "security objective": "Confidentiality"
+  }
+ ],
+ "_problems": []
+}

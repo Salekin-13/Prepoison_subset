@@ -1,0 +1,279 @@
+{
+  "module name": "neorv32_debug_dm",
+  "conceptual assets": [
+    {
+      "concept": "Authorized DMI write/read gate decisions (whether a DMI request is allowed to perform reads or writes)",
+      "security objective": "Integrity",
+      "reasoning": "The entity computes per-request authorization signals that gate every register read/write. The RTL defines dmi_wren and dmi_rden from dmi_req_i.op and then computes dmi_wren_auth and dmi_rden_auth from dmi_wren/dmi_rden together with AUTHENTICATOR/auth.valid. These dmi_*_auth signals are tested throughout dmi_write_access and dmi_read_access to permit or block writes/reads (e.g. writes to addr_dmcontrol_c, addr_command_c, addr_progbuf0_c/1 and reads that populate dmi_rsp_o.data). Integrity of the computed authorization decisions is therefore required for the module to enforce the implemented access predicates.",
+      "related structural assets": [
+        {
+          "asset rtl": "dmi_wren_auth",
+          "entity": "neorv32_debug_dm",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "dmi_rden_auth",
+          "entity": "neorv32_debug_dm",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Authenticator validity flag (whether the external authenticator reports a valid authentication)",
+      "security objective": "Integrity",
+      "reasoning": "The internal auth.valid flag gates authenticated accesses and outputs. The RTL uses auth.valid in the dmi_*_auth computations and in conditional read/response blocks and output gating (e.g. many read branches guarded by \"if (not AUTHENTICATOR) or (auth.valid = '1')\", request_gen and ndmrstn_o). The DM behavior and which register values are exposed or writable depend on auth.valid, so its integrity matters.",
+      "related structural assets": [
+        {
+          "asset rtl": "auth.valid",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "DM active configuration bit (whether the debug module is active)",
+      "security objective": "Integrity",
+      "reasoning": "dm_reg.dmcontrol_dmactive is stored from DMI writes (dmi_write_access assigns dm_reg.dmcontrol_dmactive <= dmi_req_i.data(0) when dmi_wren = '1') and is tested by the controller: the dm_controller process uses dm_reg.dmcontrol_dmactive to force CMD_IDLE and to control behavior when inactive. It also gates external requests such as halt outputs. Corrupting this stored bit would change whether the DM enters the active operational flows implemented in the RTL, so its integrity is required.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_reg.dmcontrol_dmactive",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "NDM reset request (the NDM reset signal to harts)",
+      "security objective": "Integrity",
+      "reasoning": "The module drives an external NDM reset output from stored control bits: ndmrstn_o is generated as '0' when dm_reg.dmcontrol_ndmreset = '1' and dm_reg.dmcontrol_dmactive = '1' and ((not AUTHENTICATOR) or (auth.valid = '1')) else '1'. dm_reg.dmcontrol_ndmreset is set by authenticated DMCONTROL writes. The output and the stored request determine hart reset behavior in hart_status, so integrity of the NDM reset request and its stored control are established by the RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "ndmrstn_o",
+          "entity": "neorv32_debug_dm",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "dm_reg.dmcontrol_ndmreset",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "dm_reg.dmcontrol_dmactive",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Halt request value (the stored halt request and the per-hart halt outputs)",
+      "security objective": "Integrity",
+      "reasoning": "A stored halt request bit dm_reg.halt_req is set by authenticated writes to DMCONTROL (dmi_write_access assigns dm_reg.halt_req <= dmi_req_i.data(31) when dmi_wren_auth = '1'). The request is exported per hart via halt_req_o(i) <= dm_reg.halt_req and dm_reg.hartsel_dec(i) and dm_reg.dmcontrol_dmactive gated by authentication. The RTL therefore establishes that the stored halt request and the halt_req_o outputs determine which harts are asked to halt; their integrity is required for correct halt signaling.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_reg.halt_req",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "halt_req_o",
+          "entity": "neorv32_debug_dm",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "dm_reg.dmcontrol_dmactive",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Selected hart identifier (the hart selection value used to target operations)",
+      "security objective": "Integrity",
+      "reasoning": "dm_reg.hartsel is written from DMCONTROL writes (dmi_write_access assigns dm_reg.hartsel <= dmi_req_i.data(18 downto 16) when dmi_wren_auth = '1') and the concurrent hartsel_decode generate computes dm_reg.hartsel_dec(i) from dm_reg.hartsel. The controller and hart-status logic use dm_reg.hartsel_dec to select which hart(s) commands and requests apply (e.g. CMD_CHECK uses or_reduce_f(dm_ctrl.hart_halted and dm_reg.hartsel_dec)). The stored selection and its decoded vector are therefore primary assets whose integrity determines which hart is targeted.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_reg.hartsel",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "dm_reg.hartsel_dec",
+          "entity": "neorv32_debug_dm",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "dm_reg.hartsel_inv",
+          "entity": "neorv32_debug_dm",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Command register (the abstract command word that the controller validates and executes)",
+      "security objective": "Integrity",
+      "reasoning": "dm_reg.command is written from DMI only under controller and error constraints (dmi_write_access: dm_reg.command <= dmi_req_i.data when addr_command_c and dmi_wren_auth = '1' and dm_ctrl.busy = '0' and dm_ctrl.cmderr = \"000\"). The dm_controller reads dm_reg.command in CMD_CHECK to validate opcode/fields and in CMD_PREPARE to form ldsw_progbuf and pbuf_en. The stored command therefore determines executed actions and its integrity is established by the RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_reg.command",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Auto-execution enable configuration (abstractauto settings that enable automatic exec on certain accesses)",
+      "security objective": "Integrity",
+      "reasoning": "The abstractauto configuration bits are stored by DMI (dmi_write_access assigns dm_reg.abstractauto_autoexecdata and dm_reg.abstractauto_autoexecprogbuf bits when writing addr_abstractauto_c with dmi_wren_auth and dm_ctrl.busy = '0'). These configuration bits are used together with access detection to set autoexec trigger flags and thereby cause the controller to start command execution. Because the controller's automatic-trigger behavior depends on these stored enables, their integrity is required.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_reg.abstractauto_autoexecdata",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "dm_reg.abstractauto_autoexecprogbuf",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Auto-execution trigger flags (the autoexec_wr/autoexec_rd events that cause the controller to start CHECK)",
+      "security objective": "Integrity",
+      "reasoning": "The RTL sets dm_reg.autoexec_wr and dm_reg.autoexec_rd when DMI writes/reads occur to data/progbuf addresses while the corresponding abstractauto enable bits are set (dmi_write_access and dmi_read_access set these flags). The dm_controller checks dm_reg.autoexec_rd or dm_reg.autoexec_wr in CMD_IDLE and will transition to CMD_CHECK when set. The event flags therefore directly trigger automatic command processing and their integrity is required.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_reg.autoexec_wr",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "dm_reg.autoexec_rd",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Program buffer contents (the stored progbuf words that may be executed or returned to a bus master)",
+      "security objective": "Integrity",
+      "reasoning": "dm_reg.progbuf elements are written by authenticated DMI writes when the controller is not busy (dmi_write_access assigns dm_reg.progbuf(0/1) <= dmi_req_i.data under addr_progbufX_c and gating). The architecture maps those stored values (and dm_ctrl.ldsw_progbuf) into cpu_progbuf entries and bus_access returns cpu_progbuf on bus reads. Because these stored program words determine what instructions are supplied for execution or readback, their integrity is established by the RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_reg.progbuf",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cpu_progbuf",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Prepared LD/SW program instruction (the ldsw_progbuf word formed in PREPARE that will be issued to the CPU bus)",
+      "security objective": "Integrity",
+      "reasoning": "In CMD_PREPARE the controller computes dm_ctrl.ldsw_progbuf from instr_sw_c/instr_lw_c, dataaddr_c and fields of dm_reg.command (the RTL assigns dm_ctrl.ldsw_progbuf and sets dm_ctrl.pbuf_en). cpu_progbuf(0) is driven from dm_ctrl.ldsw_progbuf. The prepared instruction value thus determines the single-word memory load/store issued to the target hart and its integrity is established by the RTL assignment and subsequent export.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_ctrl.ldsw_progbuf",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "DM controller state (the controller state that determines busy/acceptance and flow progression)",
+      "security objective": "Integrity",
+      "reasoning": "The module implements a finite-state controller dm_ctrl.state (CMD_IDLE, CMD_CHECK, CMD_PREPARE, CMD_TRIGGER, CMD_BUSY, CMD_ERROR). The process dm_controller updates dm_ctrl.state and the concurrent assignment sets dm_ctrl.busy <= '0' when state = CMD_IDLE else '1'. dmi_write_access and dmi_read_access test dm_ctrl.busy to allow or block writes/reads and to set rd/wr access errors. Because dm_ctrl.state/busy gate command acceptance and sequencing, their correct values are necessary for the implemented control-flow invariants.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_ctrl.state",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "dm_ctrl.busy",
+          "entity": "neorv32_debug_dm",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Command error code (cmderr) that blocks new commands and reports failures",
+      "security objective": "Integrity",
+      "reasoning": "dm_ctrl.cmderr is updated in the controller (cmderr <= \"100\"/\"011\"/\"010\"/\"001\" depending on illegal_state, dci.ack_exc, illegal_cmd, rd/wr access errors) and cleared by dm_reg.clr_acc_err. dmi_write_access requires dm_ctrl.cmderr = \"000\" to accept a new COMMAND write. The stored error code therefore influences whether commands are accepted and how errors are reported, establishing its integrity relevance.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_ctrl.cmderr",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "DCI data register (the data0 register used for data transfers between DMI and target)",
+      "security objective": "Integrity",
+      "reasoning": "The DCI data register dci.data_reg is written from DMI when dci.data_reg_we = '1' (bus_access assigns dci.data_reg <= dmi_req_i.data) or from bus writes into the DM data region (bus_access assigns dci.data_reg <= bus_req_i.data when address matches). dmi_read_access returns dci.data_reg on reads to addr_data0_c. Because this stored word is the module's data transfer locus between DMI and target bus, its integrity is established by the RTL read/write paths.",
+      "related structural assets": [
+        {
+          "asset rtl": "dci.data_reg",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Per-hart halted status (the hart_halted vector used to decide command legality and report status)",
+      "security objective": "Integrity",
+      "reasoning": "dm_ctrl.hart_halted(i) is updated in hart_status from external acknowledgements and resets (set on dci.ack_hlt(i), cleared on dci.ack_res(i) or dm_reg.dmcontrol_ndmreset) and is read in dm_controller CMD_CHECK and in DMI DMSTATUS read (dmi_rsp_o.data bits use or_reduce_f(dm_ctrl.hart_halted and dm_reg.hartsel_dec)). The stored halted-state vector therefore determines whether operations are permitted and what status is reported, establishing its integrity relevance.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_ctrl.hart_halted",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "DCI acknowledgement signals (ack_hlt, ack_res, ack_exe, ack_exc used to update hart state and error conditions)",
+      "security objective": "Integrity",
+      "reasoning": "bus_access sets dci.ack_hlt/ack_res/ack_exe/ack_exc from decoded CPU responses when writes target the sreg base (the process assigns dci.ack_hlt(i) <= cpu_rsp_dec(i), dci.ack_res(i) <= cpu_rsp_dec(i), dci.ack_exe(i) <= cpu_rsp_dec(i) or dci.ack_exc <= '1' on others). hart_status then consumes these ack signals to update dm_ctrl.hart_halted, hart_resume_req/ack and hart_reset. The ack signals are therefore the primary points by which bus writes influence hart status and errors; their integrity is established by these RTL flows.",
+      "related structural assets": [
+        {
+          "asset rtl": "dci.ack_hlt",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "dci.ack_res",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "dci.ack_exe",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "dci.ack_exc",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "CPU response decode used to route bus writes to hart ack signals (which hart a bus write targets)",
+      "security objective": "Integrity",
+      "reasoning": "cpu_rsp_dec is computed from bus_req_i.data when NUM_HARTS > 1 or set to all ones when NUM_HARTS = 1, and bus_access uses cpu_rsp_dec to set dci.ack_hlt/ack_res/ack_exe on writes to the sreg base. Because this decoded vector determines which hart's ack bits are asserted in response to bus writes, its correctness is required by the implemented routing flow.",
+      "related structural assets": [
+        {
+          "asset rtl": "cpu_rsp_dec",
+          "entity": "neorv32_debug_dm",
+          "realization": "computes"
+        }
+      ]
+    }
+  ]
+}

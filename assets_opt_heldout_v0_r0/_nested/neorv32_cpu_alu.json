@@ -1,0 +1,137 @@
+{
+ "module name": "neorv32_cpu_alu",
+ "module purpose": "neorv32_cpu_alu compares two register operands (cmp_o), adds or subtracts selected operands (add_o), and drives a result chosen by the operation code on res_o (zero, adder, less-than, operand, bitwise logic or co-processor result). It also merges the results and valid flags of its co-processor sub-units (done_o), keeps a CFU busy state, and routes CSR write enables and CSR read data for the FPU and CFU CSR blocks (csr_o).",
+ "use-case flows": [
+  {
+   "flow": "operate",
+   "value": "equal and less-than flags of rs1_i and rs2_i, signed or unsigned per ctrl_i.alu_unsigned, driven on cmp_o and to the bitmanip and FPU sub-units",
+   "lines": [97, 98, 100, 101, 102, 230, 263]
+  },
+  {
+   "flow": "operate",
+   "value": "operand selection and the sum or difference of the selected operands, driven on add_o",
+   "lines": [107, 108, 113, 114, 116, 117, 119]
+  },
+  {
+   "flow": "operate",
+   "value": "ALU result selected by ctrl_i.alu_op and driven on res_o",
+   "lines": [126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136]
+  },
+  {
+   "flow": "start",
+   "value": "CFU operation request ctrl_i.alu_cp_cfu passed to the CFU start input and setting cfu_busy; active decision passed to the CFU",
+   "lines": [298, 299, 331, 332, 342]
+  },
+  {
+   "flow": "operate",
+   "value": "co-processor results driven into cp_result by the sub-units, CFU result captured under its qualification, merged into cp_res",
+   "lines": [151, 176, 199, 235, 268, 334, 335, 337, 372, 406]
+  },
+  {
+   "flow": "report",
+   "value": "co-processor completion: valid flags from the sub-units and the qualified CFU valid, OR-ed onto done_o",
+   "lines": [147, 177, 200, 236, 269, 343, 373, 407]
+  },
+  {
+   "flow": "configure",
+   "value": "CSR write enable, address and write data passed to the FPU or CFU CSR block when the CSR address matches",
+   "lines": [258, 259, 260, 273, 274, 301, 302, 303, 318, 319]
+  },
+  {
+   "flow": "read out",
+   "value": "FPU or CFU CSR read data, gated by the address match and returned on csr_o",
+   "lines": [155, 261, 275, 304, 320]
+  },
+  {
+   "flow": "reset",
+   "value": "cfu_busy and cp_result(4) cleared while rstn_i is '0'; cfu_busy also cleared on cfu_done or ctrl_i.cpu_trap",
+   "lines": [325, 326, 327, 329, 330]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Operand comparison result -- the equal and less-than flags computed from the two register operands",
+   "security objective": "Integrity",
+   "reasoning": "The comparison flow computes `cmp(cmp_equal_c) <= '1' when (rs1_i = rs2_i) else '0';` (line 100) and `cmp(cmp_less_c) <= '1' when (signed(cmp_rs1) < signed(cmp_rs2)) else '0';` (line 101). ctrl_i.alu_unsigned chooses the sign extension of each operand (lines 97-98). The flags leave through `cmp_o <= cmp;` (line 102) and go to the cmp_i inputs of the bitmanip and FPU sub-units (lines 230, 263; these exist only when the generics at lines 214 and 250 hold). The consumers are outside this entity, so Integrity is Established from these lines: cmp_o and the sub-units must receive exactly the flags that lines 100-101 define. cmp computes the decision (CONSTRAINED_BY rs1_i and rs2_i, occurrence 2, line 100). rs1_i and rs2_i set it (CONSTRAINS cmp, occurrence 5, line 100). ctrl_i sets its signedness (its field alu_unsigned SOURCES cmp_rs1, occurrence 2, line 97). cmp_o is the exit port (COPIES cmp, occurrence 2, line 102). cmp_rs1 and cmp_rs2 are condition operands, not the result, so they are not listed. The flow graph lists cmp and cmp_o as not reached from an input because a comparison is a control edge, not a data edge; the RTL lines above show the dependence. No line restricts who observes the flags, so confidentiality is not established.",
+   "related structural assets": [
+    {"asset rtl": "cmp", "entity": "neorv32_cpu_alu", "realization": "computes", "occurrence": 2, "edge": {"type": "CONSTRAINED_BY", "partner": "rs1_i"}},
+    {"asset rtl": "cmp_o", "entity": "neorv32_cpu_alu", "realization": "exit port", "occurrence": 2, "edge": {"type": "COPIES", "partner": "cmp"}},
+    {"asset rtl": "rs1_i", "entity": "neorv32_cpu_alu", "realization": "sets", "occurrence": 5, "edge": {"type": "CONSTRAINS", "partner": "cmp"}},
+    {"asset rtl": "rs2_i", "entity": "neorv32_cpu_alu", "realization": "sets", "occurrence": 5, "edge": {"type": "CONSTRAINS", "partner": "cmp"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_alu", "realization": "sets", "occurrence": 2, "edge": {"type": "SOURCES", "partner": "cmp_rs1"}}
+   ]
+  },
+  {
+   "concept": "Adder result -- the sum or difference of the selected operands",
+   "security objective": "Integrity",
+   "reasoning": "Operands are selected by `opa <= ctrl_i.pc_cur when (ctrl_i.alu_opa_mux = '1') else rs1_i;` (line 107) and `opb <= ctrl_i.alu_imm when (ctrl_i.alu_opb_mux = '1') else rs2_i;` (line 108), then extended per ctrl_i.alu_unsigned (lines 113-114). They are subtracted or added under ctrl_i.alu_sub (lines 116-117). The result leaves through `add_o <= addsub_res(XLEN-1 downto 0);` (line 119), through res_o in the add arm (line 129), and as the top bit in the slt arm (line 131). Its consumers lie outside this entity, so Integrity is Established: add_o and res_o must carry exactly the sum or difference that lines 116-117 define. addsub_res computes it (DERIVES_FROM opa_x, occurrence 2, line 116; also GATED_BY ctrl_i.alu_sub). rs1_i and rs2_i set it (SOURCES opa and SOURCES opb, occurrence 6, lines 107-108). ctrl_i sets it through alu_sub (GATES addsub_res, occurrence 10, line 116) and also supplies pc_cur, alu_imm and the operand mux selects. add_o and res_o are exit ports (DERIVES_FROM addsub_res, lines 119 and 129). opa, opb, opa_x and opb_x only select or extend operands, so they are not listed.",
+   "related structural assets": [
+    {"asset rtl": "addsub_res", "entity": "neorv32_cpu_alu", "realization": "computes", "occurrence": 2, "edge": {"type": "DERIVES_FROM", "partner": "opa_x"}},
+    {"asset rtl": "add_o", "entity": "neorv32_cpu_alu", "realization": "exit port", "occurrence": 2, "edge": {"type": "DERIVES_FROM", "partner": "addsub_res"}},
+    {"asset rtl": "res_o", "entity": "neorv32_cpu_alu", "realization": "exit port", "occurrence": 4, "edge": {"type": "DERIVES_FROM", "partner": "addsub_res"}},
+    {"asset rtl": "rs1_i", "entity": "neorv32_cpu_alu", "realization": "sets", "occurrence": 6, "edge": {"type": "SOURCES", "partner": "opa"}},
+    {"asset rtl": "rs2_i", "entity": "neorv32_cpu_alu", "realization": "sets", "occurrence": 6, "edge": {"type": "SOURCES", "partner": "opb"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_alu", "realization": "sets", "occurrence": 10, "edge": {"type": "GATES", "partner": "addsub_res"}}
+   ]
+  },
+  {
+   "concept": "Selected ALU result -- the value chosen by the operation code and returned as the ALU result",
+   "security objective": "Integrity",
+   "reasoning": "The alu_core process (lines 124-138) drives res_o through `case ctrl_i.alu_op is` (line 127). The arms are: zero (line 128), the adder result (line 129), the co-processor result (line 130), the less-than bit (line 131), opb (line 132), and the bitwise xor, or and and of opb and rs1_i (lines 133-135). Any other code gives zero (line 136). The result is delivered through an output port to a consumer outside this entity, so Integrity is Established: res_o must equal the arm that ctrl_i.alu_op selects. res_o is the exit port (SELECTED_BY ctrl_i.alu_op, occurrence 8, line 133). ctrl_i sets the selection (its field alu_op SELECTS res_o, occurrence 12, line 127). rs1_i sets the logic operands (SOURCES res_o, occurrence 8, line 133). rs2_i reaches them through opb (SOURCES opb, occurrence 6, line 108). opb only carries a selected operand, so it is not listed.",
+   "related structural assets": [
+    {"asset rtl": "res_o", "entity": "neorv32_cpu_alu", "realization": "exit port", "occurrence": 8, "edge": {"type": "SELECTED_BY", "partner": "ctrl_i.alu_op"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_alu", "realization": "sets", "occurrence": 12, "edge": {"type": "SELECTS", "partner": "res_o"}},
+    {"asset rtl": "rs1_i", "entity": "neorv32_cpu_alu", "realization": "sets", "occurrence": 8, "edge": {"type": "SOURCES", "partner": "res_o"}},
+    {"asset rtl": "rs2_i", "entity": "neorv32_cpu_alu", "realization": "sets", "occurrence": 6, "edge": {"type": "SOURCES", "partner": "opb"}}
+   ]
+  },
+  {
+   "concept": "Co-processor result -- the result returned by the co-processor sub-units and the CFU through the ALU",
+   "security objective": "Integrity",
+   "reasoning": "Each co-processor drives its element of cp_result from its res_o output (lines 176, 199, 235, 268, 372, 406). The shifter is always present; the others exist only when their generics hold and are otherwise tied to zero (lines 206, 242, 283, 379, 413). For the CFU, this entity stores the result itself, under RISCV_ISA_Zxcfu: `cp_result(4) <= cfu_res;` only when `(cfu_done = '1') and ((ctrl_i.alu_cp_cfu = '1') or (cfu_busy = '1'))` (lines 334-335), otherwise zero (line 337), and zero on reset (line 327). The elements are OR-merged into cp_res (line 151) and returned by `when alu_op_cp_c => res_o <= cp_res;` (line 130). Integrity is Established: res_o must return exactly the merged co-processor result, and cp_result(4) must take the CFU result only under the qualification of line 334. cp_result stores (CLOCKED_BY clk_i, occurrence 17, line 335). ctrl_i sets the capture condition (its field alu_cp_cfu GATES cp_result, occurrence 31, line 334). res_o is the exit port (COPIES cp_res, occurrence 5, line 130). cp_res only merges and forwards. cfu_res only carries the CFU output into cp_result (CARRIES, line 335). Neither is listed.",
+   "related structural assets": [
+    {"asset rtl": "cp_result", "entity": "neorv32_cpu_alu", "realization": "stores", "occurrence": 17, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "res_o", "entity": "neorv32_cpu_alu", "realization": "exit port", "occurrence": 5, "edge": {"type": "COPIES", "partner": "cp_res"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_alu", "realization": "sets", "occurrence": 31, "edge": {"type": "GATES", "partner": "cp_result"}}
+   ]
+  },
+  {
+   "concept": "CFU operation-in-progress state -- whether a custom-function-unit operation has started and has not yet completed or been aborted",
+   "security objective": "Integrity",
+   "reasoning": "Under RISCV_ISA_Zxcfu, cfu_busy is set when ctrl_i.alu_cp_cfu is '1' (lines 331-332). It is cleared when `(cfu_done = '1') or (ctrl_i.cpu_trap = '1')` (lines 329-330) and on reset (line 326). Without that generic it is tied to '0' (line 351). The state decides whether a CFU completion is accepted: it qualifies the capture of cp_result(4) (line 334) and cp_valid(4) (line 343). It also forms `cfu_active <= ctrl_i.alu_cp_cfu or cfu_busy;` (line 342), delivered to the CFU active_i input (line 299). Integrity is Established: a wrong state would accept or drop a CFU result and completion contrary to lines 334 and 343, and the CFU would receive an active value other than the one line 342 defines. Availability is also Established under the implemented conditions: the state holds from the start until completion or trap, so a completion arriving after the start cycle is still accepted (lines 332, 334). cfu_busy stores (CLOCKED_BY clk_i, occurrence 4, line 332). cfu_active computes the active decision delivered to the sub-unit (GATED_BY cfu_busy, occurrence 3, line 342). ctrl_i sets the state through alu_cp_cfu (GATES cfu_busy, occurrence 30, line 331) and through cpu_trap (line 329).",
+   "related structural assets": [
+    {"asset rtl": "cfu_busy", "entity": "neorv32_cpu_alu", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "cfu_active", "entity": "neorv32_cpu_alu", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "cfu_busy"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_alu", "realization": "sets", "occurrence": 30, "edge": {"type": "GATES", "partner": "cfu_busy"}}
+   ]
+  },
+  {
+   "concept": "Co-processor completion -- the event that a co-processor operation has produced its result",
+   "security objective": "Integrity",
+   "reasoning": "`done_o <= cp_valid(0) or cp_valid(1) or ... or cp_valid(6);` (line 147) reports completion. Each co-processor drives its valid element (lines 177, 200, 236, 269, 373, 407; tied to '0' when its generic is false). For the CFU, this entity computes the element itself: `cp_valid(4) <= cfu_done and (ctrl_i.alu_cp_cfu or cfu_busy);` (line 343, under RISCV_ISA_Zxcfu). done_o is delivered to a consumer outside this entity, so Integrity is Established: done_o must assert exactly when a valid flag does, and cp_valid(4) only for a CFU completion of a started or busy operation. Availability is also Established under these conditions: when a co-processor, or the qualified CFU, asserts valid, done_o is produced in the same cycle (line 147). done_o is the exit port (GATED_BY cp_valid, occurrence 2, line 147). cp_valid computes (GATED_BY cfu_done, occurrence 16, line 343). cfu_done sets it: it is where the CFU completion enters this entity (CONNECTS neorv32_cpu_cp_cfu_inst.valid_o, occurrence 2, line 314), and this entity decides on it (lines 329, 334, 343).",
+   "related structural assets": [
+    {"asset rtl": "done_o", "entity": "neorv32_cpu_alu", "realization": "exit port", "occurrence": 2, "edge": {"type": "GATED_BY", "partner": "cp_valid"}},
+    {"asset rtl": "cp_valid", "entity": "neorv32_cpu_alu", "realization": "computes", "occurrence": 16, "edge": {"type": "GATED_BY", "partner": "cfu_done"}},
+    {"asset rtl": "cfu_done", "entity": "neorv32_cpu_alu", "realization": "sets", "occurrence": 2, "edge": {"type": "CONNECTS", "partner": "neorv32_cpu_cp_cfu_inst.valid_o"}}
+   ]
+  },
+  {
+   "concept": "Co-processor CSR write enable -- whether a CSR write is passed to the FPU or CFU CSR block",
+   "security objective": "Integrity",
+   "reasoning": "`fpu_csr_en <= '1' when (ctrl_i.csr_addr(11 downto 2) = csr_fflags_c(11 downto 2)) else '0';` (line 273) and `fpu_csr_we <= fpu_csr_en and ctrl_i.csr_we;` (line 274) decide the FPU CSR write enable. It is delivered to csr_we_i of the FPU sub-unit (line 258) with the address and write data (lines 259-260). Lines 318-319 and 301-303 do the same for the CFU. Each enable exists only when its generic holds (RISCV_ISA_Zfinx, RISCV_ISA_Zxcfu) and is tied to '0' otherwise (lines 281, 349). The consumer is a sub-unit that is not supplied, so Integrity is Established: the sub-unit must receive exactly the enable that lines 274 and 319 define. fpu_csr_we and cfu_csr_we compute the decision (GATED_BY ctrl_i.csr_we, occurrence 3, lines 274 and 319). ctrl_i sets it (its field csr_we GATES fpu_csr_we, occurrence 20, line 274; its field csr_addr GATES fpu_csr_en at line 273). fpu_csr_en and cfu_csr_en also qualify read data (lines 275, 320), so they are operands of the decision, not the decision, and are not listed. csr_addr and csr_wdata are forwarded to the sub-units unchanged.",
+   "related structural assets": [
+    {"asset rtl": "fpu_csr_we", "entity": "neorv32_cpu_alu", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "ctrl_i.csr_we"}},
+    {"asset rtl": "cfu_csr_we", "entity": "neorv32_cpu_alu", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "ctrl_i.csr_we"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_alu", "realization": "sets", "occurrence": 20, "edge": {"type": "GATES", "partner": "fpu_csr_we"}}
+   ]
+  },
+  {
+   "concept": "Co-processor CSR read data -- the FPU or CFU CSR value returned on csr_o",
+   "security objective": "Integrity",
+   "reasoning": "`csr_rdata_fpu <= fpu_csr_rd when (fpu_csr_en = '1') else (others => '0');` (line 275), its CFU counterpart (line 320) and `csr_o <= csr_rdata_fpu or csr_rdata_cfu;` (line 155) return a sub-unit's CSR value only when the address matches its block (lines 273, 318). The value is zero when the generic is false (lines 282, 350). csr_o is delivered to a consumer outside this entity, so Integrity is Established: csr_o must carry exactly the gated, merged value of these lines. csr_o is the exit port (DERIVES_FROM csr_rdata_fpu, occurrence 2, line 155). fpu_csr_rd and cfu_csr_rd only carry sub-unit outputs (lines 261, 304), and csr_rdata_fpu and csr_rdata_cfu only gate them, so none of these is listed. No line restricts which requester receives the value, so confidentiality is not established.",
+   "related structural assets": [
+    {"asset rtl": "csr_o", "entity": "neorv32_cpu_alu", "realization": "exit port", "occurrence": 2, "edge": {"type": "DERIVES_FROM", "partner": "csr_rdata_fpu"}}
+   ]
+  }
+ ]
+}

@@ -1,0 +1,116 @@
+{
+  "module name": "neorv32_gptmr",
+  "conceptual assets": [
+    {
+      "concept": "Timer enable configuration (ctrl enable bit)",
+      "security objective": "Integrity",
+      "reasoning": "The enable bit stored in ctrl controls counting, interrupt generation and an external enable output: bus_access writes it (`ctrl(ctrl_en_c) <= bus_req_i.data(ctrl_en_c)`); the module drives `clkgen_en_o <= ctrl(ctrl_en_c)`; timer_core uses `if (ctrl(ctrl_en_c) = '0') then timer.count <= (others => '0')` to stop/reset counting; irq_generator gates IRQ behavior with `if (ctrl(ctrl_en_c) = '1') then ...`. Corrupting this stored bit violates the implemented enable/control relations, so its integrity is required. The ctrl vector stores the value and clkgen_en_o exposes it.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl",
+          "entity": "neorv32_gptmr",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "clkgen_en_o",
+          "entity": "neorv32_gptmr",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Prescaler selection value (which clkgen_i bit is selected)",
+      "security objective": "Integrity",
+      "reasoning": "Three ctrl bits select which bit of clkgen_i forms the timer tick: bus_access writes the bits (`ctrl(ctrl_prscX_c) <= bus_req_i.data(ctrl_prscX_c)`); timer.tick is produced with `timer.tick <= clkgen_i(to_integer(unsigned(ctrl(ctrl_prsc2_c downto ctrl_prsc0_c))))`. Corrupting the stored selection changes which clock source drives counting, breaking timing and match/IRQ behavior; integrity of the selection is therefore required.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl",
+          "entity": "neorv32_gptmr",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Timer tick event (selected clkgen_i bit -> timer.tick)",
+      "security objective": "Integrity",
+      "reasoning": "The module computes the timer tick from the external clock-vector and the prescaler selection: `timer.tick <= clkgen_i(to_integer(unsigned(ctrl(ctrl_prsc2_c downto ctrl_prsc0_c))))`; timer_core uses `elsif (timer.tick = '1') then` to advance timer.count. Incorrect or manipulated tick production violates the implemented counting and match/IRQ flows, so integrity of the tick event is required.",
+      "related structural assets": [
+        {
+          "asset rtl": "timer.tick",
+          "entity": "neorv32_gptmr",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "clkgen_i",
+          "entity": "neorv32_gptmr",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Timer threshold value (timer.thres)",
+      "security objective": "Integrity",
+      "reasoning": "The threshold is written by the bus and defines when a match/IRQ occurs: `if (bus_req_i.addr(3 downto 2) = \"01\") then timer.thres <= bus_req_i.data;` and `timer.match <= '1' when (timer.count = timer.thres) else '0';`. Corruption of the stored threshold changes match timing and IRQ behavior, so its integrity is required.",
+      "related structural assets": [
+        {
+          "asset rtl": "timer.thres",
+          "entity": "neorv32_gptmr",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Timer count value (timer.count)",
+      "security objective": "Integrity",
+      "reasoning": "The counter is a stored state that advances on ticks and is compared to the threshold and reported on reads: reset sets `timer.count <= (others => '0')`; on tick it increments `timer.count <= std_ulogic_vector(unsigned(timer.count) + 1)` or is cleared when `timer.match = '1'`; bus_access returns it on reads (`bus_rsp_o.data <= timer.count`). Corruption of this stored counter breaks match and IRQ correctness and readback consistency, so its integrity is required.",
+      "related structural assets": [
+        {
+          "asset rtl": "timer.count",
+          "entity": "neorv32_gptmr",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Timer match decision (timer.match)",
+      "security objective": "Integrity",
+      "reasoning": "The module computes the match decision as `timer.match <= '1' when (timer.count = timer.thres) else '0';` and uses it to reset the counter (`if (timer.match = '1') then timer.count <= (others => '0')`) and to arm IRQ (`if (timer.match = '1') then irq_pnd <= '1'`). Integrity of this computed decision is required because incorrect match outcomes directly alter counter behavior and interrupt generation.",
+      "related structural assets": [
+        {
+          "asset rtl": "timer.match",
+          "entity": "neorv32_gptmr",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Interrupt pending state (irq_pnd) and reported IRQ",
+      "security objective": "Integrity",
+      "reasoning": "The pending-IRQ state is stored in irq_pnd and drives the external IRQ and readback: irq_generator sets/clears `irq_pnd <= '1'` when `timer.match = '1'` and clears it on `irq_clr = '1'`; bus_access returns it (`bus_rsp_o.data(ctrl_irq_c) <= irq_pnd`); `irq_o <= irq_pnd` drives the output. Corruption of the stored pending flag or its exported value violates the implemented interrupt reporting and readback relations, so its integrity is required.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_pnd",
+          "entity": "neorv32_gptmr",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "irq_o",
+          "entity": "neorv32_gptmr",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Interrupt clear command (irq_clr)",
+      "security objective": "Integrity",
+      "reasoning": "The clear request written by the bus controls clearing the pending IRQ: bus_access sets `irq_clr <= bus_req_i.data(ctrl_irq_clr_c)` on writes to the control register and otherwise drives `irq_clr <= '0'`; irq_generator observes `elsif (irq_clr = '1') then irq_pnd <= '0'`. Integrity of this stored clear request matters because incorrect setting or clearing directly alters irq_pnd and thus IRQ delivery.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_clr",
+          "entity": "neorv32_gptmr",
+          "realization": "stores"
+        }
+      ]
+    }
+  ]
+}

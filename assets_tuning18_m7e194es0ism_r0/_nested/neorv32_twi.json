@@ -1,0 +1,224 @@
+{
+  "module name": "neorv32_twi",
+  "conceptual assets": [
+    {
+      "concept": "Controller enable state that gates TWI operation and is exported",
+      "security objective": "Integrity",
+      "reasoning": "bus_access writes the controller enable bit: `ctrl.enable <= bus_req_i.data(ctrl_en_c)` on bus write (stb & rw & addr(2)=0). The enable bit gates clock/tick and engine entry: `if (ctrl.enable = '0') then clk_gen.tick <= '0' ...` in clock_generator and `engine.state(2) <= ctrl.enable` in twi_engine; it is also driven out: `clkgen_en_o <= ctrl.enable`. Corrupting this stored enable would change clock/tick gating, engine activation and exported enable, so Integrity of this value is required. Structural realizations: the internal store (ctrl.enable), the engine copy (engine.state(2)) and the exported signal (clkgen_en_o) are the primary realization points.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.enable",
+          "entity": "neorv32_twi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "engine.state(2)",
+          "entity": "neorv32_twi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "clkgen_en_o",
+          "entity": "neorv32_twi",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Clock-generation configuration (prescaler, divider, clock-stretch enable)",
+      "security objective": "Integrity",
+      "reasoning": "bus_access programs clock generation registers: `ctrl.prsc <= bus_req_i.data(ctrl_prsc2_c downto ctrl_prsc0_c)`, `ctrl.cdiv <= bus_req_i.data(ctrl_cdiv3_c downto ctrl_cdiv0_c)`, `ctrl.clkstr <= bus_req_i.data(ctrl_clkstr_en_c)`. The clock_generator uses prsc and cdiv to produce ticks (`if (clkgen_i(to_integer(unsigned(ctrl.prsc))) = '1') then if (clk_gen.cnt = ctrl.cdiv) then clk_gen.tick <= '1'`) and clkstr gates halt (`clk_gen.halt <= '1' when ... and (ctrl.clkstr = '1')`). Wrong configuration violates the implemented tick/halt behavior, so Integrity of these stored configuration fields is required.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.prsc",
+          "entity": "neorv32_twi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.cdiv",
+          "entity": "neorv32_twi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.clkstr",
+          "entity": "neorv32_twi",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Generated clock tick event used to pace FIFO reads and engine progress",
+      "security objective": "Integrity",
+      "reasoning": "The clock_generator process computes `clk_gen.tick` when the selected clkgen_i bit is '1' and the internal counter reaches ctrl.cdiv; `clk_gen.tick` is consumed by multiple flows, e.g. `fifo.tx_re <= '1' when ... and (clk_gen.tick = '1')` and twi_engine uses tick to advance state selection. Tampering with the tick production changes pacing and sequence progress; the computed tick (`clk_gen.tick`) is the primary realization point and clkgen_i is the external input read to form it.",
+      "related structural assets": [
+        {
+          "asset rtl": "clk_gen.tick",
+          "entity": "neorv32_twi",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "clkgen_i",
+          "entity": "neorv32_twi",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Engine busy status that controls sequencing and IRQ gating",
+      "security objective": "Integrity",
+      "reasoning": "The busy status is computed as `engine.busy <= '1' when (engine.state(2) = '1') and (engine.state(1 downto 0) /= \"00\") else '0'`. This value is used by irq_generator (`irq_o <= ctrl.enable and (not fifo.tx_avail) and (not engine.busy)`) and gating logic in phase_generator. Corrupting the busy decision would alter IRQ and phase/operation sequencing; the computed signal `engine.busy` is the primary realization point.",
+      "related structural assets": [
+        {
+          "asset rtl": "engine.busy",
+          "entity": "neorv32_twi",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Transmit command/data (content written into TX FIFO and loaded into engine shift register)",
+      "security objective": "Integrity",
+      "reasoning": "TX write path stores bus-supplied command/data to FIFO: `fifo.tx_we <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '1')` and `fifo.tx_wdata <= bus_req_i.data(dcmd_cmd_hi_c downto dcmd_lsb_c)`; the engine later loads that FIFO word into the shift register: `engine.sreg <= fifo.tx_rdata(dcmd_msb_c downto dcmd_lsb_c) & (not fifo.tx_rdata(dcmd_ack_c))` in state \"100\" and uses those bits to set state/drive outputs. The stored TX command/data must maintain Integrity; primary realizations are the FIFO write-data input, the FIFO read-data output, and the engine shift register.",
+      "related structural assets": [
+        {
+          "asset rtl": "fifo.tx_wdata",
+          "entity": "neorv32_twi",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "fifo.tx_rdata",
+          "entity": "neorv32_twi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "engine.sreg",
+          "entity": "neorv32_twi",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Received data as captured into the RX FIFO (assembled from engine.sreg)",
+      "security objective": "Integrity",
+      "reasoning": "Incoming SDA samples are shifted into the engine shift register (`if (clk_gen.phase(2) = '1') then engine.sreg <= engine.sreg(7 downto 0) & io_con.sda_in_ff(1)`), and completed words are written to RX FIFO: `fifo.rx_we <= engine.done` and `fifo.rx_wdata <= engine.sreg(0) & engine.sreg(8 downto 1)`. Bus read returns the stored word: `bus_rsp_o.data(8 downto 0) <= fifo.rx_rdata`. Integrity of the captured/queued RX data is required for correct readback; primary realizations are engine.sreg (store), fifo.rx_wdata (sets into FIFO) and fifo.rx_rdata (FIFO readback store).",
+      "related structural assets": [
+        {
+          "asset rtl": "engine.sreg",
+          "entity": "neorv32_twi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "fifo.rx_wdata",
+          "entity": "neorv32_twi",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "fifo.rx_rdata",
+          "entity": "neorv32_twi",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "TX FIFO availability flag used to trigger engine reads and IRQ logic",
+      "security objective": "Integrity",
+      "reasoning": "The TX-available flag from the FIFO drives control flows: `fifo.tx_re <= '1' when (engine.busy = '0') and (fifo.tx_avail = '1') and (clk_gen.tick = '1')` and irq_generator uses `(not fifo.tx_avail)` in `irq_o <= ctrl.enable and (not fifo.tx_avail) and (not engine.busy)`. Corruption of this availability flag would affect FIFO consumption and IRQ decisions; the FIFO-provided signal `fifo.tx_avail` is the primary realization point.",
+      "related structural assets": [
+        {
+          "asset rtl": "fifo.tx_avail",
+          "entity": "neorv32_twi",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "TX FIFO free indicator used for fullness reporting",
+      "security objective": "Integrity",
+      "reasoning": "bus_access reports FIFO-full via `bus_rsp_o.data(ctrl_tx_full_c) <= not fifo.tx_free`; the FIFO-provided free indicator is used directly to form the reported 'tx full' bit. Integrity of `fifo.tx_free` is required so the readback reflects actual FIFO capacity. The FIFO signal `fifo.tx_free` is the primary realization point.",
+      "related structural assets": [
+        {
+          "asset rtl": "fifo.tx_free",
+          "entity": "neorv32_twi",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "RX FIFO availability flag used for readback indication",
+      "security objective": "Integrity",
+      "reasoning": "bus_access returns RX-available in control readback: `bus_rsp_o.data(ctrl_rx_avail_c) <= fifo.rx_avail` and software reads FIFO data when available. Integrity of `fifo.rx_avail` is required for correct indication of stored received data. The FIFO-provided signal `fifo.rx_avail` is the primary realization point.",
+      "related structural assets": [
+        {
+          "asset rtl": "fifo.rx_avail",
+          "entity": "neorv32_twi",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Interrupt assertion decision (irq_o) reported to the system",
+      "security objective": "Integrity",
+      "reasoning": "irq_generator computes the output: `irq_o <= ctrl.enable and (not fifo.tx_avail) and (not engine.busy)` at each clock edge. The IRQ output is an event the system observes; its correctness (assert/clear) depends on these conditions. Integrity of this decision is required; the primary realization is the module's IRQ output port `irq_o`.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_o",
+          "entity": "neorv32_twi",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Driven TWI line outputs (SDA and SCL levels the module drives)",
+      "security objective": "Integrity",
+      "reasoning": "twi_sda_o and twi_scl_o are assigned from the internal driver signals: `twi_sda_o <= io_con.sda_out` and `twi_scl_o <= io_con.scl_out`. The twi_engine process sets `io_con.sda_out` and `io_con.scl_out` based on engine state and phase. These outputs directly realize the module's actions on the external TWI bus; their Integrity is required. Primary realizations are the internal driver stores and the exit ports.",
+      "related structural assets": [
+        {
+          "asset rtl": "io_con.sda_out",
+          "entity": "neorv32_twi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "io_con.scl_out",
+          "entity": "neorv32_twi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "twi_sda_o",
+          "entity": "neorv32_twi",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "twi_scl_o",
+          "entity": "neorv32_twi",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Sampled TWI line inputs (synchronized SDA/SCL samples used for sensing and RX bit capture)",
+      "security objective": "Integrity",
+      "reasoning": "External inputs are sampled into internal synchronizers: `io_con.sda_in <= to_stdulogic(to_bit(twi_sda_i))` and `io_con.sda_in_ff <= io_con.sda_in_ff(0) & io_con.sda_in` (similarly for SCL). The synchronized MSB `io_con.sda_in_ff(1)` is used to shift received bits into `engine.sreg` and `io_con.scl_in_ff(1)` is returned in control readback and used in halt logic. These sampled inputs are the module's view of bus-level signals; Integrity of these samples is required for correct capture and sensing. Primary realizations are the synchronizer outputs and the input ports read by the entity.",
+      "related structural assets": [
+        {
+          "asset rtl": "io_con.sda_in_ff(1)",
+          "entity": "neorv32_twi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "io_con.scl_in_ff(1)",
+          "entity": "neorv32_twi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "twi_sda_i",
+          "entity": "neorv32_twi",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "twi_scl_i",
+          "entity": "neorv32_twi",
+          "realization": "sets"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,235 @@
+{
+ "module name": "neorv32_wdt",
+ "module purpose": "neorv32_wdt is a bus-programmed watchdog: a qualified, unlocked bus write sets enable, lock, strict and a 24-bit timeout (lines 90-97); while enabled, a 24-bit counter advances on a tick taken from clkgen_i (lines 129-134, 141), and when it equals the timeout, or when an illegal access occurs in strict mode, the module drives its reset output rstn_o low (lines 144, 155-161); a write of a fixed password restarts the count (lines 102-103, 131-132), and the cause of the last reset is recorded and returned with the settings on a read (lines 109-113, 166-177).",
+ "use-case flows": [
+  {
+   "flow": "configure",
+   "value": "enable, strict and timeout settings written from a qualified bus write while the lock is clear",
+   "lines": [90, 91, 92, 93, 94, 96, 97]
+  },
+  {
+   "flow": "lock",
+   "value": "lock bit, set only together with enable, that blocks every later configuration write until rstn_sys_i; a write while locked raises reset_force",
+   "lines": [76, 93, 95, 98, 99]
+  },
+  {
+   "flow": "start",
+   "value": "counting armed by enable on the first tick after it is set; enable exported on clkgen_en_o",
+   "lines": [129, 130, 140, 141]
+  },
+  {
+   "flow": "operate",
+   "value": "count advanced on each qualified tick, cleared while disabled, and compared with the configured timeout",
+   "lines": [131, 132, 133, 134, 144]
+  },
+  {
+   "flow": "reset",
+   "value": "watchdog restart: a write of reset_pwd_c to the second address clears the count; any other value raises reset_force",
+   "lines": [101, 102, 103, 104, 105, 131, 132]
+  },
+  {
+   "flow": "report",
+   "value": "hardware reset request on timeout expiry or on a strict-mode illegal access, driven on rstn_o",
+   "lines": [155, 156, 161]
+  },
+  {
+   "flow": "report",
+   "value": "cause of the last reset recorded in priority order (rstn_dbg_i, timeout, access violation)",
+   "lines": [171, 172, 173, 174, 175, 176]
+  },
+  {
+   "flow": "read out",
+   "value": "enable, lock, strict, timeout and reset cause returned on a qualified read",
+   "lines": [90, 91, 108, 109, 110, 111, 112, 113]
+  },
+  {
+   "flow": "reset",
+   "value": "rstn_sys_i clears the settings, the counter state and the request registers; rstn_ext_i alone clears the reset cause",
+   "lines": [73, 75, 76, 77, 78, 79, 80, 124, 125, 126, 127, 151, 152, 153, 168, 169]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Watchdog enable setting -- whether the watchdog counts and may request a reset",
+   "security objective": "Integrity",
+   "reasoning": "The configure flow writes `ctrl.enable <= bus_req_i.data(ctrl_enable_c);` (line 94) only when stb, rw and addr(2)='0' hold and ctrl.lock='0' (lines 90-93). The module's behavior depends on it: `if (ctrl.enable = '0') or (reset_wdt = '1') then cnt <= (others => '0');` (lines 131-132), `cnt_started <= ctrl.enable and (cnt_started or prsc_tick);` (line 130), both reset requests (lines 155-156) and setting the lock (line 95) are qualified by it, and `clkgen_en_o <= ctrl.enable;` (line 140) exports it. Integrity: a wrong value stops or starts timeout detection and reset generation against the written setting. Availability is also Established: the value is held between writes and is cleared only by rstn_sys_i (line 75). ctrl.enable stores (CLOCKED_BY clk_i, occurrence 3, line 94; its use record GATES cnt_started, line 130). clkgen_en_o is the exit port (COPIES ctrl.enable, occurrence 2, line 140): the value is delivered to a consumer outside this entity, so its integrity at delivery is Established from line 140. The readback goes through bus_rsp_o.data (line 109) and the write enters through bus_req_i.data; both belong to transport records (complete request and response) and are not reported. No line restricts readback, so confidentiality is not established.",
+   "related structural assets": [
+    {
+     "asset rtl": "ctrl.enable",
+     "entity": "neorv32_wdt",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "clkgen_en_o",
+     "entity": "neorv32_wdt",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "COPIES", "partner": "ctrl.enable"}
+    }
+   ]
+  },
+  {
+   "concept": "Timeout threshold setting -- the count value at which the watchdog expires",
+   "security objective": "Integrity",
+   "reasoning": "The configure flow writes `ctrl.timeout <= bus_req_i.data(ctrl_timeout_msb_c downto ctrl_timeout_lsb_c);` (line 97) under the same write qualification and lock check (lines 90-93). The expiry computation reads it: `cnt_timeout <= '1' when (cnt_started = '1') and (cnt = ctrl.timeout) else '0';` (line 144), the CONSTRAINS cnt_timeout record at occurrence 5. Integrity: a wrong threshold changes when expiry is decided and therefore when rstn_o is driven (lines 155, 161). Availability: the value is held between writes and cleared only by rstn_sys_i (line 78). ctrl.timeout stores (CLOCKED_BY clk_i, occurrence 3, line 97). Its readback (line 113) goes into the transport response field bus_rsp_o.data, which is not reported.",
+   "related structural assets": [
+    {
+     "asset rtl": "ctrl.timeout",
+     "entity": "neorv32_wdt",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Strict-mode setting -- whether an illegal access turns into a hardware reset",
+   "security objective": "Integrity",
+   "reasoning": "The configure flow writes `ctrl.strict <= bus_req_i.data(ctrl_strict_c);` (line 96) under the write qualification and lock check (lines 90-93). It decides the access-violation reset: `hw_rst_access <= ctrl.enable and ctrl.strict and reset_force;` (line 156), its GATES hw_rst_access record at occurrence 5. Integrity: a wrong value either suppresses the reset on an illegal access or produces one the setting does not allow. Availability: held between writes, cleared only by rstn_sys_i (line 77). ctrl.strict stores (CLOCKED_BY clk_i, occurrence 3, line 96). Readback (line 112) is through the transport response, not reported.",
+   "related structural assets": [
+    {
+     "asset rtl": "ctrl.strict",
+     "entity": "neorv32_wdt",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Configuration lock -- the bit that freezes enable, strict and timeout",
+   "security objective": "Integrity",
+   "reasoning": "The lock flow sets `ctrl.lock <= bus_req_i.data(ctrl_lock_c) and ctrl.enable;` (line 95), so it can be set only while enable is set. While it is '1', `if (ctrl.lock = '0') then` (line 93) blocks every configuration write (lines 94-97), and a write attempt sets reset_force instead (lines 98-99). Because the write to ctrl.lock is itself inside the blocked branch, only rstn_sys_i clears it (line 76). Integrity: a corrupted lock either reopens the frozen settings to writes or blocks legitimate configuration and turns writes into illegal-access events. Availability: once set, it holds until rstn_sys_i. ctrl.lock stores (CLOCKED_BY clk_i, occurrence 4, line 95; its use record GATES ctrl.enable, ctrl.strict, ctrl.timeout and reset_force at occurrence 3, line 93). Readback (line 110) is through the transport response, not reported.",
+   "related structural assets": [
+    {
+     "asset rtl": "ctrl.lock",
+     "entity": "neorv32_wdt",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Watchdog counter state -- the elapsed count, whether counting is armed, and the registered step decision",
+   "security objective": "Integrity",
+   "reasoning": "The operate flow arms counting with `cnt_started <= ctrl.enable and (cnt_started or prsc_tick);` (line 130), registers the step decision `cnt_inc <= prsc_tick and cnt_started;` (line 129), and advances `cnt <= std_ulogic_vector(unsigned(cnt) + 1);` (line 134) when cnt_inc='1' (line 133); the count is cleared while disabled or on restart (lines 131-132). Expiry compares cnt with ctrl.timeout only while cnt_started='1' (line 144). Integrity: a corrupted count, arming state or step decision moves or suppresses the expiry decision that drives rstn_o (lines 144, 155, 161). Availability: while enabled, the count must advance on each qualified tick (lines 129, 133-134). cnt stores (CLOCKED_BY clk_i, occurrence 4, line 134; CONSTRAINS cnt_timeout, line 144); cnt_started stores (CLOCKED_BY clk_i, occurrence 4, line 130; GATES cnt_inc, line 129, and cnt_timeout, line 144); cnt_inc stores its own step decision (CLOCKED_BY clk_i, occurrence 3, line 129; GATES cnt, line 133) and is not a copy, since it has no COPIES or DERIVES_FROM record. The flow graph lists cnt as a constant-valued CONTROL-ONLY source because its other drivers are constants (lines 127, 132); the RTL line 134 and the self-updating list show it is a counter. prsc_tick is a bit of clkgen_i (line 141) used only as the step tick; clkgen_i is treated as a clock-enable input and prsc_tick only gates or arms, so neither is listed.",
+   "related structural assets": [
+    {
+     "asset rtl": "cnt",
+     "entity": "neorv32_wdt",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "cnt_started",
+     "entity": "neorv32_wdt",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "cnt_inc",
+     "entity": "neorv32_wdt",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Timeout expiry decision -- the count has reached the configured timeout while counting is armed",
+   "security objective": "Integrity",
+   "reasoning": "The operate flow computes `cnt_timeout <= '1' when (cnt_started = '1') and (cnt = ctrl.timeout) else '0';` (line 144), and the report flow uses it in `hw_rst_timeout <= ctrl.enable and cnt_timeout and prsc_tick;` (line 155). Integrity: a false expiry produces an unwarranted reset request and a missed one suppresses it, against the comparison at line 144. cnt_timeout computes the decision (CONSTRAINED_BY ctrl.timeout and cnt, occurrence 2, line 144; GATES hw_rst_timeout, occurrence 3, line 155). The flow graph lists cnt_timeout as not reached from any source because its operands reach it only through control records; line 144 shows the computation.",
+   "related structural assets": [
+    {
+     "asset rtl": "cnt_timeout",
+     "entity": "neorv32_wdt",
+     "realization": "computes",
+     "occurrence": 2,
+     "edge": {"type": "CONSTRAINED_BY", "partner": "ctrl.timeout"}
+    }
+   ]
+  },
+  {
+   "concept": "Watchdog hardware reset request -- the reset the module issues on timeout or on a strict-mode access violation",
+   "security objective": "Integrity",
+   "reasoning": "The report flow registers `hw_rst_timeout <= ctrl.enable and cnt_timeout and prsc_tick;` (line 155) and `hw_rst_access <= ctrl.enable and ctrl.strict and reset_force;` (line 156), and drives `rstn_o <= not (hw_rst_timeout or hw_rst_access);` (line 161). The value leaves this entity through rstn_o to a consumer that is not supplied, so its integrity at delivery is Established from lines 155-161: rstn_o must be low exactly when one of the two request registers is set. Availability is also Established under the implemented conditions: a request is produced at the clock edge after an enabled expiry coincides with a tick (line 155) or an enabled strict-mode violation occurs (line 156). hw_rst_timeout stores (CLOCKED_BY clk_i, occurrence 3, line 155; SOURCES rstn_o, line 161; GATES reset_cause, line 173); hw_rst_access stores (CLOCKED_BY clk_i, occurrence 3, line 156; SOURCES rstn_o, line 161; GATES reset_cause, line 175); rstn_o is the exit port (DERIVES_FROM hw_rst_timeout and hw_rst_access, occurrence 2, line 161). The flow graph calls both registers constant-valued sources because their reset drivers are constants; lines 155-156 show their computed values.",
+   "related structural assets": [
+    {
+     "asset rtl": "hw_rst_timeout",
+     "entity": "neorv32_wdt",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "hw_rst_access",
+     "entity": "neorv32_wdt",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "rstn_o",
+     "entity": "neorv32_wdt",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "DERIVES_FROM", "partner": "hw_rst_timeout"}
+    }
+   ]
+  },
+  {
+   "concept": "Illegal-access event -- a configuration write while locked, or a restart write with a wrong password",
+   "security objective": "Integrity",
+   "reasoning": "The lock and restart flows set `reset_force <= '1';` when a configuration write arrives while ctrl.lock is set (lines 93, 98-99) or when a write to the restart address carries a value other than reset_pwd_c (lines 102, 104-105); otherwise it returns to '0' each cycle (line 88). It decides the access-violation reset in `hw_rst_access <= ctrl.enable and ctrl.strict and reset_force;` (line 156). Integrity: a wrong flag causes an access-violation reset that no illegal write caused, or hides one that did. reset_force stores the event (CLOCKED_BY clk_i, occurrence 4, line 99; GATES hw_rst_access, occurrence 6, line 156).",
+   "related structural assets": [
+    {
+     "asset rtl": "reset_force",
+     "entity": "neorv32_wdt",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Watchdog restart authorization -- the decision that a write carried the restart password",
+   "security objective": "Integrity",
+   "reasoning": "The restart flow sets `reset_wdt <= '1';` only when `bus_req_i.data(31 downto 0) = reset_pwd_c` on a write to the second address (lines 101-103), and clears it each cycle otherwise (line 87); the count is then cleared by `if (ctrl.enable = '0') or (reset_wdt = '1') then cnt <= (others => '0');` (lines 131-132). Integrity: a wrong decision either clears the count without the password, so expiry never occurs, or fails to clear it after a correct write, so a timeout reset follows. Availability: a matching write clears the count at the next clock edge (lines 103, 131-132). reset_wdt stores the decision (CLOCKED_BY clk_i, occurrence 4, line 103; GATES cnt, occurrence 5, line 131). The password reset_pwd_c (line 35) is a constant, not a candidate; no read drives it out (lines 109-113), but whether its secrecy matters depends on who may write the bus, so confidentiality is not claimed.",
+   "related structural assets": [
+    {
+     "asset rtl": "reset_wdt",
+     "entity": "neorv32_wdt",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Reset cause record -- which source caused the last reset",
+   "security objective": "Integrity",
+   "reasoning": "The report flow records the cause in priority order: code 01 when rstn_dbg_i='0' (lines 171-172), 10 when hw_rst_timeout='1' (lines 173-174), 11 when hw_rst_access='1' (lines 175-176), and 00 only when rstn_ext_i='0' (lines 168-169); the read-out flow returns it (line 111). Integrity: the reported code must match the event under the order of lines 171-176. Availability: reset_cause is in none of the rstn_sys_i reset arms (lines 73-80, 124-127, 151-153), so it is held across rstn_sys_i resets until rstn_ext_i clears it. reset_cause stores (CLOCKED_BY clk_i, occurrence 4, line 172; CARRIES bus_rsp_o.data, line 111). rstn_dbg_i sets the cause (GATES reset_cause, occurrence 2, line 171): it drives neither SEQUENCES nor RESETS and is tested inside the clocked arm, so the clock and reset exclusion does not apply. rstn_ext_i drives RESETS on reset_cause (occurrence 3, line 168) and is excluded as a reset input. hw_rst_timeout and hw_rst_access also gate it; they are listed under the reset request concept.",
+   "related structural assets": [
+    {
+     "asset rtl": "reset_cause",
+     "entity": "neorv32_wdt",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "rstn_dbg_i",
+     "entity": "neorv32_wdt",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "GATES", "partner": "reset_cause"}
+    }
+   ]
+  }
+ ]
+}

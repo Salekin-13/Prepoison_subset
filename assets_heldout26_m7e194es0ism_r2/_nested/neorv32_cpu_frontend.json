@@ -1,0 +1,146 @@
+{
+  "module name": "neorv32_cpu_frontend",
+  "conceptual assets": [
+    {
+      "concept": "Fetch program counter (PC) used to form instruction fetch addresses",
+      "security objective": "Integrity",
+      "reasoning": "RTL shows a stored PC updated on reset and on responses and used to form bus addresses: reset sets `fetch.pc <= (others => '0')`; on S_PENDING `if (ibus_rsp_i.ack = '1') then fetch.pc <= std_ulogic_vector(unsigned(fetch.pc) + 4); fetch.pc(1) <= '0'; end if;` and on restart `fetch.pc <= ctrl_i.pc_nxt;`. The address issued is `ibus_req_o.addr <= fetch.pc(XLEN-1 downto 2) & \"00\"`. Corrupting fetch.pc would make the frontend request wrong instruction addresses, violating the implemented fetch flow.",
+      "related structural assets": [
+        {
+          "asset rtl": "fetch.pc",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Fetch finite-state control used to sequence requests and restarts",
+      "security objective": "Integrity",
+      "reasoning": "The FSM stores `fetch.state` and uses it to decide operations: reset sets `fetch.state <= S_RESTART`; case handles S_REQUEST/S_PENDING/others; `ibus_req_o.stb <= '1' when (fetch.state = S_REQUEST) and (ipb.free = \"11\") else '0'` and `frontend_o.halted <= '1' when (fetch.state = S_REQUEST) and (ipb.free /= \"11\") else '0'`. Integrity of fetch.state is required for correct request/halt sequencing.",
+      "related structural assets": [
+        {
+          "asset rtl": "fetch.state",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Fetch restart indicator that clears prefetch FIFOs and forces restart sequencing",
+      "security objective": "Integrity",
+      "reasoning": "RTL sets and propagates a restart flag: on reset `fetch.restart <= '1'`; in S_REQUEST/S_PENDING `fetch.restart <= fetch.restart or ctrl_i.if_reset`; fetch.restart is mapped to FIFO clear (`clear_i => fetch.restart`) in the prefetch_buffer instantiation; the FSM uses `if (fetch.restart = '1') then fetch.state <= S_RESTART;`. Integrity of fetch.restart matters because it directly clears prefetch buffers and forces restart transitions.",
+      "related structural assets": [
+        {
+          "asset rtl": "fetch.restart",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Fetch privilege bit captured for outgoing requests",
+      "security objective": "Integrity",
+      "reasoning": "The frontend captures privilege on restart and propagates it to requests: on restart `fetch.priv <= ctrl_i.cpu_priv`; outgoing request field is `ibus_req_o.priv <= fetch.priv;`. The RTL therefore establishes that fetch.priv determines request privilege; corrupting it would alter the implemented request privilege.",
+      "related structural assets": [
+        {
+          "asset rtl": "fetch.priv",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Prefetch buffer contents and control flags (buffered instruction words, write/read enables, free/avail indicators)",
+      "security objective": "Integrity",
+      "reasoning": "The RTL implements per-entry write-data, write/read enables and status exported from FIFOs: `ipb.wdata(0) <= ibus_rsp_i.err & ibus_rsp_i.data(15 downto 0); ipb.wdata(1) <= ibus_rsp_i.err & ibus_rsp_i.data(31 downto 16);` writes are enabled by `ipb.we(0)`/`ipb.we(1)` which are driven when `(fetch.state = S_PENDING) and (ibus_rsp_i.ack = '1') ...`; the generate instantiates FIFOs with `wdata_i => ipb.wdata(i), we_i => ipb.we(i), free_o => ipb.free(i), rdata_o => ipb.rdata(i), avail_o => ipb.avail(i), re_i => ipb.re(i), clear_i => fetch.restart`. The issue logic reads `ipb.rdata` and `ipb.avail` and the fetch FSM reads `ipb.free`. Corruption of these stored data or flags would subvert the implemented fetch/issue flows.",
+      "related structural assets": [
+        {
+          "asset rtl": "ipb.rdata",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ipb.wdata",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "ipb.we",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "ipb.re",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "ipb.free",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ipb.avail",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Instruction word and associated status exported to the CPU decode interface",
+      "security objective": "Integrity",
+      "reasoning": "The issue logic forms and drives the decode-side interface fields: combinational logic assigns `frontend_o.fault <= ipb.rdata(...)(16);` and sets `frontend_o.valid` and `frontend_o.instr` either to `issue.cmd32` or to concatenations of `ipb.rdata` (`frontend_o.instr <= issue.cmd32;` or `frontend_o.instr <= ipb.rdata(...)(15 downto 0) & ipb.rdata(...)(15 downto 0)`), and `frontend_o.compr` is set accordingly; `frontend_o.halted` is set from `fetch.state` and `ipb.free`. The RTL therefore establishes the exported instruction and status as module outputs; their integrity must hold for correct fetch-to-decode behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "frontend_o",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Decompressed instruction value produced for compressed halves (issue.cmd32)",
+      "security objective": "Integrity",
+      "reasoning": "When RVC is enabled the decompressor instance drives `issue.cmd32` (`neorv32_cpu_decompressor ... instr_o => issue.cmd32`) and `issue.cmd16` is selected from `ipb.rdata` depending on `issue.algn` (`issue.cmd16 <= ipb.rdata(0)(15 downto 0) when (issue.algn = '0') else ipb.rdata(1)(15 downto 0);`). The combinational issue logic then uses `issue.cmd32` as the instruction source for compressed cases (`frontend_o.instr <= issue.cmd32;`). The RTL thus establishes issue.cmd32 as the stored decompressed instruction; its integrity matters for correct issued instruction content.",
+      "related structural assets": [
+        {
+          "asset rtl": "issue.cmd32",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Instruction alignment state selecting half-words for decompression/assembly (issue.algn)",
+      "security objective": "Integrity",
+      "reasoning": "Alignment is stored and updated in `issue.algn`: reset sets `issue.algn <= '0'`; on restart `issue.algn <= ctrl_i.pc_nxt(1)`; on acknowledgements `issue.algn <= (issue.algn and (not issue.aclr)) or issue.aset;`. The combinational issue logic branches on `issue.algn` to choose which `ipb.rdata` element drives `issue.cmd16` and how `frontend_o.instr` is assembled. Integrity of issue.algn is required to select the correct half-words.",
+      "related structural assets": [
+        {
+          "asset rtl": "issue.algn",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "sets"
+        }
+      ]
+    }
+  ]
+}

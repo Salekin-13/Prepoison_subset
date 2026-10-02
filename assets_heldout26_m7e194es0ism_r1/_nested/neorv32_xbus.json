@@ -1,0 +1,205 @@
+{
+  "module name": "neorv32_xbus",
+  "conceptual assets": [
+    {
+      "concept": "Pending transaction state -- whether a host request is currently in progress",
+      "security objective": "Integrity",
+      "reasoning": "The arbiter stores and uses the pending flag to track an in-flight host request: `signal pending`; in process arbiter `if (pending = '0') then ... pending <= bus_req.stb;` and when pending='1' it is cleared only on timeout or external responses (`if (timeout = '1') or (xbus_err_i = '1') or (xbus_ack_i = '1') then pending <= '0';` or by lock-release rules). Pending gates progress and responses (`xbus_cyc_o <= bus_req.stb or pending;` and `bus_rsp.ack <= pending and (timeout or xbus_err_i or xbus_ack_i)`). These RTL relations show the request/response flow depends on the correctness of pending, establishing an Integrity objective. The stored flag `pending` realizes the state and it is set/cleared by the tested request and external/timeout signals.",
+      "related structural assets": [
+        {
+          "asset rtl": "pending",
+          "entity": "neorv32_xbus",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "bus_req.stb",
+          "entity": "neorv32_xbus",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "xbus_ack_i",
+          "entity": "neorv32_xbus",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "xbus_err_i",
+          "entity": "neorv32_xbus",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "timeout",
+          "entity": "neorv32_xbus",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Bus lock state -- whether the current request is held under a bus lock",
+      "security objective": "Integrity",
+      "reasoning": "The arbiter computes a lock decision and uses it to control when pending can be released: `signal locked`; when pending = '0' the arbiter sets `locked <= bus_req.stb and bus_req.lock;`; later the release conditions depend on `locked` (`if (locked = '0') then ... else if (locked = '1') then if (timeout = '1') or (bus_req.lock = '0') then pending <= '0';`). Corrupting the stored lock state would change whether a transaction is held or released, establishing an Integrity objective. The stored signal `locked` realizes the decision; it is computed from the tested request fields.",
+      "related structural assets": [
+        {
+          "asset rtl": "locked",
+          "entity": "neorv32_xbus",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "bus_req.lock",
+          "entity": "neorv32_xbus",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "bus_req.stb",
+          "entity": "neorv32_xbus",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "XBUS outbound transaction signals -- address, write data and control presented to the external XBUS",
+      "security objective": "Integrity",
+      "reasoning": "The module presents request fields to the external XBUS via direct concurrent assignments: `xbus_adr_o <= bus_req.addr; xbus_dat_o <= bus_req.data; xbus_we_o <= bus_req.rw; xbus_sel_o <= bus_req.ben; xbus_stb_o <= bus_req.stb; xbus_cyc_o <= bus_req.stb or pending; xbus_tag_o(2) <= bus_req.src; xbus_tag_o(0) <= bus_req.priv or bus_req.debug;`. These outputs leave the entity and define the bus transaction seen by external devices; their integrity is required for correct and authorized bus accesses. The concept is realized by the module's XBUS output ports and by the internal request fields that drive them.",
+      "related structural assets": [
+        {
+          "asset rtl": "xbus_adr_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "xbus_dat_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "xbus_we_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "xbus_sel_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "xbus_stb_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "xbus_cyc_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "xbus_tag_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "bus_req.addr",
+          "entity": "neorv32_xbus",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "bus_req.data",
+          "entity": "neorv32_xbus",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "bus_req.rw",
+          "entity": "neorv32_xbus",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "bus_req.ben",
+          "entity": "neorv32_xbus",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "bus_req.stb",
+          "entity": "neorv32_xbus",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "bus_req.src",
+          "entity": "neorv32_xbus",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "bus_req.priv",
+          "entity": "neorv32_xbus",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "bus_req.debug",
+          "entity": "neorv32_xbus",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Bus response produced to the host -- read data, acknowledge and error signals returned from XBUS",
+      "security objective": "Integrity",
+      "reasoning": "The entity forms the device response values from the external XBUS and the arbiter state: `bus_rsp.data <= xbus_dat_i when (pending = '1') else (others => '0'); bus_rsp.ack <= pending and (timeout or xbus_err_i or xbus_ack_i); bus_rsp.err <= pending and (timeout or xbus_err_i);` and `device_rsp_i => bus_rsp` is connected to the reg stage that drives the host response port. Corruption of these response values or their driving conditions would break the implemented request/response semantics, establishing Integrity. The internal response fields are computed here from external XBUS inputs and the stored pending/timeout state.",
+      "related structural assets": [
+        {
+          "asset rtl": "bus_rsp.data",
+          "entity": "neorv32_xbus",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "bus_rsp.ack",
+          "entity": "neorv32_xbus",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "bus_rsp.err",
+          "entity": "neorv32_xbus",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "xbus_dat_i",
+          "entity": "neorv32_xbus",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "xbus_ack_i",
+          "entity": "neorv32_xbus",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "xbus_err_i",
+          "entity": "neorv32_xbus",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "pending",
+          "entity": "neorv32_xbus",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "timeout",
+          "entity": "neorv32_xbus",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Timeout event and countdown state used to detect XBUS response absence",
+      "security objective": "Integrity",
+      "reasoning": "When TIMEOUT_VAL /= 0 the timeout_counter process initializes `timecnt` to `timeout_c` when idle and decrements while pending; when the counter expires it sets `timeout <= '1'` (`timecnt`/`timeout` declared signals). The arbiter and response logic use this flag to clear pending and to assert response ack/err (`if (timeout = '1') ...` and `bus_rsp.ack/err` expressions include timeout). Tampering with the timeout flag or counter would change when stalled transactions are terminated, establishing an Integrity objective for the timeout event. The runtime countdown `timecnt` and the flag `timeout` realize the concept.",
+      "related structural assets": [
+        {
+          "asset rtl": "timeout",
+          "entity": "neorv32_xbus",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "timecnt",
+          "entity": "neorv32_xbus",
+          "realization": "stores"
+        }
+      ]
+    }
+  ]
+}

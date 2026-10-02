@@ -1,0 +1,148 @@
+{
+  "module name": "neorv32_cpu_counters",
+  "conceptual assets": [
+    {
+      "concept": "CSR register access decoding and index selection (which CSR index is addressed and whether it targets counters or HPM-event config)",
+      "security objective": "Integrity",
+      "reasoning": "The RTL computes per-index selection and class bits that gate CSR reads/writes: sel(i) is driven from ctrl_i.csr_addr(3 downto 0) (`sel(i) <= '1' when (ctrl_i.csr_addr(3 downto 0) = ... ) else '0'`); cnt_acc and cfg_acc are computed from ctrl_i.csr_addr(11 downto 5) and generics (`cnt_acc <= '1' when ZICNTR_EN and (...) else '0'`, `cfg_acc <= '1' when ZIHPM_EN and (...) else '0'`); cnt_we(i)/cfg_we(i) combine those signals with sel(i) and ctrl_i.csr_we (`cnt_we(i) <= cnt_acc and sel(i) and ctrl_i.csr_we;`, `cfg_we(i) <= cfg_acc and sel(i) and ctrl_i.csr_we;`). These decoded signals directly determine which internal register is read or written; corruption of the decode/selection logic or inputs would misroute CSR accesses, violating Integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_counters",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "sel",
+          "entity": "neorv32_cpu_counters",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "cnt_acc",
+          "entity": "neorv32_cpu_counters",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "cfg_acc",
+          "entity": "neorv32_cpu_counters",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "cnt_we",
+          "entity": "neorv32_cpu_counters",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "cnt_re",
+          "entity": "neorv32_cpu_counters",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "cfg_we",
+          "entity": "neorv32_cpu_counters",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "cfg_re",
+          "entity": "neorv32_cpu_counters",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "HPM event configuration values (hpmevent(i)) that select which events drive HPM counters",
+      "security objective": "Integrity",
+      "reasoning": "hpmevent(i) is stored and updated by CSR writes in hpmevent_reg: on cfg_we(i) the process assigns hpmevent(i) <= ctrl_i.csr_wdata(11 downto 0) and also forces hpmevent(i)(cnt_event_tm_c) <= '0'. hpmevent values are then used in cnt_control when computing counter enables (`or_reduce_f(ctrl_i.cnt_event and hpmevent(i))`). Therefore hpmevent contents directly determine which events increment HPM counters; corrupting these registers breaks that relation, establishing Integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "hpmevent",
+          "entity": "neorv32_cpu_counters",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cfg_we",
+          "entity": "neorv32_cpu_counters",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_counters",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Per-counter increment-enable decisions (cnt_en vector) that gate when each counter is incremented",
+      "security objective": "Integrity",
+      "reasoning": "The cnt_control process computes cnt_en bits from event sources, debug and halt bits: e.g. `cnt_en(0) <= ctrl_i.cnt_event(cnt_event_cy_c) and (not ctrl_i.cpu_debug) and (not ctrl_i.cnt_halt(0));` and for HPMs `cnt_en(i) <= or_reduce_f(ctrl_i.cnt_event and hpmevent(i)) and (not ctrl_i.cpu_debug) and (not ctrl_i.cnt_halt(i));`. These cnt_en bits are connected to counter instances as their inc_i inputs (e.g. `inc_i => cnt_en(0)`), so their correctness directly controls whether counters advance; corrupting cnt_en violates the intended increment behaviour, establishing Integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "cnt_en",
+          "entity": "neorv32_cpu_counters",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "hpmevent",
+          "entity": "neorv32_cpu_counters",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_counters",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Numeric counter state and its readback (low/high words stored in counters and the values exported on read)",
+      "security objective": "Integrity",
+      "reasoning": "Each counter instance retains its numeric value in low and optional high registers (`low_reg` updates lo_q; `high_reg` updates hi_q, cy_q) and increments via nxt computed from inc_i (`nxt <= ... unsigned('0' & lo_q) + unsigned(inc)`). Writes load wdata_i into lo_q/hi_q when (we_i='1') and sel_i selects the half. output_select places the selected word onto the component rdata_o when re_i='1'. Top-level instances map that rdata_o to cycle_rd/instret_rd/hpmcnt and the entity output `rdata_o <= cycle_rd or time_rd or instret_rd or hpm_rd;`. Corrupting the stored words or the write/increment/read-control inputs would break the implemented store/increment/read relations, establishing Integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "lo_q",
+          "entity": "neorv32_cpu_counters_cnt",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "hi_q",
+          "entity": "neorv32_cpu_counters_cnt",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rdata_o",
+          "entity": "neorv32_cpu_counters_cnt",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "wdata_i",
+          "entity": "neorv32_cpu_counters_cnt",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "we_i",
+          "entity": "neorv32_cpu_counters_cnt",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "inc_i",
+          "entity": "neorv32_cpu_counters_cnt",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "sel_i",
+          "entity": "neorv32_cpu_counters_cnt",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "re_i",
+          "entity": "neorv32_cpu_counters_cnt",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "rdata_o",
+          "entity": "neorv32_cpu_counters",
+          "realization": "exit port"
+        }
+      ]
+    }
+  ]
+}

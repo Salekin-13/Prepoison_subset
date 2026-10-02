@@ -1,0 +1,184 @@
+{
+  "module name": "neorv32_cache",
+  "conceptual assets": [
+    {
+      "concept": "Control finite-state-machine state (ctrl.state) that sequences cache operations",
+      "security objective": "Integrity",
+      "reasoning": "The FSM state is stored and updated in ctrl_engine_sync ('if (rstn_i = ''0'') then ctrl.state <= S_IDLE; elsif rising_edge(clk_i) then ctrl <= ctrl_nxt;') and ctrl_engine_comb branches on 'case ctrl.state is' to select S_IDLE, S_LOOKUP, S_DIRECT_RSP, S_CLEAR, S_DOWNLOAD_REQ, S_DOWNLOAD_RSP, S_DOWNLOAD_DONE and to drive actions (bus_req_o.stb, cache_o.cmd_clr/new/inv, host_rsp_o.ack/err, state transitions). Corrupting ctrl.state would change these implemented control-flow decisions; the RTL therefore establishes an integrity requirement. Realized by the stored ctrl.state register.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.state",
+          "entity": "neorv32_cache",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Buffered host-request and fence indicators that hold pending request/fence state (ctrl.buf_req, ctrl.buf_sync)",
+      "security objective": "Integrity",
+      "reasoning": "ctrl_nxt.buf_req is computed as 'ctrl.buf_req or host_req_i.stb' and ctrl_nxt.buf_sync as 'ctrl.buf_sync or host_req_i.fence' (ctrl_engine_comb). S_IDLE checks host_req_i.fence or ctrl.buf_sync to enter S_CLEAR and uses buf_req to start lookup; these flags thus determine whether pending requests or fences are serviced. The RTL ties request sequencing to these stored flags, establishing integrity for their values. Realized by the stored ctrl.buf_req and ctrl.buf_sync registers.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.buf_req",
+          "entity": "neorv32_cache",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.buf_sync",
+          "entity": "neorv32_cache",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Decoded address fields (tag, index, offset) used for cache lookup and memory/bus addressing",
+      "security objective": "Integrity",
+      "reasoning": "ctrl_engine_comb extracts fields from the host address into ctrl_nxt.tag and ctrl_nxt.idx ('ctrl_nxt.tag <= host_req_i.addr(31 downto 32-tag_size_c)'; 'ctrl_nxt.idx <= host_req_i.addr((offset_size_c+2+index_size_c)-1 downto offset_size_c+2)') and ctrl.ofs is tracked; S_DOWNLOAD_REQ composes cache/bus addresses from ctrl.tag/ctrl.idx/ctrl.ofs and assigns cache_o.addr and bus_req_o.addr. On the memory side acc_tag/acc_idx/acc_off are derived from addr_i and are used to index tag/data arrays. These RTL relations show that the stored decoded fields and their propagation determine which tag/data entries are accessed; their integrity is therefore established. Realized by ctrl.tag, ctrl.idx, ctrl.ofs (stores in neorv32_cache), cache_o.addr (computed carrier in neorv32_cache), and acc_tag/acc_idx/acc_off (set points in neorv32_cache_memory).",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.tag",
+          "entity": "neorv32_cache",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.idx",
+          "entity": "neorv32_cache",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.ofs",
+          "entity": "neorv32_cache",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cache_o.addr",
+          "entity": "neorv32_cache",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "acc_tag",
+          "entity": "neorv32_cache_memory",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "acc_idx",
+          "entity": "neorv32_cache_memory",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "acc_off",
+          "entity": "neorv32_cache_memory",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Cache metadata (valid bits and tag entries) that determine the hit/miss decision",
+      "security objective": "Integrity",
+      "reasoning": "neorv32_cache_memory updates valid_mem in status_memory on clr/inv/new and writes tag_mem on new in tag_memory; the module computes hit_o as 'hit_o <= ''1'' when (valid_mem_rd = ''1'') and (tag_mem_rd = acc_tag) else ''0'''. The top-level tests cache_i.sta_hit (mapped from hit_o) in S_LOOKUP to choose hit or miss behavior. These RTL relationships establish that valid_mem and tag_mem contents determine the hit decision, so their integrity is required. Realized by valid_mem and tag_mem (stores in neorv32_cache_memory), hit_o (memory exit port), and cache_i.sta_hit (the field read by the controller in neorv32_cache).",
+      "related structural assets": [
+        {
+          "asset rtl": "valid_mem",
+          "entity": "neorv32_cache_memory",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tag_mem",
+          "entity": "neorv32_cache_memory",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "hit_o",
+          "entity": "neorv32_cache_memory",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "cache_i.sta_hit",
+          "entity": "neorv32_cache",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Cached data contents stored in the data arrays and returned on reads",
+      "security objective": "Integrity",
+      "reasoning": "The data_memory process writes bytes into data_mem_b0..data_mem_b3 when we_i bits are '1' (e.g. 'if (we_i(0) = ''1'') then data_mem_b0(to_integer(unsigned(acc_adr))) <= wdata_i(7 downto 0);') and assembles rdata_o from those arrays each rising edge. S_DOWNLOAD_RSP drives cache_o.data <= bus_rsp_i.data and cache_o.we <= (others => '1') to populate the arrays; host responses use the memory output (host_rsp_o.data <= cache_i.data). These RTL flows show that data_mem_b* contents determine returned data, establishing integrity for cached data. Realized by data_mem_b0..data_mem_b3 (stores in neorv32_cache_memory) and rdata_o (exit port in neorv32_cache_memory).",
+      "related structural assets": [
+        {
+          "asset rtl": "data_mem_b0",
+          "entity": "neorv32_cache_memory",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "data_mem_b1",
+          "entity": "neorv32_cache_memory",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "data_mem_b2",
+          "entity": "neorv32_cache_memory",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "data_mem_b3",
+          "entity": "neorv32_cache_memory",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rdata_o",
+          "entity": "neorv32_cache_memory",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Cache control commands that trigger clear, new-entry and invalidate operations (cmd_clr, cmd_new, cmd_inv)",
+      "security objective": "Integrity",
+      "reasoning": "The controller drives cache_o.cmd_clr <= '1' in S_CLEAR, cache_o.cmd_new <= '1' in S_DOWNLOAD_REQ and cache_o.cmd_inv <= '1' in S_DOWNLOAD_DONE (on error). Those cache_o fields are mapped to memory ports clr_i/new_i/inv_i; the memory processes use clr_i to clear valid_mem, inv_i to clear a particular index, and new_i to set tag_mem and valid_mem on allocation. The RTL therefore establishes that these command signals control metadata and content changes and must maintain integrity. Realized by cache_o.cmd_clr/cache_o.cmd_new/cache_o.cmd_inv (neorv32_cache, computed/assigned) and clr_i/new_i/inv_i (neorv32_cache_memory, set inputs).",
+      "related structural assets": [
+        {
+          "asset rtl": "cache_o.cmd_clr",
+          "entity": "neorv32_cache",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "cache_o.cmd_new",
+          "entity": "neorv32_cache",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "cache_o.cmd_inv",
+          "entity": "neorv32_cache",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "clr_i",
+          "entity": "neorv32_cache_memory",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "new_i",
+          "entity": "neorv32_cache_memory",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "inv_i",
+          "entity": "neorv32_cache_memory",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Download error indicator (ctrl.buf_err) used to decide invalidation and host error reporting",
+      "security objective": "Integrity",
+      "reasoning": "In S_DOWNLOAD_RSP the RTL updates ctrl_nxt.buf_err <= ctrl.buf_err or bus_rsp_i.err, and S_DOWNLOAD_DONE checks 'if (ctrl.buf_err = ''1'') then cache_o.cmd_inv <= ''1''; host_rsp_o.ack <= ''1''; host_rsp_o.err <= ''1'''. Thus ctrl.buf_err drives whether a partially downloaded block is invalidated and whether an error is reported to the host; the RTL therefore establishes an integrity requirement for ctrl.buf_err. Realized by the stored ctrl.buf_err field in the controller. ",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.buf_err",
+          "entity": "neorv32_cache",
+          "realization": "stores"
+        }
+      ]
+    }
+  ]
+}

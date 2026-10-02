@@ -1,0 +1,111 @@
+{
+ "module name": "neorv32_cpu_cp_muldiv",
+ "module purpose": "neorv32_cpu_cp_muldiv decodes a multiply/divide command from fields of ctrl_i (lines 97-99), captures the operands rs1_i and rs2_i, computes the product in a parallel (FAST_MUL_EN) or serial shift-add multiplier and the quotient or remainder in a serial divider (DIVISION_EN), sequences the operation with a state register and an iteration counter (lines 104-142), signals completion on valid_o (line 145) and drives the selected result on res_o while ctrl.out_en is set (lines 319-332).",
+ "use-case flows": [
+  {
+   "flow": "start",
+   "value": "command acceptance and per-unit start decision (multiply or divide) taken from the instruction fields of ctrl_i",
+   "lines": [97, 98, 99, 120, 121, 122, 124, 154, 155]
+  },
+  {
+   "flow": "operate",
+   "value": "operand signedness decoded from ctrl_i.ir_funct3 for the current instruction",
+   "lines": [148, 149, 150, 151]
+  },
+  {
+   "flow": "operate",
+   "value": "operation sequencing: idle/busy/done phase and the remaining iteration count, with abort on cpu_trap",
+   "lines": [113, 116, 120, 122, 124, 130, 131, 132, 137, 138]
+  },
+  {
+   "flow": "operate",
+   "value": "multiplication: sign-extended operands captured and multiplied (FAST_MUL_EN) or shift-add product accumulated (not FAST_MUL_EN)",
+   "lines": [170, 171, 172, 178, 184, 210, 211, 212, 213, 214, 215, 223, 224, 225, 227, 230, 235]
+  },
+  {
+   "flow": "operate",
+   "value": "division: operand magnitudes and result sign captured, quotient and remainder iterated, result selected and sign-corrected (DIVISION_EN)",
+   "lines": [261, 263, 264, 266, 269, 270, 272, 275, 276, 278, 280, 283, 284, 285, 286, 287, 289, 296, 299, 300]
+  },
+  {
+   "flow": "report",
+   "value": "completion event on valid_o and the operation result on res_o, enabled by ctrl.out_en and selected by ctrl_i.ir_funct3",
+   "lines": [112, 137, 145, 321, 322, 323, 325, 327, 329]
+  },
+  {
+   "flow": "reset",
+   "value": "state, counter, output enable, operand and result registers cleared while rstn_i = '0'",
+   "lines": [106, 107, 108, 109, 166, 167, 168, 207, 208, 255, 256, 257, 258, 259]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Operation start decision -- whether a presented instruction is accepted as a multiply/divide command and which unit it starts",
+   "security objective": "Integrity",
+   "reasoning": "valid_cmd is computed from ctrl_i fields (lines 97-99; GATED_BY ctrl_i.alu_cp_alu at occurrence 2) and gates the state machine leaving S_IDLE (line 120, GATES ctrl.state). mul.start (line 154) and div.start (line 155) each combine valid_cmd with ctrl_i.ir_funct3(2) (GATED_BY valid_cmd at occurrence 2) and decide operand capture: mul.start gates mul.dsp_x/mul.dsp_y (line 170) and mul.prod (line 210), div.start gates div.quotient, div.rs2_abs, div.sign_mod and div.remainder (line 261). Integrity is Established: a wrong decision starts an unrequested operation that overwrites the operand and result registers, or leaves a requested one unstarted. Availability is Established under the implemented conditions: when valid_cmd = '1' in S_IDLE the state moves to S_BUSY or S_DONE on the next clk_i edge (lines 120-124). Line 99 accepts a divide only when DIVISION_EN is true. ctrl_i is a control record of decoded instruction fields, not a record carrying complete read/write transactions, so it is named whole and sets the decision through its field ctrl_i.alu_cp_alu (GATES valid_cmd, line 97).",
+   "related structural assets": [
+    {"asset rtl": "valid_cmd", "entity": "neorv32_cpu_cp_muldiv", "realization": "computes", "occurrence": 2, "edge": {"type": "GATED_BY", "partner": "ctrl_i.alu_cp_alu"}},
+    {"asset rtl": "mul.start", "entity": "neorv32_cpu_cp_muldiv", "realization": "computes", "occurrence": 2, "edge": {"type": "GATED_BY", "partner": "valid_cmd"}},
+    {"asset rtl": "div.start", "entity": "neorv32_cpu_cp_muldiv", "realization": "computes", "occurrence": 2, "edge": {"type": "GATED_BY", "partner": "valid_cmd"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_cp_muldiv", "realization": "sets", "occurrence": 2, "edge": {"type": "GATES", "partner": "valid_cmd"}}
+   ]
+  },
+  {
+   "concept": "Operation sequencing state -- the idle/busy/done phase of the unit and the remaining iteration count that ends the busy phase",
+   "security objective": "Integrity",
+   "reasoning": "ctrl.state is a self-updating state register (CLOCKED_BY clk_i at occurrence 4, lines 122, 124, 132, 138) that selects its own next value (line 116), gates the serial multiplier iteration (line 213, GATES mul.prod), the divider iteration (line 284, GATES div.quotient and div.remainder), the final signed correction step (line 224, GATES mul.add) and valid_o (line 145). ctrl.cnt is loaded with XLEN-2 (line 113), decremented in S_BUSY (line 130, CLOCKED_BY clk_i at occurrence 5) and its zero test ends the busy phase (line 131, GATES ctrl.state). Integrity is Established: a wrong phase or count ends the iteration early or late, so the stored product or quotient/remainder is incomplete when completion is reported. Availability is Established: the counter bounds the busy phase and the S_DONE arm returns the unit to S_IDLE (line 138). ctrl_i sets the phase through its field ctrl_i.cpu_trap, which forces S_DONE (line 131, GATES ctrl.state), and through ctrl_i.ir_funct3 at line 121. The done phase leaves the entity through valid_o (line 145, GATED_BY ctrl.state), which reports completion to the consumer outside this file.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.state", "entity": "neorv32_cpu_cp_muldiv", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.cnt", "entity": "neorv32_cpu_cp_muldiv", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_cp_muldiv", "realization": "sets", "occurrence": 8, "edge": {"type": "GATES", "partner": "ctrl.state"}},
+    {"asset rtl": "valid_o", "entity": "neorv32_cpu_cp_muldiv", "realization": "exit port", "occurrence": 2, "edge": {"type": "GATED_BY", "partner": "ctrl.state"}}
+   ]
+  },
+  {
+   "concept": "Result output enable -- the registered decision that places the computed result on the result output instead of zero",
+   "security objective": "Integrity",
+   "reasoning": "ctrl.out_en is cleared every cycle (line 112) and set only in the done arm (line 137, SELECTED_BY ctrl.state; CLOCKED_BY clk_i at occurrence 4). In operation_result, res_o is zero unless ctrl.out_en = '1' (lines 321-322; res_o GATED_BY ctrl.out_en at occurrence 3). Integrity is Established: a wrong enable drives a result outside its completion cycle or suppresses a finished one. Availability is Established: after S_DONE the enable is set on the next clk_i edge (line 137), making the result visible on res_o. res_o is the port through which this decision leaves the entity.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.out_en", "entity": "neorv32_cpu_cp_muldiv", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "res_o", "entity": "neorv32_cpu_cp_muldiv", "realization": "exit port", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "ctrl.out_en"}}
+   ]
+  },
+  {
+   "concept": "Operand signedness decision -- whether each operand is interpreted as signed for the current instruction",
+   "security objective": "Integrity",
+   "reasoning": "ctrl.rs1_is_signed (lines 148-149) and ctrl.rs2_is_signed (lines 150-151) are decisions computed from ctrl_i.ir_funct3 (GATED_BY ctrl_i.ir_funct3 at occurrence 2 of each). They decide the sign extension of the multiplier operands (lines 171-172), the subtract step of the serial multiplier (line 224, GATES mul.add) and its sign bit (line 235, GATES mul.p_sext), and whether the divider takes the negated operand (lines 263, 269, GATES div.quotient and div.rs2_abs). Integrity is Established: a wrong decision makes a signed operation compute an unsigned result or the reverse. ctrl_i sets the decision through its field ctrl_i.ir_funct3 (GATES ctrl.rs1_is_signed, line 148).",
+   "related structural assets": [
+    {"asset rtl": "ctrl.rs1_is_signed", "entity": "neorv32_cpu_cp_muldiv", "realization": "computes", "occurrence": 2, "edge": {"type": "GATED_BY", "partner": "ctrl_i.ir_funct3"}},
+    {"asset rtl": "ctrl.rs2_is_signed", "entity": "neorv32_cpu_cp_muldiv", "realization": "computes", "occurrence": 2, "edge": {"type": "GATED_BY", "partner": "ctrl_i.ir_funct3"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_cp_muldiv", "realization": "sets", "occurrence": 9, "edge": {"type": "GATES", "partner": "ctrl.rs1_is_signed"}}
+   ]
+  },
+  {
+   "concept": "Multiplication result -- the product of the two operands, held and delivered as the low or high word",
+   "security objective": "Integrity",
+   "reasoning": "With FAST_MUL_EN, the operands are captured sign-extended on mul.start into mul.dsp_x and mul.dsp_y (lines 170-172, CLOCKED_BY clk_i at occurrence 3 of each), multiplied (line 178) and registered in mul.prod (line 184, CLOCKED_BY clk_i at occurrence 2). Without FAST_MUL_EN, mul.prod is loaded with rs1_i (line 212, CARRIES from rs1_i occurrence 5) and accumulates the shift-add product with rs2_i (lines 214-215, 225-230). The product leaves through res_o (lines 325, 327; DERIVES_FROM mul.prod at occurrence 3), and its consumer is outside this file, so integrity of the delivered value is Established from these lines. Availability is Established under the implemented conditions: the product is held in mul.prod and driven while ctrl.out_en = '1'. rs1_i and rs2_i set the product because this entity reads them to store and compute it (SOURCES mul.dsp_x and mul.dsp_y at line 171-172). mul.dsp_z, mul.add and mul.p_sext are parts of the computation whose result is stored in mul.prod and are not listed separately. No line restricts who observes the result, so confidentiality is not claimed.",
+   "related structural assets": [
+    {"asset rtl": "mul.prod", "entity": "neorv32_cpu_cp_muldiv", "realization": "stores", "occurrence": 2, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "mul.dsp_x", "entity": "neorv32_cpu_cp_muldiv", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "mul.dsp_y", "entity": "neorv32_cpu_cp_muldiv", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "rs1_i", "entity": "neorv32_cpu_cp_muldiv", "realization": "sets", "occurrence": 2, "edge": {"type": "SOURCES", "partner": "mul.dsp_x"}},
+    {"asset rtl": "rs2_i", "entity": "neorv32_cpu_cp_muldiv", "realization": "sets", "occurrence": 2, "edge": {"type": "SOURCES", "partner": "mul.dsp_y"}},
+    {"asset rtl": "res_o", "entity": "neorv32_cpu_cp_muldiv", "realization": "exit port", "occurrence": 3, "edge": {"type": "DERIVES_FROM", "partner": "mul.prod"}}
+   ]
+  },
+  {
+   "concept": "Division result -- the quotient or remainder of the two operands with its sign correction",
+   "security objective": "Integrity",
+   "reasoning": "Only when DIVISION_EN holds (otherwise lines 307-313 tie these elements to zero and line 99 rejects divide commands): on div.start, div.quotient takes the magnitude of rs1_i (lines 263-266), div.rs2_abs the magnitude of rs2_i (lines 269-272, CLOCKED_BY clk_i at occurrence 3) and div.sign_mod the result-sign decision (lines 275-280, CLOCKED_BY clk_i at occurrence 3). In S_BUSY/S_DONE, div.quotient (line 285, CLOCKED_BY clk_i at occurrence 5) and div.remainder (lines 287-289, CLOCKED_BY clk_i at occurrence 4) are iterated from the trial subtraction div.sub (line 296). The quotient or remainder is selected (line 299), negated when div.sign_mod = '1' (line 300) and leaves through res_o (line 329, COPIES div.res at occurrence 5); its consumer is outside this file, so integrity of the delivered value is Established. Availability is Established for the held registers and their delivery while ctrl.out_en = '1'. rs1_i sets the dividend (SOURCES div.quotient, line 264) and rs2_i the divisor (SOURCES div.rs2_abs, line 270). div.sub, div.res_u and div.res are parts of the computation whose result is stored or leaves through res_o and are not listed separately. No line restricts who observes the result, so confidentiality is not claimed.",
+   "related structural assets": [
+    {"asset rtl": "div.quotient", "entity": "neorv32_cpu_cp_muldiv", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "div.remainder", "entity": "neorv32_cpu_cp_muldiv", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "div.rs2_abs", "entity": "neorv32_cpu_cp_muldiv", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "div.sign_mod", "entity": "neorv32_cpu_cp_muldiv", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "rs1_i", "entity": "neorv32_cpu_cp_muldiv", "realization": "sets", "occurrence": 8, "edge": {"type": "SOURCES", "partner": "div.quotient"}},
+    {"asset rtl": "rs2_i", "entity": "neorv32_cpu_cp_muldiv", "realization": "sets", "occurrence": 14, "edge": {"type": "SOURCES", "partner": "div.rs2_abs"}},
+    {"asset rtl": "res_o", "entity": "neorv32_cpu_cp_muldiv", "realization": "exit port", "occurrence": 5, "edge": {"type": "COPIES", "partner": "div.res"}}
+   ]
+  }
+ ]
+}

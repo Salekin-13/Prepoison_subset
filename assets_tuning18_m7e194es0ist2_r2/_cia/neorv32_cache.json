@@ -1,0 +1,171 @@
+{
+ "module name": "neorv32_cache",
+ "concepts": [
+  {
+   "concept": "Direct-bypass decision (whether a host request bypasses the cache and is served directly)",
+   "kind": "decision",
+   "writers": "ctrl_nxt.buf_dir set default '0' in ctrl_engine_comb at line 140; in S_IDLE ctrl_nxt.buf_dir <= '1' at line 173 when (ctrl.state = S_IDLE) and ((host_req_i.stb = '1' or ctrl.buf_req = '1') and ((unsigned(host_req_i.addr(31 downto 28)) >= unsigned(UC_BEGIN)) or host_req_i.amo = '1' or host_req_i.debug = '1')); ctrl.buf_dir is written from ctrl_nxt into ctrl on the rising edge at line 126 (ctrl <= ctrl_nxt); reset drives ctrl.buf_dir <= '0' at line 121.",
+   "observers": "bus_req_o.stb asserted in S_LOOKUP when ctrl.buf_dir = '1' at line 187 (external bus output); bus_req_o is driven/copied from host_req_i at line 159 (external view of forwarded request); host_rsp_o is driven from bus_rsp_i in S_DIRECT_RSP at line 209 (host-visible behavior resulting from the decision).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 187,
+     "via": "bus_req_o.stb",
+     "reason": "The direct-bypass decision drives bus_req_o.stb (line 187), an external output that reveals the decision to the bus/receiver."
+    },
+    "integrity": {
+     "answer": "yes-assumed",
+     "line": 173,
+     "via": "host_req_i",
+     "reason": "ctrl_nxt.buf_dir is set from host request fields (address nibble, amo, debug) in S_IDLE (line 173), so an external requester can change this decision."
+    },
+    "availability": {
+     "answer": "no",
+     "line": 126,
+     "via": "ctrl",
+     "reason": "The stored decision (ctrl.buf_dir) is latched from ctrl_nxt on every rising clock edge (ctrl <= ctrl_nxt at line 126) and there is no external stall gating that latch."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 140,
+     "via": "ctrl_nxt.buf_dir",
+     "reason": "The comb process provides the only drivers for the decision (default at line 140 and conditional set at line 173); no debug/test override or alternate driver exists."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Decoded request address (tag, index, offset) used to select cache lines and to form bus request addresses",
+   "kind": "data",
+   "writers": "In S_LOOKUP ctrl_nxt.tag <= host_req_i.addr(31 downto 32-tag_size_c) at line 180, ctrl_nxt.idx <= host_req_i.addr((offset_size_c+2+index_size_c)-1 downto offset_size_c+2) at line 181, and ctrl_nxt.ofs <= (others => '0') at line 182; ctrl_nxt.ofs is incremented in S_DOWNLOAD_RSP at line 244 under guard bus_rsp_i.ack; ctrl <= ctrl_nxt latches these fields at the rising edge at line 126; reset initializes ctrl.tag/ctrl.idx/ctrl.ofs to zeros at lines 122-124.",
+   "observers": "bus_req_o.addr is formed from ctrl.tag/ctrl.idx/ctrl.ofs and driven as an external output in S_DOWNLOAD_REQ (line 227) and S_DOWNLOAD_RSP (line 238); cache_o.addr (lines 225/235) is forwarded into the memory instance at line 288 (internal to the block).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 227,
+     "via": "bus_req_o.addr",
+     "reason": "The decoded fields are assembled into bus_req_o.addr (line 227), an external bus output, so the decoded address is observable outside the module."
+    },
+    "integrity": {
+     "answer": "no",
+     "line": 126,
+     "via": "ctrl",
+     "reason": "The decoded tag/index/offset are captured into the ctrl register from ctrl_nxt on the clock (ctrl <= ctrl_nxt at line 126) and ctrl_nxt.tag/idx/ofs are produced in S_LOOKUP (lines 180-182), so updates occur only at the intended times."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 243,
+     "via": "bus_rsp_i.ack",
+     "reason": "Progress through S_DOWNLOAD_RSP (guarded at line 243) and the ofs increment (line 244) is gated by bus_rsp_i.ack, so a missing or withheld ack from the external bus can block download/address progression."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 180,
+     "via": "ctrl_nxt.tag",
+     "reason": "The decoded fields are driven only by the state-machine assignments in S_LOOKUP (e.g. tag at line 180) and the download increment (line 244); there is no debug/test override that substitutes a different source."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Cached contents (valid bits, tag memory, per-byte data banks) that determine hit/miss and the data returned to the host",
+   "kind": "state",
+   "writers": "valid_mem is updated in status_memory: reset sets (others => '0') at line 377 and clr_i = '1' clears all at line 381; inv_i = '1' clears valid_mem(to_integer(unsigned(acc_idx))) at line 383; new_i = '1' sets valid_mem(to_integer(unsigned(acc_idx))) <= '1' at line 385; tag_mem is written in tag_memory when new_i = '1' at line 397 (tag_mem(index) <= acc_tag); data bytes are written in data_memory when we_i(0..3) = '1' at lines 414, 417, 420, 423 using wdata_i slices; rdata_o is assigned from the four byte banks at lines 425-428 (readback).",
+   "observers": "Cached data is observable at host_rsp_o.data which is driven from cache_i.data (rdata_o from the memory instance) and forwarded at line 156; the memory instance rdata_o assignments at lines 425-428 feed that external output via the instance port map (line 291).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 156,
+     "via": "host_rsp_o.data",
+     "reason": "Stored cache data (rdata_o) is forwarded to host_rsp_o.data (line 156), an output port visible outside the module, so cached contents are externally observable."
+    },
+    "integrity": {
+     "answer": "yes-assumed",
+     "line": 236,
+     "via": "bus_rsp_i.data",
+     "reason": "In S_DOWNLOAD_RSP the controller assigns cache_o.data <= bus_rsp_i.data and asserts cache_o.we (lines 236-237), which is forwarded into the memory (manifested as data_mem_b0..b3 writes at lines 414..423), so external bus responses can change cached contents."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 243,
+     "via": "bus_rsp_i.ack",
+     "reason": "The download/write sequence advances only when bus_rsp_i.ack is asserted (guard at line 243 leads to ofs increment at 244), so lack of external ack can stall filling cache contents and prevent progress."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 414,
+     "via": "data_mem_b0 (and peers)",
+     "reason": "Data stores are effected only by the standard we_i/wdata_i writes into the byte banks (lines 414..423); there is no separate debug/test override that replaces or bypasses these writes."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Download error indicator and host error/ack reporting (whether a downloaded cache line completed without bus errors)",
+   "kind": "decision",
+   "writers": "ctrl_nxt.buf_err initialized/copied from ctrl.buf_err at line 139 and in S_DOWNLOAD_RSP updated as ctrl_nxt.buf_err <= ctrl.buf_err or bus_rsp_i.err at line 242 (accumulates any beat error); ctrl <= ctrl_nxt latches the stored flag on the rising edge at line 126; reset clears ctrl.buf_err at line 120.",
+   "observers": "host_rsp_o.ack and host_rsp_o.err are driven in S_DOWNLOAD_DONE when ctrl.buf_err is inspected (host_rsp_o.ack/err assigned at lines 256-257) and those outputs are externally visible to the host; cache_o.cmd_inv is asserted on error (line 255) and forwarded to memory inv_i at line 284 (internal invalidation observable as a side-effect).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 257,
+     "via": "host_rsp_o.err",
+     "reason": "The accumulated download error flag is reported to the host via host_rsp_o.err (line 257), an external output, so the error indicator is observable outside the module."
+    },
+    "integrity": {
+     "answer": "yes-assumed",
+     "line": 242,
+     "via": "bus_rsp_i.err",
+     "reason": "ctrl_nxt.buf_err is explicitly accumulated from bus_rsp_i.err in S_DOWNLOAD_RSP (line 242), allowing an external bus responder to influence the stored download error state."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 243,
+     "via": "bus_rsp_i.ack",
+     "reason": "Completion of the download (ofs increments and transition to DONE) is gated by bus_rsp_i.ack (line 243), so a missing or withheld ack can prevent completion and subsequent error/ack reporting."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 242,
+     "via": "ctrl_nxt.buf_err",
+     "reason": "The error indicator is strictly the accumulation of bus_rsp_i.err into ctrl_nxt.buf_err (line 242) and reset; there is no alternate debug/test source that substitutes or bypasses this flag."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Cache clear / fence command that invalidates cache state and (optionally) issues a bus fence",
+   "kind": "event",
+   "writers": "host_req_i.fence is ORed into ctrl_nxt.buf_sync at line 138 (ctrl_nxt.buf_sync <= ctrl.buf_sync or host_req_i.fence); in S_IDLE that buffered sync or a direct fence moves the state to S_CLEAR (ctrl_nxt.state <= S_CLEAR at line 169); in S_CLEAR the controller asserts bus_req_o.fence <= '1' when READ_ONLY = false at line 217 and asserts cache_o.cmd_clr <= '1' at line 219; cache_o.cmd_clr is connected to the memory clr_i port in the instance map at line 283; reset clears ctrl.buf_sync at line 119.",
+   "observers": "bus_req_o.fence is an external output asserted in S_CLEAR at line 217 (visible to the bus); cache_o.cmd_clr is forwarded to the memory instance as clr_i at line 283 (internal memory invalidation side-effect).",
+   "answers": {
+    "confidentiality": {
+     "answer": "no",
+     "line": 217,
+     "via": "bus_req_o.fence",
+     "reason": "The fence/clear is generated in response to the host's fence request and forwarded as bus_req_o.fence (line 217); this is a request the writer already initiated and therefore reveals nothing new to that writer."
+    },
+    "integrity": {
+     "answer": "yes-assumed",
+     "line": 138,
+     "via": "host_req_i.fence",
+     "reason": "The clear/fence path is driven from the host fence input (ctrl_nxt.buf_sync <= ... host_req_i.fence at line 138), so an external requester can cause the clear and (when configured) the bus fence."
+    },
+    "availability": {
+     "answer": "no",
+     "line": 219,
+     "via": "cache_o.cmd_clr",
+     "reason": "When the controller enters S_CLEAR it asserts cache_o.cmd_clr (line 219) and then returns to S_IDLE (line 221); there is no external stall/gate that prevents issuance of the clear command apart from global reset/clock."
+    },
+    "undermined behavior": {
+     "answer": "yes-RTL",
+     "line": 217,
+     "via": "READ_ONLY generic",
+     "reason": "The bus fence assertion is conditional on the static READ_ONLY generic (line 217), so a configuration mode disables the bus fence behavior."
+    }
+   },
+   "security objective": "Integrity"
+  }
+ ],
+ "_problems": []
+}

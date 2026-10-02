@@ -1,0 +1,112 @@
+{
+  "module name": "neorv32_trng",
+  "conceptual assets": [
+    {
+      "concept": "TRNG enable control — whether the TRNG core is enabled to sample and produce outputs",
+      "security objective": "Integrity",
+      "reasoning": "The bus_access process stores a bus write into the local 'enable' register (enable <= bus_req_i.data(ctrl_en_c)) and resets it on rstn_i. neorTRNG_inst maps that signal to the TRNG input (enable_i => enable). Inside neoTRNG sampling_control the code sets sample_en <= enable_i and sample_en gates sample_cnt/sample_sreg updates that drive data_o and valid_o. RTL therefore establishes that 'enable' directly controls whether samples are produced; corrupting it changes sample production, so integrity of this control is required. Structural mapping: the stored bus-controlled register (enable) and the TRNG input and local sample enable realize the concept.",
+      "related structural assets": [
+        {
+          "asset rtl": "enable",
+          "entity": "neorv32_trng",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "enable_i",
+          "entity": "neoTRNG",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "sample_en",
+          "entity": "neoTRNG",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "FIFO clear command — the computed clear asserted to the FIFO (from bus clear bit or enable==0)",
+      "security objective": "Integrity",
+      "reasoning": "bus_access stores a bus write bit into 'fifo_clr' (fifo_clr <= bus_req_i.data(ctrl_fifo_clr_c)). The top-level computes fifo.clear <= '1' when (enable = '0') or (fifo_clr = '1') else '0', and rnd_pool_fifo_inst maps that signal to the FIFO clear input (clear_i => fifo.clear). The RTL thus establishes that fifo_clr/fifo.clear cause the FIFO to be cleared; integrity of this command matters because incorrect assertion removes or prevents stored TRNG samples.",
+      "related structural assets": [
+        {
+          "asset rtl": "fifo_clr",
+          "entity": "neorv32_trng",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "fifo.clear",
+          "entity": "neorv32_trng",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "FIFO read/pop request decision — the bus-driven pop that removes a byte from the FIFO on a data-register read",
+      "security objective": "Integrity",
+      "reasoning": "The top-level computes fifo.re from the bus read condition: fifo.re <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(2) = '1') else '0'; rnd_pool_fifo_inst maps re_i => fifo.re. RTL therefore establishes fifo.re as the decision that triggers FIFO pop on a data read; integrity of this decision is required to prevent incorrect removal or retention of stored samples.",
+      "related structural assets": [
+        {
+          "asset rtl": "fifo.re",
+          "entity": "neorv32_trng",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "FIFO availability flag — whether the FIFO currently holds readable data",
+      "security objective": "Integrity",
+      "reasoning": "bus_access returns the FIFO available bit into the control-status read (bus_rsp_o.data(ctrl_avail_c) <= fifo.avail) and uses fifo.avail to choose returned data (if fifo.avail='0' then return zeros else return fifo.rdata). rnd_pool_fifo_inst maps avail_o => fifo.avail. RTL therefore establishes fifo.avail as the indicator used to decide whether reads return real TRNG bytes; its integrity is required so reads are correctly qualified.",
+      "related structural assets": [
+        {
+          "asset rtl": "fifo.avail",
+          "entity": "neorv32_trng",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "TRNG-produced sample bytes — the random byte produced by the TRNG, enqueued into the FIFO and later read back",
+      "security objective": "Integrity",
+      "reasoning": "Within neoTRNG the sample register is updated in sampling_control (sample_sreg updated when debias_valid='1') and driven out by data_o <= sample_sreg. neoTRNG_inst maps data_o => fifo.wdata; rnd_pool_fifo_inst maps wdata_i => fifo.wdata and exposes stored bytes as rdata_o => fifo.rdata. bus_access reads fifo.rdata when fifo.avail='1'. The RTL therefore establishes the end-to-end value path (sample_sreg -> neoTRNG.data_o -> fifo.wdata -> fifo.rdata -> bus read); integrity of these data values is required because they are the TRNG output exposed to the bus.",
+      "related structural assets": [
+        {
+          "asset rtl": "sample_sreg",
+          "entity": "neoTRNG",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "data_o",
+          "entity": "neoTRNG",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "fifo.wdata",
+          "entity": "neorv32_trng",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "fifo.rdata",
+          "entity": "neorv32_trng",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "TRNG sample-valid signal — the flag indicating a new sample is available to be written into the FIFO",
+      "security objective": "Integrity",
+      "reasoning": "neoTRNG computes valid_o <= sample_cnt(sample_cnt'left) and neoTRNG_inst maps valid_o => fifo.we; rnd_pool_fifo_inst maps we_i => fifo.we. Thus neoTRNG.valid_o / fifo.we determine when a produced sample is enqueued into the FIFO. RTL establishes this control path; integrity of the valid signal is required because it governs whether and when samples are written into the FIFO.",
+      "related structural assets": [
+        {
+          "asset rtl": "valid_o",
+          "entity": "neoTRNG",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "fifo.we",
+          "entity": "neorv32_trng",
+          "realization": "sets"
+        }
+      ]
+    }
+  ]
+}

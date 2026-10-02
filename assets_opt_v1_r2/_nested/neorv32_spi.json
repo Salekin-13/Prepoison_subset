@@ -1,0 +1,147 @@
+{
+ "module name": "neorv32_spi",
+ "module purpose": "neorv32_spi is a bus-mapped SPI host: a bus write with addr(2)='0' sets the control register (enable, clock phase and polarity, prescaler select, divider, high-speed, interrupt enables), a write with addr(2)='1' queues a data byte or chip-select command in a transmit FIFO sub-unit; a transceiver state machine pops entries, drives spi_csn_o, spi_clk_o and spi_dat_o, samples spi_dat_i into a shift register, pushes each received byte into a receive FIFO sub-unit that a bus read returns, and raises irq_o from enabled FIFO and idle conditions.",
+ "use-case flows": [
+  {"flow": "configure", "value": "control settings (enable, cpha, cpol, prsc, cdiv, highspeed, four interrupt enables) taken from bus write data when stb, rw and addr(2)='0' hold", "lines": [137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149]},
+  {"flow": "start", "value": "a transmit FIFO entry (bit 8 from data(31) marks a chip-select command, bits 7..0 the byte) pushed on a bus write with addr(2)='1'", "lines": [202, 203, 212, 213]},
+  {"flow": "operate", "value": "serial clock tick generation: divider counter advanced on the selected prescaler bit or high-speed, tick pulsed when the counter equals cdiv", "lines": [368, 369, 370, 371, 372, 373, 374, 376]},
+  {"flow": "operate", "value": "transfer sequencing: idle state pops the transmit FIFO, loads a chip-select command or a byte, then eight clock-phase/sample/shift steps under spi_clk_en, ending with a completion pulse", "lines": [214, 281, 282, 286, 287, 288, 289, 290, 292, 293, 299, 300, 301, 303, 308, 309, 310, 311, 312, 317, 318, 319, 320, 321, 322, 324, 325, 331, 332, 333, 340, 343, 344]},
+  {"flow": "operate", "value": "chip-select drive: all lines high except the line indexed by cs_ctrl(2 downto 0) when cs_ctrl(3)='1'", "lines": [352, 353, 354]},
+  {"flow": "read out", "value": "received byte pushed into the receive FIFO on completion and returned on a bus read with addr(2)='1'", "lines": [174, 234, 235, 238, 239, 244, 245, 246]},
+  {"flow": "read out", "value": "stored control settings returned on a bus read with addr(2)='0'", "lines": [153, 154, 155, 156, 157, 158, 164, 165, 166, 167]},
+  {"flow": "report", "value": "status bits (rx available, tx empty, tx not half, tx full, FIFO size, chip-select active, busy) and the interrupt request irq_o", "lines": [160, 161, 162, 163, 169, 171, 172, 255, 256, 257, 258, 259]},
+  {"flow": "reset", "value": "control register, engine fields, divider, tick, irq_o and spi_csn_o forced to constants while rstn_i='0'; FIFOs cleared, engine idled and divider cleared while ctrl.enable='0'", "lines": [118, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 211, 243, 252, 253, 268, 269, 270, 271, 272, 273, 274, 275, 331, 332, 333, 349, 350, 364, 365, 366, 369, 370]}
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Module enable setting -- whether the SPI engine, clock divider, FIFOs and interrupt are active",
+   "security objective": "Integrity",
+   "reasoning": "Written by the configure flow `ctrl.enable <= bus_req_i.data(ctrl_en_c);` (line 140, CLOCKED_BY clk_i at occurrence 3). The RTL makes the module's behavior depend on it: `rtx_engine.state(2) <= ctrl.enable;` (line 281) decides whether the engine leaves the others arm (lines 331-333), `tx_fifo.clear <= not ctrl.enable;` and `rx_fifo.clear <= not ctrl.enable;` (lines 211, 243) flush both FIFOs, `if (ctrl.enable = '0') then cdiv_cnt <= (others => '0');` (lines 369-370) stops the divider, irq_o is gated by it (line 255, GATES irq_o), and `clkgen_en_o <= ctrl.enable;` (line 383) exports it. Integrity: a wrong value starts, stops or flushes transfers against the written setting. Availability is also Established: while it is '0' no transfer runs and queued entries are cleared. ctrl.enable stores it (its records show GATES irq_o, cdiv_cnt and spi_clk_en); clkgen_en_o is the exit port (COPIES ctrl.enable, occurrence 2). tx_fifo.clear and rx_fifo.clear only invert and forward the setting to the FIFO sub-units, so they are not listed. bus_req_i.data is a field of the transport record and is never a setting point.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.enable", "entity": "neorv32_spi", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "clkgen_en_o", "entity": "neorv32_spi", "realization": "exit port", "occurrence": 2, "edge": {"type": "COPIES", "partner": "ctrl.enable"}}
+   ]
+  },
+  {
+   "concept": "Serial clock mode configuration -- clock polarity and clock phase of every transfer",
+   "security objective": "Integrity",
+   "reasoning": "Written by the configure flow at lines 141-142 (CLOCKED_BY clk_i at occurrence 3 of each) and read back at lines 154-155. ctrl.cpol sets the idle and end level of the serial clock (`rtx_engine.sck <= ctrl.cpol;` lines 286, 320, 331) and is computed on at lines 301, 309 and 324 (SOURCES rtx_engine.sck); ctrl.cpha decides whether the first half-step toggles the clock (`if (ctrl.cpha = '1')` line 300, GATES rtx_engine.sck) and enters `not (ctrl.cpha xor ctrl.cpol)` and `ctrl.cpha xor ctrl.cpol` (lines 309, 324). Integrity: the serial clock waveform sent on spi_clk_o (line 344) must follow the written mode. Both registers store the setting; the clock level they produce is a separate concept.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.cpol", "entity": "neorv32_spi", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.cpha", "entity": "neorv32_spi", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Serial clock rate configuration -- prescaler select, divider value and high-speed bypass",
+   "security objective": "Integrity",
+   "reasoning": "Written by the configure flow at lines 143-145 (CLOCKED_BY clk_i at occurrence 3 of each) and read back at lines 156-158. `elsif (clkgen_i(to_integer(unsigned(ctrl.prsc))) = '1') or (ctrl.highspeed = '1') then` (line 371: ctrl.prsc SELECTS cdiv_cnt and spi_clk_en, ctrl.highspeed GATES them) and `if (cdiv_cnt = ctrl.cdiv) then` (line 372: ctrl.cdiv CONSTRAINS cdiv_cnt and spi_clk_en) fix how often spi_clk_en pulses. Integrity: the tick period, and so the bit rate of every transfer, must follow the written values. Availability is also Established: each engine step waits for spi_clk_en (lines 299, 308, 317). All three registers store the setting. clkgen_i is not listed: its only use is the condition at line 371 that lets the divider counter advance, so it only enables clocked logic and the clock-enable exclusion applies.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.prsc", "entity": "neorv32_spi", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.cdiv", "entity": "neorv32_spi", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.highspeed", "entity": "neorv32_spi", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Interrupt-source enable configuration -- which FIFO and idle conditions may raise the interrupt",
+   "security objective": "Integrity",
+   "reasoning": "Written by the configure flow at lines 146-149 (CLOCKED_BY clk_i at occurrence 3 of each), read back at lines 164-167, and used in `irq_o <= ctrl.enable and ((ctrl.irq_rx_avail and rx_fifo.avail) or (ctrl.irq_tx_empty and (not tx_fifo.avail)) or (ctrl.irq_tx_nhalf and (not tx_fifo.half)) or (ctrl.irq_idle and (not tx_fifo.avail) and (not rtx_engine.busy)));` (lines 255-259; each has SOURCES irq_o, an output port). Integrity: irq_o must be raised exactly for the enabled conditions. Availability is also Established: a cleared enable suppresses its interrupt source. Each register stores its enable bit.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.irq_rx_avail", "entity": "neorv32_spi", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.irq_tx_empty", "entity": "neorv32_spi", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.irq_tx_nhalf", "entity": "neorv32_spi", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.irq_idle", "entity": "neorv32_spi", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Serial clock tick timing -- the divider count and the per-step enable pulse that paces the transfer",
+   "security objective": "Integrity",
+   "reasoning": "The clock-generation flow counts `cdiv_cnt <= std_ulogic_vector(unsigned(cdiv_cnt) + 1);` (line 376, CLOCKED_BY clk_i at occurrence 6), clears it on a match or when disabled (lines 374, 370), and pulses `spi_clk_en <= '1';` when `cdiv_cnt = ctrl.cdiv` (lines 372-373, CLOCKED_BY clk_i at occurrence 7), otherwise '0' (line 368). spi_clk_en GATES every engine step (`if (spi_clk_en = '1')` lines 299, 308, 317). Integrity: steps must occur exactly at the divided rate. Availability is also Established: with no pulse the state machine never leaves states 101-111 and no byte completes. cdiv_cnt is self-updating state (CONSTRAINS spi_clk_en at occurrence 4) and stores; spi_clk_en is registered and stores the tick decision (GATES rtx_engine.state).",
+   "related structural assets": [
+    {"asset rtl": "cdiv_cnt", "entity": "neorv32_spi", "realization": "stores", "occurrence": 6, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "spi_clk_en", "entity": "neorv32_spi", "realization": "stores", "occurrence": 7, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Transfer sequencing state -- engine state, bit count and the busy status derived from them",
+   "security objective": "Integrity",
+   "reasoning": "`case rtx_engine.state is` (line 282) selects every engine action; transitions are assigned at lines 293, 303, 312, 322, 325 and 333 (CLOCKED_BY clk_i, occurrence 6 at line 293), with bit 2 following the enable (line 281). rtx_engine.bitcnt is cleared at line 287, incremented at line 311 (CLOCKED_BY clk_i at occurrence 4) and `if (rtx_engine.bitcnt(3) = '1')` (line 319) ends the byte (GATES rtx_engine.done, rtx_engine.state). `rtx_engine.busy <= '0' when (rtx_engine.state(1 downto 0) = \"00\") else '1';` (line 340, GATED_BY rtx_engine.state at occurrence 4) is reported in status bit 31 (line 172) and blocks the idle interrupt (line 259). Integrity: exactly eight sample/shift steps per byte and correct phase order; a corrupted state or count changes the bits sent and received. Availability is also Established: the engine must return to idle (state \"00\") for the next entry to be popped (line 214). state and bitcnt store; busy computes the status decision.",
+   "related structural assets": [
+    {"asset rtl": "rtx_engine.state", "entity": "neorv32_spi", "realization": "stores", "occurrence": 6, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "rtx_engine.bitcnt", "entity": "neorv32_spi", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "rtx_engine.busy", "entity": "neorv32_spi", "realization": "computes", "occurrence": 4, "edge": {"type": "GATED_BY", "partner": "rtx_engine.state"}}
+   ]
+  },
+  {
+   "concept": "Serial clock output level -- the SPI clock driven to the device",
+   "security objective": "Integrity",
+   "reasoning": "rtx_engine.sck is assigned in each state from the clock mode (lines 286, 301, 309, 320, 324, 331; CLOCKED_BY clk_i at occurrence 5, line 309) and leaves through `spi_clk_o <= rtx_engine.sck;` (line 344, COPIES rtx_engine.sck at occurrence 2). The value is delivered through an output port to a consumer outside this IP, so its integrity property (the device receives exactly the waveform the state machine defines) is Established from lines 309 and 344. rtx_engine.sck stores the level (CARRIES spi_clk_o); spi_clk_o is the exit port.",
+   "related structural assets": [
+    {"asset rtl": "rtx_engine.sck", "entity": "neorv32_spi", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "spi_clk_o", "entity": "neorv32_spi", "realization": "exit port", "occurrence": 2, "edge": {"type": "COPIES", "partner": "rtx_engine.sck"}}
+   ]
+  },
+  {
+   "concept": "Transmit data byte -- a queued byte serialized onto the SPI data output",
+   "security objective": "Integrity",
+   "reasoning": "A transmit FIFO entry enters this entity on tx_fifo.rdata from the sub-unit (`rdata_o => tx_fifo.rdata`, line 207, connection mode out at occurrence 2); this entity tests it (`if (tx_fifo.rdata(8) = '1')`, line 289), so the sub-unit wiring exception holds. A data entry is loaded by `rtx_engine.sreg <= tx_fifo.rdata(7 downto 0);` (line 292, CLOCKED_BY clk_i at occurrence 4), shifted at line 318 and driven by `spi_dat_o <= rtx_engine.sreg(7);` (line 343, DERIVES_FROM rtx_engine.sreg at occurrence 2). Integrity: the bits on spi_dat_o must be the queued byte in order. tx_fifo.rdata sets it, rtx_engine.sreg stores it (SOURCES spi_dat_o), spi_dat_o is the exit port. tx_fifo.wdata (line 213) only passes transport data slices to the FIFO input and is a carrier; bus_req_i is a transport record. The map lists tx_fifo.rdata as not reached because the FIFO internals are not supplied. Confidentiality is not established: no line restricts who observes the byte.",
+   "related structural assets": [
+    {"asset rtl": "tx_fifo.rdata", "entity": "neorv32_spi", "realization": "sets", "occurrence": 2, "edge": {"type": "CONNECTS", "partner": "tx_fifo_inst.rdata_o"}},
+    {"asset rtl": "rtx_engine.sreg", "entity": "neorv32_spi", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "spi_dat_o", "entity": "neorv32_spi", "realization": "exit port", "occurrence": 2, "edge": {"type": "DERIVES_FROM", "partner": "rtx_engine.sreg"}}
+   ]
+  },
+  {
+   "concept": "Received data byte -- serial input bits assembled into a byte for the receive FIFO",
+   "security objective": "Integrity",
+   "reasoning": "This entity reads spi_dat_i to store it (`rtx_engine.sdi_sync <= spi_dat_i;` line 310, CARRIES at occurrence 2), shifts it in with `rtx_engine.sreg <= rtx_engine.sreg(6 downto 0) & rtx_engine.sdi_sync;` (line 318, CLOCKED_BY clk_i at occurrence 5) and hands `'0' & rtx_engine.sreg` to the receive FIFO (line 244) for read-out at line 174. Integrity: the byte delivered to the receive FIFO must be the sampled bits in order. spi_dat_i sets it; rtx_engine.sreg stores it. rtx_engine.sdi_sync is secondary: its only use record is SOURCES rtx_engine.sreg, data passed on to another internal element. rx_fifo.wdata and rx_fifo.rdata only pass the byte to and from the sub-unit and are not tested here (carriers); bus_rsp_o is a transport record. Confidentiality is not established from the RTL.",
+   "related structural assets": [
+    {"asset rtl": "spi_dat_i", "entity": "neorv32_spi", "realization": "sets", "occurrence": 2, "edge": {"type": "CARRIES", "partner": "rtx_engine.sdi_sync"}},
+    {"asset rtl": "rtx_engine.sreg", "entity": "neorv32_spi", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Chip-select control -- which device select line is driven active",
+   "security objective": "Integrity",
+   "reasoning": "A transmit FIFO entry with bit 8 set is a chip-select command: `if (tx_fifo.rdata(8) = '1') then rtx_engine.cs_ctrl <= tx_fifo.rdata(3 downto 0);` (lines 289-290; tx_fifo.rdata enters from tx_fifo_inst.rdata_o, line 207). cs_ctrl is cleared when disabled (line 332) and reported (line 171). `spi_csn_o <= (others => '1'); if (rtx_engine.cs_ctrl(3) = '1') then spi_csn_o(to_integer(unsigned(rtx_engine.cs_ctrl(2 downto 0)))) <= '0';` (lines 352-354). Integrity: only the commanded line may go active, and only while cs_ctrl(3)='1'. tx_fifo.rdata sets it (CONNECTS mode out, occurrence 2), rtx_engine.cs_ctrl stores it (CLOCKED_BY clk_i at occurrence 4; SELECTS spi_csn_o), spi_csn_o is the exit port (SELECTED_BY rtx_engine.cs_ctrl at occurrence 4), ahead of its own storage role.",
+   "related structural assets": [
+    {"asset rtl": "tx_fifo.rdata", "entity": "neorv32_spi", "realization": "sets", "occurrence": 2, "edge": {"type": "CONNECTS", "partner": "tx_fifo_inst.rdata_o"}},
+    {"asset rtl": "rtx_engine.cs_ctrl", "entity": "neorv32_spi", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "spi_csn_o", "entity": "neorv32_spi", "realization": "exit port", "occurrence": 4, "edge": {"type": "SELECTED_BY", "partner": "rtx_engine.cs_ctrl"}}
+   ]
+  },
+  {
+   "concept": "Transmit queue data-available status -- whether an entry is waiting to be sent",
+   "security objective": "Integrity",
+   "reasoning": "The value is received from the transmit FIFO sub-unit (`avail_o => tx_fifo.avail`, line 208, connection mode out at occurrence 4) and used here: `if (tx_fifo.avail = '1') then` (line 288) decides whether the engine consumes an entry (GATES rtx_engine.state, rtx_engine.sreg, rtx_engine.cs_ctrl); it is reported as tx-empty and busy (lines 161, 172) and drives the tx-empty and idle interrupt terms (lines 257, 259). Integrity: the engine must start only on a valid entry and status must match the queue. Availability is also Established: a stuck '0' stalls every queued transfer. The local if-test satisfies the sub-unit wiring exception; tx_fifo.avail sets the concept. tx_fifo.half and tx_fifo.free are only read as data into status and irq_o and are carriers.",
+   "related structural assets": [
+    {"asset rtl": "tx_fifo.avail", "entity": "neorv32_spi", "realization": "sets", "occurrence": 4, "edge": {"type": "CONNECTS", "partner": "tx_fifo_inst.avail_o"}}
+   ]
+  },
+  {
+   "concept": "Interrupt request -- the event signalled to the processor",
+   "security objective": "Integrity",
+   "reasoning": "`irq_o <= ctrl.enable and ((ctrl.irq_rx_avail and rx_fifo.avail) or ...);` (lines 255-259, CLOCKED_BY clk_i and DERIVES_FROM ctrl.irq_rx_avail at occurrence 3), reset to '0' (line 253). The request leaves this entity through an output port to a consumer not supplied, so its integrity property (the consumer receives exactly the decision of lines 255-259) is Established. Availability is also Established: an enabled condition must raise the request on the next clock edge. irq_o is the exit port, ahead of its storage role. The enables and status inputs are listed under their own concepts; rx_fifo.avail and tx_fifo.half are only read as data and are carriers.",
+   "related structural assets": [
+    {"asset rtl": "irq_o", "entity": "neorv32_spi", "realization": "exit port", "occurrence": 3, "edge": {"type": "DERIVES_FROM", "partner": "ctrl.irq_rx_avail"}}
+   ]
+  },
+  {
+   "concept": "Bus-side FIFO access decisions -- whether a bus access pushes a transmit entry or pops a received byte",
+   "security objective": "Integrity",
+   "reasoning": "`tx_fifo.we <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '1') else '0';` (line 212) and `rx_fifo.re <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(2) = '1') else '0';` (line 246) are decisions computed here and delivered to the FIFO sub-units (we_i line 203, re_i line 238), which are not supplied. Their integrity property (each FIFO receives exactly these push and pop decisions) is Established from those lines. Both fields are computed here from a decision, so the sub-unit wiring exception holds; each computes its decision (GATED_BY bus_req_i.stb at occurrence 3). The bus request fields are transport and are not listed.",
+   "related structural assets": [
+    {"asset rtl": "tx_fifo.we", "entity": "neorv32_spi", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "bus_req_i.stb"}},
+    {"asset rtl": "rx_fifo.re", "entity": "neorv32_spi", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "bus_req_i.stb"}}
+   ]
+  },
+  {
+   "concept": "Engine-side FIFO hand-off -- popping the next transmit entry and the transfer-complete push of a received byte",
+   "security objective": "Integrity",
+   "reasoning": "`tx_fifo.re <= '1' when (rtx_engine.state = \"100\") else '0';` (line 214, GATED_BY rtx_engine.state at occurrence 3) is delivered to tx_fifo_inst.re_i (line 206). The completion event is computed by `rtx_engine.done <= '1';` under `if (rtx_engine.bitcnt(3) = '1')` (lines 319-321, GATED_BY rtx_engine.bitcnt at occurrence 5), cleared each cycle (line 278), and delivered unchanged through `rx_fifo.we <= rtx_engine.done;` (line 245) to rx_fifo_inst.we_i (line 235). Their consumers are sub-units not supplied, so integrity (each FIFO pops and pushes exactly when the engine defines) is Established. Availability is also Established: without the done pulse no received byte reaches the receive FIFO. tx_fifo.re and rtx_engine.done compute the decisions; rx_fifo.we only copies rtx_engine.done into the sub-unit and is a carrier.",
+   "related structural assets": [
+    {"asset rtl": "tx_fifo.re", "entity": "neorv32_spi", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "rtx_engine.state"}},
+    {"asset rtl": "rtx_engine.done", "entity": "neorv32_spi", "realization": "computes", "occurrence": 5, "edge": {"type": "GATED_BY", "partner": "rtx_engine.bitcnt"}}
+   ]
+  }
+ ]
+}

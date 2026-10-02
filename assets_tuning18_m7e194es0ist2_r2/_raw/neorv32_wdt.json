@@ -1,0 +1,332 @@
+{
+  "module name": "neorv32_wdt",
+  "module purpose": "Watchdog timer with a bus-accessible control register set (enable/lock/strict/timeout), a prescaler input, a 24-bit counter that increments on prescaler ticks, and reset generation (timeout or forced-access). It exports an enable bit and a system reset output and reports registers / reset cause over the bus.",
+  "use-case flows": [
+    {
+      "flow": "configure",
+      "value": "Write the control registers (enable, lock, strict, timeout) from bus requests into the module's ctrl record",
+      "lines": [90,91,92,93,94,95,96,97]
+    },
+    {
+      "flow": "start",
+      "value": "Password-protected software reset of the watchdog (write reset password to trigger reset_wdt)",
+      "lines": [101,102,103,104,105]
+    },
+    {
+      "flow": "operate",
+      "value": "Prescaler-driven watchdog counting: prsc_tick enables cnt_inc/cnt_started; cnt increments and when cnt == ctrl.timeout cnt_timeout is asserted (leading to hw_rst_timeout)",
+      "lines": [122,129,130,131,133,134,135,144,155]
+    },
+    {
+      "flow": "report",
+      "value": "Readback of control bits and reset cause on bus_rsp_o.data in response to bus reads",
+      "lines": [108,109,110,111,112,113]
+    },
+    {
+      "flow": "lock",
+      "value": "Locking the control register: ctrl.lock freezes further control writes and causes a forced-reset flag on write attempts when locked",
+      "lines": [93,94,95,98,99,100]
+    },
+    {
+      "flow": "reset",
+      "value": "Resets: (a) external system reset rstn_sys_i clears registers and counters; (b) hardware resets are produced from timeout or forced-access and driven out on rstn_o; reset_cause is recorded",
+      "lines": [73,74,75,76,79,80,81,124,127,149,151,155,156,161,168,169,171,172,173,174,175,176]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Watchdog enable (ctrl.enable): the configuration bit that enables counting and participates in reset generation and export",
+      "security objective": "Integrity",
+      "reasoning": "The bus write path stores ctrl.enable from bus_req_i.data(ctrl_enable_c) (bus_access: assignment at line 94), the register is clocked (CLOCKED_BY to clk_i, line 94), ctrl.enable gates counter start (wdt_counter line 130) and timeout reset generation (reset_generator line 155) and is exported (clkgen_en_o <= ctrl.enable at line 140) and read back on bus reads (bus_rsp_o.data copy at line 109). Map evidence: bus_req_i.data SOURCES ctrl.enable at the bus write occurrence (bus_req_i occurrence 6 / line 94), ctrl.enable CLOCKED_BY at occurrence 3 / line 94, clkgen_en_o COPIES ctrl.enable at occurrence 2 / line 140, and bus_rsp_o.data COPIES ctrl.enable at occurrence 6 / line 109.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.enable",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {"type":"CLOCKED_BY","partner":"clk_i"}
+        },
+        {
+          "asset rtl": "bus_req_i",
+          "entity": "neorv32_wdt",
+          "realization": "sets",
+          "occurrence": 6,
+          "edge": {"type":"SOURCES","partner":"ctrl.enable"}
+        },
+        {
+          "asset rtl": "clkgen_en_o",
+          "entity": "neorv32_wdt",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {"type":"COPIES","partner":"ctrl.enable"}
+        },
+        {
+          "asset rtl": "bus_rsp_o",
+          "entity": "neorv32_wdt",
+          "realization": "exit port",
+          "occurrence": 6,
+          "edge": {"type":"COPIES","partner":"ctrl.enable"}
+        }
+      ]
+    },
+    {
+      "concept": "Control lock (ctrl.lock): the configuration bit that freezes control writes and causes a forced-reset on write attempts when set",
+      "security objective": "Integrity",
+      "reasoning": "Writes to the control register group are allowed only when ctrl.lock = '0' (bus_access lines 92-99); attempting a write when locked sets reset_force (lines 98-100). ctrl.lock itself is written from bus_req_i.data(ctrl_lock_c) (line 95) and stored as a clocked register. Map evidence: the write is gated by bus_req_i.data(ctrl_lock_c) and ctrl.enable (bus_req_i occurrence 7 / line 95, GATES -> ctrl.lock), ctrl.lock is CLOCKED_BY clk_i at occurrence 4 / line 95, and bus readback copies ctrl.lock to bus_rsp_o.data at occurrence 7 / line 110.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.lock",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {"type":"CLOCKED_BY","partner":"clk_i"}
+        },
+        {
+          "asset rtl": "bus_req_i",
+          "entity": "neorv32_wdt",
+          "realization": "sets",
+          "occurrence": 7,
+          "edge": {"type":"GATES","partner":"ctrl.lock"}
+        },
+        {
+          "asset rtl": "bus_rsp_o",
+          "entity": "neorv32_wdt",
+          "realization": "exit port",
+          "occurrence": 7,
+          "edge": {"type":"COPIES","partner":"ctrl.lock"}
+        }
+      ]
+    },
+    {
+      "concept": "Strict mode (ctrl.strict): the configuration bit that enables forced-reset-on-invalid-access behavior",
+      "security objective": "Integrity",
+      "reasoning": "ctrl.strict is written by bus accesses (assignment at line 96) and stored in a register; when set it participates in computing hw_rst_access (reset_generator line 156). Map evidence: bus write SOURCES ctrl.strict at bus_req_i occurrence 8 / line 96, ctrl.strict is CLOCKED_BY clk_i at ctrl.strict occurrence 3 / line 96, and bus_rsp_o.data COPIES ctrl.strict at bus_rsp_o occurrence 9 / line 112.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.strict",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {"type":"CLOCKED_BY","partner":"clk_i"}
+        },
+        {
+          "asset rtl": "bus_req_i",
+          "entity": "neorv32_wdt",
+          "realization": "sets",
+          "occurrence": 8,
+          "edge": {"type":"SOURCES","partner":"ctrl.strict"}
+        },
+        {
+          "asset rtl": "bus_rsp_o",
+          "entity": "neorv32_wdt",
+          "realization": "exit port",
+          "occurrence": 9,
+          "edge": {"type":"COPIES","partner":"ctrl.strict"}
+        }
+      ]
+    },
+    {
+      "concept": "Timeout setting (ctrl.timeout): the configured counter value that determines when the watchdog times out",
+      "security objective": "Integrity",
+      "reasoning": "The timeout field is written from bus_req_i.data bits (line 97) and stored (CLOCKED_BY) and is compared to cnt to form cnt_timeout (line 144) which gates hw_rst_timeout (line 155). Map evidence: bus_req_i.data SOURCES ctrl.timeout at bus_req_i occurrence 9 / line 97, ctrl.timeout is CLOCKED_BY clk_i at ctrl.timeout occurrence 3 / line 97, and bus_rsp_o.data COPIES ctrl.timeout at bus_rsp_o occurrence 10 / line 113. The equality test deriving cnt_timeout is at line 144 (map CONSTRAINS between cnt and ctrl.timeout).",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.timeout",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {"type":"CLOCKED_BY","partner":"clk_i"}
+        },
+        {
+          "asset rtl": "bus_req_i",
+          "entity": "neorv32_wdt",
+          "realization": "sets",
+          "occurrence": 9,
+          "edge": {"type":"SOURCES","partner":"ctrl.timeout"}
+        },
+        {
+          "asset rtl": "bus_rsp_o",
+          "entity": "neorv32_wdt",
+          "realization": "exit port",
+          "occurrence": 10,
+          "edge": {"type":"COPIES","partner":"ctrl.timeout"}
+        }
+      ]
+    },
+    {
+      "concept": "Watchdog counter value (cnt) and increment decision (cnt_inc): the runtime counter that is compared to ctrl.timeout",
+      "security objective": "Integrity",
+      "reasoning": "The wdt_counter process holds the 24-bit counter (cnt) and updates it on rising clk when cnt_inc is asserted (cnt increment/update at lines 132-135). The increment decision cnt_inc is driven by prsc_tick and cnt_started (assignment at line 129), and the equality (cnt = ctrl.timeout) is used to produce cnt_timeout (line 144). Map evidence: cnt is CLOCKED_BY clk_i (cnt occurrence 3 / lines 132,134), cnt_inc is assigned from prsc_tick and cnt_started (cnt_inc GATED_BY at cnt_inc occurrence 3 / line 129; map shows GATED_BY targets including prsc_tick) and cnt has GATED_BY records showing influence by reset_wdt and ctrl.enable (cnt occurrence 3 / line 132).",
+      "related structural assets": [
+        {
+          "asset rtl": "cnt",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {"type":"CLOCKED_BY","partner":"clk_i"}
+        },
+        {
+          "asset rtl": "cnt_inc",
+          "entity": "neorv32_wdt",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {"type":"GATED_BY","partner":"prsc_tick"}
+        },
+        {
+          "asset rtl": "reset_wdt",
+          "entity": "neorv32_wdt",
+          "realization": "sets",
+          "occurrence": 4,
+          "edge": {"type":"GATED_BY","partner":"bus_req_i.data"}
+        }
+      ]
+    },
+    {
+      "concept": "Counter started flag (cnt_started): whether the counter is running (enables counting progression)",
+      "security objective": "Integrity",
+      "reasoning": "cnt_started is set from ctrl.enable and prsc_tick (assignment at line 130) and gates counting (cnt_inc uses cnt_started at line 129). The value is stored (CLOCKED_BY clk_i) so its integrity matters to whether counting and eventual timeout occur. Map evidence: cnt_started CLOCKED_BY clk_i at occurrence 4 / line 130, and ctrl.enable GATES cnt_started (ctrl.enable map shows GATES at occurrence 6 / line 130 targeting cnt_started).",
+      "related structural assets": [
+        {
+          "asset rtl": "cnt_started",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {"type":"CLOCKED_BY","partner":"clk_i"}
+        },
+        {
+          "asset rtl": "ctrl.enable",
+          "entity": "neorv32_wdt",
+          "realization": "sets",
+          "occurrence": 6,
+          "edge": {"type":"GATES","partner":"cnt_started"}
+        }
+      ]
+    },
+    {
+      "concept": "Prescaler tick input (clkgen_i -> prsc_tick): the external prescaler bit that produces prsc_tick used to drive counting",
+      "security objective": "Integrity",
+      "reasoning": "prsc_tick is derived from the clkgen_i input (assignment at line 141) and prsc_tick participates in cnt_inc and hw_rst_timeout gating (lines 129 and 155). Map evidence: clkgen_i SOURCES prsc_tick at clkgen_i occurrence 2 / line 141 and prsc_tick DERIVES_FROM clkgen_i at prsc_tick occurrence 4 / line 141; prsc_tick GATES cnt_inc and hw_rst_timeout (map records at lines 129 and 155). The integrity of the clkgen_i bit used (clk_div4096_c) therefore matters to counting and timeout.",
+      "related structural assets": [
+        {
+          "asset rtl": "clkgen_i",
+          "entity": "neorv32_wdt",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {"type":"SOURCES","partner":"prsc_tick"}
+        },
+        {
+          "asset rtl": "prsc_tick",
+          "entity": "neorv32_wdt",
+          "realization": "computes",
+          "occurrence": 4,
+          "edge": {"type":"DERIVES_FROM","partner":"clkgen_i"}
+        }
+      ]
+    },
+    {
+      "concept": "Password-protected WDT reset request (reset_wdt): the write-of-password decision that clears/affects counting",
+      "security objective": "Integrity",
+      "reasoning": "A bus write to the reset register path compares bus_req_i.data(31 downto 0) to the compile-time constant reset_pwd_c and sets reset_wdt <= '1' only on equality (bus_access lines 101-104). Map evidence: bus_req_i.data GATES reset_wdt at bus_req_i occurrence 10 / line 102 (the equality test) and reset_wdt is updated (CLOCKED_BY clk_i at reset_wdt occurrence 4 / line 103). The RTL explicitly enforces equality to reset_pwd_c (line 102), establishing that integrity of the written password determines whether reset_wdt is asserted.",
+      "related structural assets": [
+        {
+          "asset rtl": "bus_req_i",
+          "entity": "neorv32_wdt",
+          "realization": "sets",
+          "occurrence": 10,
+          "edge": {"type":"GATES","partner":"reset_wdt"}
+        },
+        {
+          "asset rtl": "reset_wdt",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {"type":"CLOCKED_BY","partner":"clk_i"}
+        }
+      ]
+    },
+    {
+      "concept": "Forced-reset flag from invalid/forbidden access (reset_force): the internal flag set on bad writes that can lead to hw_rst_access",
+      "security objective": "Integrity",
+      "reasoning": "When a bus write targets a locked control register (addr(2) = '0' branch) or a write with incorrect password occurs, reset_force is set to '1' (bus_access lines 98-106). hw_rst_access uses reset_force together with ctrl.strict and ctrl.enable to produce a hardware reset (reset_generator line 156). Map evidence: reset_force has constant drivers showing '1' on the write occurrences (reset_force occurrence 4 at line 99 and occurrence 5 at line 105), reset_force is CLOCKED_BY clk_i (occurrence 3/line 88 and occurrence 4/line 99), and reset_force GATED_BY ctrl.lock and bus_req_i fields (map records at occurrences 4/5 / lines 99/105).",
+      "related structural assets": [
+        {
+          "asset rtl": "reset_force",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {"type":"CLOCKED_BY","partner":"clk_i"}
+        },
+        {
+          "asset rtl": "reset_force",
+          "entity": "neorv32_wdt",
+          "realization": "computes",
+          "occurrence": 4,
+          "edge": {"type":"GATED_BY","partner":"ctrl.lock"}
+        }
+      ]
+    },
+    {
+      "concept": "System reset decision and output (hw_rst_timeout / hw_rst_access -> rstn_o): the hardware reset signals and the exported rstn_o line",
+      "security objective": "Integrity",
+      "reasoning": "Hardware reset signals are computed and stored (hw_rst_timeout <= ctrl.enable and cnt_timeout and prsc_tick at line 155; hw_rst_access <= ctrl.enable and ctrl.strict and reset_force at line 156) and rstn_o is driven as not (hw_rst_timeout or hw_rst_access) (line 161). The RTL therefore establishes the integrity property that rstn_o must reflect those internal decisions. Map evidence: hw_rst_timeout is CLOCKED_BY clk_i (occurrence 3 / line 155) and GATES reset_cause (occurrence 5 / line 173), hw_rst_access is CLOCKED_BY clk_i (occurrence 3 / line 156) and GATES reset_cause (occurrence 5 / line 175), and rstn_o DERIVES_FROM hw_rst_access/hw_rst_timeout at rstn_o occurrence 2 / line 161.",
+      "related structural assets": [
+        {
+          "asset rtl": "hw_rst_timeout",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {"type":"CLOCKED_BY","partner":"clk_i"}
+        },
+        {
+          "asset rtl": "hw_rst_access",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {"type":"CLOCKED_BY","partner":"clk_i"}
+        },
+        {
+          "asset rtl": "rstn_o",
+          "entity": "neorv32_wdt",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {"type":"DERIVES_FROM","partner":"hw_rst_access"}
+        }
+      ]
+    },
+    {
+      "concept": "Reset cause register (reset_cause): recorded reason for the last reset (external debug reset, timeout, or access)",
+      "security objective": "Integrity",
+      "reasoning": "reset_cause is assigned on external debug reset (rstn_dbg_i = '0' -> \"01\" at line 171) or on hw_rst_timeout / hw_rst_access (lines 173-176) and is reported on bus reads (bus_rsp_o.data <= reset_cause at line 111). Map evidence: rstn_dbg_i GATES reset_cause at rstn_dbg_i occurrence 2 / line 171, hw_rst_timeout and hw_rst_access GATE reset_cause at their occurrences (map lines 173,175), reset_cause is CLOCKED_BY clk_i (reset_cause occurrence 4 / line 172), and bus_rsp_o.data COPIES reset_cause at bus_rsp_o occurrence 8 / line 111.",
+      "related structural assets": [
+        {
+          "asset rtl": "reset_cause",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {"type":"CLOCKED_BY","partner":"clk_i"}
+        },
+        {
+          "asset rtl": "rstn_dbg_i",
+          "entity": "neorv32_wdt",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {"type":"GATES","partner":"reset_cause"}
+        },
+        {
+          "asset rtl": "hw_rst_timeout",
+          "entity": "neorv32_wdt",
+          "realization": "sets",
+          "occurrence": 5,
+          "edge": {"type":"GATES","partner":"reset_cause"}
+        },
+        {
+          "asset rtl": "bus_rsp_o",
+          "entity": "neorv32_wdt",
+          "realization": "exit port",
+          "occurrence": 8,
+          "edge": {"type":"COPIES","partner":"reset_cause"}
+        }
+      ]
+    }
+  ]
+}

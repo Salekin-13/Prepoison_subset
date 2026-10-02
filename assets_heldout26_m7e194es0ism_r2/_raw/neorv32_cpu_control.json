@@ -1,0 +1,266 @@
+{
+  "module name": "neorv32_cpu_control",
+  "conceptual assets": [
+    {
+      "concept": "Program counter state (current and next PC) used for fetching and control-flow",
+      "security objective": "Integrity",
+      "reasoning": "The FSM stores and updates program counters and exports them to the frontend: on reset execute_engine.pc is set from BOOT_ADDR in execute_engine_fsm_sync; the synchronous update copies exe_engine <= exe_engine_nxt on rising_edge(clk_i); EX_EXECUTE and other states set exe_engine_nxt.pc2 and EX_DISPATCH sets exe_engine_nxt.pc <= exe_engine.pc2. The PC values are exported: ctrl_o.pc_cur <= exe_engine.pc(...) and ctrl_o.pc_nxt <= exe_engine.pc2(...). Corrupting these stored/produced values makes fetch and control-flow incorrect, establishing an integrity requirement.",
+      "related structural assets": [
+        {
+          "asset rtl": "exe_engine.pc",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "exe_engine.pc2",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl_o",
+          "entity": "neorv32_cpu_control",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Current instruction word (instruction register) that determines decoding and immediate/branch semantics",
+      "security objective": "Integrity",
+      "reasoning": "The instruction register exe_engine.ir is loaded from the frontend in EX_DISPATCH (exe_engine_nxt.ir <= frontend_i.instr when frontend_i.valid) and is used throughout the RTL: immediate generation (imm_gen uses exe_engine.ir), branch_check and illegal_check read exe_engine.ir to decide branch and legality. The module exports decoded fields derived from exe_engine.ir via ctrl_o.ir_* assignments. Corruption of the stored instruction violates decoding and control decisions, establishing integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "exe_engine.ir",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl_o",
+          "entity": "neorv32_cpu_control",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Execution control commands issued to datapath (control bus) that drive ALU/LSU/RF actions",
+      "security objective": "Integrity",
+      "reasoning": "The combinational FSM computes ctrl_nxt fields (alu_op, rf_wb_en, lsu_req, lsu_rw, lsu_amo, alu_opa_mux, alu_opb_mux, etc.) and the synchronous process updates ctrl <= ctrl_nxt on clock edges (execute_engine_fsm_sync). Those control fields are exported to the datapath: ctrl_o.* <= ctrl.* (e.g. ctrl_o.alu_op <= ctrl.alu_op). Incorrect control signals would change executed operations; the RTL therefore establishes an integrity requirement for these stored/computed control commands.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl_o",
+          "entity": "neorv32_cpu_control",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Branch-taken decision that selects control-flow targets",
+      "security objective": "Integrity",
+      "reasoning": "The branch_check process computes branch_taken from exe_engine.ir fields and alu_cmp_i (branch_check uses exe_engine.ir and alu_cmp_i to set branch_taken). execute_engine_fsm_comb uses branch_taken in EX_BRANCH to update exe_engine_nxt.pc2 and to choose state transitions and if_reset. The computed decision therefore controls program flow; its correctness is an integrity requirement.",
+      "related structural assets": [
+        {
+          "asset rtl": "branch_taken",
+          "entity": "neorv32_cpu_control",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "alu_cmp_i",
+          "entity": "neorv32_cpu_control",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "CSR write-enable decision that gates modification of control-and-status registers",
+      "security objective": "Integrity",
+      "reasoning": "The combinational FSM sets csr.we_nxt for CSR-writing instruction cases; csr_write_access updates csr.we <= csr.we_nxt and gates CSR updates with (not trap_ctrl.exc_buf(exc_illegal_c)). Many CSR fields (mtvec, mepc, mcause, mie, etc.) are updated only when csr.we='1' (see csr_write_access 'if (csr.we = '1') then ...'). Therefore the computed/stored csr.we decision controls whether privileged state is modified; its integrity is established by the RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "csr.we_nxt",
+          "entity": "neorv32_cpu_control",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "csr.we",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl_o",
+          "entity": "neorv32_cpu_control",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "CSR address selecting which CSR is accessed",
+      "security objective": "Integrity",
+      "reasoning": "csr_addr_reg stores csr.addr from the instruction immediate when opcode = opcode_system_c; both csr_write_access and csr_read_access use csr.addr to select which CSR field to update or return (many 'if (csr.addr = csr_... ) then ...' branches). The stored CSR address therefore determines which privileged state is modified or read; correctness of csr.addr is an integrity requirement established by the RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "csr.addr",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl_o",
+          "entity": "neorv32_cpu_control",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Privilege level state and its effective view used for legality and interrupt decisions",
+      "security objective": "Integrity",
+      "reasoning": "The RTL stores privilege in csr.prv_level and derives csr.prv_level_eff <= priv_mode_m_c when (debug_ctrl.run = '1') else csr.prv_level. Privilege is consulted in legality checks (illegal_check uses csr.prv_level for mret/dret/wfi decisions) and in interrupt gating (trap_ctrl.irq_fire checks csr.prv_level). The stored and computed privilege values therefore determine allowed operations and interrupt behavior; integrity of these fields is established by the RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "csr.prv_level",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr.prv_level_eff",
+          "entity": "neorv32_cpu_control",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Global and per-source interrupt enable masks that gate which IRQs cause traps",
+      "security objective": "Integrity",
+      "reasoning": "trap_buffer computes trap_ctrl.irq_buf entries using per-source enable bits and env_pending: e.g. trap_ctrl.irq_buf(irq_msi_irq_c) <= (trap_ctrl.irq_pnd(irq_msi_irq_c) and csr.mie_msi) or (...); trap_ctrl.irq_fire uses csr.mstatus_mie and csr.prv_level to decide whether interrupts fire. These CSR bits (csr.mstatus_mie, csr.mie_msi, csr.mie_mei, csr.mie_mti, csr.mie_firq) therefore control which external/inter-core IRQs can become traps; their integrity is established by the RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "csr.mstatus_mie",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr.mie_msi",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr.mie_mei",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr.mie_mti",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr.mie_firq",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Interrupt request and buffering state and the irq_fire decisions that invoke traps",
+      "security objective": "Integrity",
+      "reasoning": "trap_buffer latches external IRQ sources into trap_ctrl.irq_pnd from irq_machine_i and irq_fast_i and then computes/latches trap_ctrl.irq_buf entries (masked by CSR enables or held during env_pending). The RTL then computes trap_ctrl.irq_fire(0..2) (concurrent assignments) and trap_controller uses irq_fire/or_reduce(...) to set trap_ctrl.env_pending and trigger trap entry. The stored pending/buffer state and the computed irq_fire decisions therefore directly determine trap invocation; their integrity is established by the RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "trap_ctrl.irq_pnd",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "trap_ctrl.irq_buf",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "trap_ctrl.irq_fire",
+          "entity": "neorv32_cpu_control",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Exception pending buffer and exception-fire decision used to enter traps on faults",
+      "security objective": "Integrity",
+      "reasoning": "trap_buffer updates trap_ctrl.exc_buf bits from lsu_err_i and local fault indicators (e.g. trap_ctrl.instr_ma, trap_ctrl.instr_be); the RTL defines trap_ctrl.exc_fire <= '1' when or_reduce_f(trap_ctrl.exc_buf) = '1'. trap_controller and trap_priority use exc_buf and exc_fire to set env_pending and to pick the prioritized cause. The exception buffer contents and the exc_fire decision therefore control fault entry behavior; integrity is established by the RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "trap_ctrl.exc_buf",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "trap_ctrl.exc_fire",
+          "entity": "neorv32_cpu_control",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Prioritized trap cause and the computed trap EPC that determine trap vector selection",
+      "security objective": "Integrity",
+      "reasoning": "trap_priority registers trap_ctrl.cause on rising_edge(clk_i) by selecting the highest-priority exc_buf or irq_buf entry; trap_ctrl.epc is assigned from exe_engine.pc2 or exe_engine.pc based on the cause MSB (concurrent assignment). csr_write_access uses trap_ctrl.cause and trap_ctrl.epc on env_enter to set CSR fields (mcause, mepc, mtval, mtinst). The prioritized cause value and the EPC computation therefore determine where control transfers and what context is recorded; their integrity is established by the RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "trap_ctrl.cause",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "trap_ctrl.epc",
+          "entity": "neorv32_cpu_control",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "csr.mcause",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Trap-context CSRs recorded on trap entry (mepc, mcause, mtval, mtinst)",
+      "security objective": "Integrity",
+      "reasoning": "On trap entry (csr_write_access when trap_ctrl.env_enter = '1') the RTL writes privileged context into CSRs: csr.mcause <= trap_ctrl.cause(...), csr.mepc <= trap_ctrl.epc(...), csr.mtval <= lsu_mar_i or zero, and csr.mtinst <= exe_engine.ir (conditioned on cause bits). These stored CSR fields represent the trap context that software and debug use; their correctness is enforced by RTL assignments and thus integrity is established.",
+      "related structural assets": [
+        {
+          "asset rtl": "csr.mepc",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr.mcause",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr.mtval",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr.mtinst",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Debug run state that controls debug-mode entry/exit and alters privilege/trap behavior",
+      "security objective": "Integrity",
+      "reasoning": "When debug is enabled the debug_control process sets debug_ctrl.run based on trap_ctrl.env_enter and trap_ctrl.env_exit; the RTL uses debug_ctrl.run in EX_TRAP_ENTER (to select DEBUG_PARK_ADDR/DEBUG_EXC_ADDR), in trap_ctrl.irq_fire gating and in csr.prv_level_eff derivation. The stored debug_ctrl.run therefore changes control-flow and privilege interpretation; its integrity is established by the RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "debug_ctrl.run",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        }
+      ]
+    }
+  ]
+}

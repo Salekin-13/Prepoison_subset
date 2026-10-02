@@ -1,0 +1,393 @@
+{
+  "module name": "neorv32_bus",
+  "module purpose": "The supplied RTL implements the Neorv32 bus infrastructure: it arbitrates and multiplexes requests from multiple masters (A, B, core, main, etc.) to shared device/system ports (x_req_o/sys_req_o/device_req_o), decodes addresses to target device ports, optionally registers requests/responses, implements AMO (read-modify-write) and RVS store-conditional semantics, and monitors outstanding transactions for timeouts; it reads master request ports, holds/arbitrates state, and drives request and response ports to devices and masters.",
+  "use-case flows": [
+    {
+      "flow": "start",
+      "value": "transaction start (strobe): a master's stb is captured/accumulated and the arbiter asserts the internal start decision copied to the outgoing request strobe",
+      "lines": [
+        61,
+        66,
+        83,
+        115,
+        127,
+        158
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "request multiplexing/forwarding: the selected master's request fields (addr, data, rw, src, priv, lock, amo, amoop, debug, ben, fence) are forwarded to the shared output x_req_o",
+      "lines": [
+        140,
+        141,
+        142,
+        143,
+        144,
+        145,
+        146,
+        150,
+        151,
+        152,
+        154,
+        156
+      ]
+    },
+    {
+      "flow": "lock",
+      "value": "request lock capture and hold: per-request lock bits are captured into locked/locked_nxt and hold or release the busy state",
+      "lines": [
+        51,
+        57,
+        88,
+        100,
+        111,
+        143,
+        225
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "response aggregation and forwarding: responses from devices are OR-aggregated (gateway) and gated back to the requesting master (a_rsp_o, b_rsp_o) with error/ack gating by selection and keeper.err",
+      "lines": [
+        387,
+        395,
+        399,
+        400,
+        401,
+        163,
+        164,
+        165,
+        167,
+        168,
+        169
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "AMO read-modify-write: core_req_i triggers a read, the arbiter captures rdata, the ALU computes alu_res, the core issues a write with alu_res to sys_req_o and finally the core receives the response",
+      "lines": [
+        777,
+        779,
+        785,
+        813,
+        826,
+        833,
+        839,
+        844
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "RVS store-conditional result: rvso detection and sc_result set sc_fail, which alters the core response (ack/data)",
+      "lines": [
+        935,
+        953,
+        957,
+        962,
+        963,
+        964
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "registers and state are cleared by active-low rstn_i (bus switch, regs, gateway keeper, AMO arbiter and ALU, RVS sc_fail)",
+      "lines": [
+        48,
+        219,
+        243,
+        408,
+        757,
+        903,
+        955
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Multiplexed system request (the request record sent out on the shared bus: x_req_o)",
+      "security objective": "Integrity",
+      "reasoning": "The switch computes and forwards one master's request fields to the external/system port: the RTL assigns each x_req_o field from a_req_i or b_req_i under sel (for example x_req_o.addr <= a_req_i.addr when (sel = '0') else b_req_i.addr at line 140; x_req_o.data selection and PORT_A/B_READ_ONLY conditions at lines 150-152; x_req_o.stb is driven from internal stb at line 158). The relationship map records these exact deliveries (x_req_o.addr DERIVES_FROM a_req_i.addr / b_req_i.addr at line 140, x_req_o.data DERIVES_FROM a_req_i.data / b_req_i.data gated by sel at line 150, x_req_o.stb COPIES stb at line 158). Because the consumer of x_req_o is external to this file, the RTL lines that deliver x_req_o establish an integrity property the system depends on: the selected master's address/control/data/strobe must be forwarded exactly as defined by these assignments and gates.",
+      "related structural assets": [
+        {
+          "asset rtl": "x_req_o",
+          "entity": "neorv32_bus_switch",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "a_req_i.addr"
+          }
+        },
+        {
+          "asset rtl": "a_req_i",
+          "entity": "neorv32_bus_switch",
+          "realization": "sets",
+          "occurrence": 9,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "x_req_o.addr"
+          }
+        },
+        {
+          "asset rtl": "b_req_i",
+          "entity": "neorv32_bus_switch",
+          "realization": "sets",
+          "occurrence": 9,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "x_req_o.addr"
+          }
+        },
+        {
+          "asset rtl": "sel",
+          "entity": "neorv32_bus_switch",
+          "realization": "computes",
+          "occurrence": 4,
+          "edge": {
+            "type": "SELECTED_BY",
+            "partner": "state"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Arbitration decision (which master is granted / current busy state)",
+      "security objective": "Integrity",
+      "reasoning": "The FSM stores and advances the arbitration state that determines which master's request is forwarded: arbiter_sync updates state and sel_q on the clock (state <= state_nxt; sel_q <= sel at lines 55-57) and arbiter_fsm sets sel and state_nxt in the case over state (lines 83-131). The relationship map shows the state register CLOCKED_BY clk_i (state CLOCKED_BY at line 55) and sel_q CLOCKED_BY clk_i (line 56), and state_nxt SELECTED_BY the case arms (lines 116/120/126/130). Corruption of these stored/clocked decisions would make the switch forward the wrong master or fail to return to idle, so their integrity is established by these RTL assignments and gating.",
+      "related structural assets": [
+        {
+          "asset rtl": "state",
+          "entity": "neorv32_bus_switch",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "sel_q",
+          "entity": "neorv32_bus_switch",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "state_nxt",
+          "entity": "neorv32_bus_switch",
+          "realization": "computes",
+          "occurrence": 8,
+          "edge": {
+            "type": "SELECTED_BY",
+            "partner": "state"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Transaction start (internal strobe decision that begins a transfer)",
+      "security objective": "Integrity",
+      "reasoning": "The start strobe is computed from masters' strobe inputs and from accumulated a_req/b_req and then copied to the external request strobe: arbiter_sync accumulates a_req/b_req from a_req_i.stb/b_req_i.stb (line 61 and line 66), arbiter_fsm drives stb in the chosen case arms (lines 83-131) and x_req_o.stb COPIES stb (line 158). The relationship map records these steps (a_req <= a_req or a_req_i.stb at line 61, b_req <= b_req or b_req_i.stb at line 66, stb selected in the FSM at lines 115/119/125/129 and x_req_o.stb COPIES stb at line 158). The integrity of the start decision is established because these RTL assignments define exactly when the external transaction is issued.",
+      "related structural assets": [
+        {
+          "asset rtl": "stb",
+          "entity": "neorv32_bus_switch",
+          "realization": "computes",
+          "occurrence": 5,
+          "edge": {
+            "type": "SELECTED_BY",
+            "partner": "state"
+          }
+        },
+        {
+          "asset rtl": "a_req",
+          "entity": "neorv32_bus_switch",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "b_req",
+          "entity": "neorv32_bus_switch",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "x_req_o",
+          "entity": "neorv32_bus_switch",
+          "realization": "exit port",
+          "occurrence": 13,
+          "edge": {
+            "type": "COPIES",
+            "partner": "stb"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Request lock state (per-master lock bits that hold a busy grant)",
+      "security objective": "Integrity",
+      "reasoning": "Lock bits are captured and used to keep the arbiter in a busy state: the FSM saves locked <= locked_nxt on the clock (line 57) and the 'when S_BUSY_A/S_BUSY_B' arms check locked(0)/locked(1) to decide whether to use the master's stb and whether to return to S_IDLE (lines 88-96 and 100-106). locked_nxt is computed in the idle arm as b_req_i.lock & a_req_i.lock (line 111). The relationship map shows locked CLOCKED_BY clk_i at line 57 and locked_nxt DERIVES_FROM a_req_i.lock / b_req_i.lock at line 111. The RTL therefore establishes integrity for the lock bits: they determine whether the grant persists and when the FSM may return to idle.",
+      "related structural assets": [
+        {
+          "asset rtl": "locked",
+          "entity": "neorv32_bus_switch",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "locked_nxt",
+          "entity": "neorv32_bus_switch",
+          "realization": "computes",
+          "occurrence": 4,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "a_req_i.lock"
+          }
+        },
+        {
+          "asset rtl": "a_req_i",
+          "entity": "neorv32_bus_switch",
+          "realization": "sets",
+          "occurrence": 6,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "locked_nxt"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Address decode result (destination port selection: port_sel)",
+      "security objective": "Integrity",
+      "reasoning": "The gateway decodes req_i.addr against configured base addresses and EN flags to drive port selection (lines 356-361) and then drives the appropriate per-port port_req entries (process request, lines 372-379; outputs at lines 366-369). The relationship map records the decode gating (port_sel(0) <= '1' when A_EN and (req_i.addr(...) = A_BASE(...)) at line 356 and similar for B/C/X at 357-361) and shows port_req DERIVES_FROM port_sel (port_req -> a_req_o/b_req_o/c_req_o/x_req_o at lines 366-369). Therefore the integrity of port_sel is established by these comparisons and matters for correct routing of requests.",
+      "related structural assets": [
+        {
+          "asset rtl": "port_sel",
+          "entity": "neorv32_bus_gateway",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATES",
+            "partner": "req_i.addr"
+          }
+        },
+        {
+          "asset rtl": "req_i",
+          "entity": "neorv32_bus_gateway",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "port_sel"
+          }
+        },
+        {
+          "asset rtl": "a_req_o",
+          "entity": "neorv32_bus_gateway",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "port_req"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Timeout/error indicator (keeper.err) that signals request failure/unavailability",
+      "security objective": "Availability",
+      "reasoning": "The gateway's keeper logic monitors outstanding requests and raises keeper.err when a transfer times out (keeper counters and halt logic, lines 415-426; keeper.err set at line 424). keeper.err is ORed into the external response outputs so that a timeout yields an error/ack path: rsp_o.ack <= int_rsp.ack or keeper.err and rsp_o.err <= int_rsp.err or keeper.err (lines 400-401). The map shows keeper.err is a clocked register (CLOCKED_BY clk_i at line 424) and that rsp_o.ack / rsp_o.err are gated by keeper.err at line 400/401. Because keeper.err changes the presence/absence of a valid response and forces error reporting, its availability property (the ability to indicate/detect a stalled transaction) is established by these RTL lines.",
+      "related structural assets": [
+        {
+          "asset rtl": "keeper.err",
+          "entity": "neorv32_bus_gateway",
+          "realization": "stores",
+          "occurrence": 6,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "rsp_o",
+          "entity": "neorv32_bus_gateway",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "keeper.err"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "AMO computed write data (alu_res) and its delivery to the system request (sys_req_o.data)",
+      "security objective": "Integrity",
+      "reasoning": "The AMO RMW sequence captures the read data, computes the write result in the ALU and drives that result as the write payload to the system when the arbiter is in the write state: the RTL captures arbiter.rdata <= sys_rsp_i.data (line 785), computes alu_res in the amo_alu process (lines 833-846), and selects sys_req_o.data <= alu_res when (arbiter.state = S_WRITE) (line 813). The relationship map records alu_res as a clocked register and sys_req_o.data DERIVES_FROM alu_res at line 813. Since the system write payload for AMO is produced here and consumed by external memory, the ALU output's integrity is established by these RTL assignments and gating.",
+      "related structural assets": [
+        {
+          "asset rtl": "alu_res",
+          "entity": "neorv32_bus_amo_rmw",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "sys_req_o",
+          "entity": "neorv32_bus_amo_rmw",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "alu_res"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "RVS store-conditional failure flag (sc_fail) used to modify the core's response",
+      "security objective": "Integrity",
+      "reasoning": "In the RVS logic, rvso is detected (line 935) and sc_result latches sc_fail on a clock edge when a store-conditional fails (sc_result process, lines 953-957). sc_fail is then used to alter the core response (core_rsp_o.ack and core_rsp_o.data at lines 963-964). The relationship map shows sc_fail CLOCKED_BY clk_i at line 957 and core_rsp_o.data DERIVES_FROM sc_fail and sys_rsp_i.data at line 964. Because sc_fail alters the content and acknowledgement of responses returned to the core, its integrity is established by these RTL operations.",
+      "related structural assets": [
+        {
+          "asset rtl": "sc_fail",
+          "entity": "neorv32_bus_amo_rvs",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "core_rsp_o",
+          "entity": "neorv32_bus_amo_rvs",
+          "realization": "exit port",
+          "occurrence": 4,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "sc_fail"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,180 @@
+{"module name": "neorv32_cpu_frontend",
+ "conceptual assets": [
+  {
+   "concept": "Program counter used for instruction fetch address and IPB half selection",
+   "security objective": "Integrity",
+   "reasoning": "fetch.pc is an internal register that the fetch FSM updates and the RTL uses to form fetch addresses and select which IPB half to write: 'ibus_req_o.addr <= fetch.pc(XLEN-1 downto 2) & \"00\";', 'if (ibus_rsp_i.ack = '1') then fetch.pc <= std_ulogic_vector(unsigned(fetch.pc) + 4);' and IPB write-enable uses fetch.pc(1): 'ipb.we(0) <= ... ((fetch.pc(1) = '0') or (not RVC_EN)) ...'. fetch.pc is also initialized from the control bus: 'fetch.pc <= ctrl_i.pc_nxt;'. Corruption of fetch.pc would violate the implemented fetch-addressing and alignment behavior, establishing an Integrity objective. Structural realization: the value is stored in fetch.pc and initially set from the ctrl_i input.",
+   "related structural assets": [
+    {
+     "asset rtl": "fetch.pc",
+     "entity": "neorv32_cpu_frontend",
+     "realization": "stores"
+    },
+    {
+     "asset rtl": "ctrl_i",
+     "entity": "neorv32_cpu_frontend",
+     "realization": "sets"
+    }
+   ]
+  },
+  {
+   "concept": "Privilege mode used for fetch/bus requests",
+   "security objective": "Integrity",
+   "reasoning": "The fetch privilege is captured into 'fetch.priv' from the control bus ('fetch.priv <= ctrl_i.cpu_priv;') and exported into the bus request ('ibus_req_o.priv <= fetch.priv;'). The RTL therefore depends on fetch.priv to carry the request privilege; incorrect privilege stored or supplied would change request attributes, establishing an Integrity objective. Structural realization: fetch.priv stores the mode and ctrl_i supplies it.",
+   "related structural assets": [
+    {
+     "asset rtl": "fetch.priv",
+     "entity": "neorv32_cpu_frontend",
+     "realization": "stores"
+    },
+    {
+     "asset rtl": "ctrl_i",
+     "entity": "neorv32_cpu_frontend",
+     "realization": "sets"
+    }
+   ]
+  },
+  {
+   "concept": "Prefetch buffer state: stored IPB entries and availability/free flags used to form instructions, fault and halt signals",
+   "security objective": "Integrity",
+   "reasoning": "Bus responses are captured into IPB write inputs ('ipb.wdata(0) <= ibus_rsp_i.err & ibus_rsp_i.data(15 downto 0);', 'ipb.wdata(1) <= ...') and each FIFO instance maps outputs into ipb.rdata(i), ipb.avail(i) and ipb.free(i) via the port map. The issue logic reads ipb.rdata(...) bits to build instructions and fault ('frontend_o.instr <= ...', 'frontend_o.fault <= ipb.rdata(...)(16);'), and ipb.avail gates frontend_o.valid while ipb.free gates request issuance and frontend_o.halted. Integrity of stored IPB entries and their avail/free flags is therefore required by the implemented flows. Structural realization: the buffer contents and status are held in ipb.rdata(0), ipb.rdata(1), ipb.avail and ipb.free.",
+   "related structural assets": [
+    {
+     "asset rtl": "ipb.rdata(0)",
+     "entity": "neorv32_cpu_frontend",
+     "realization": "stores"
+    },
+    {
+     "asset rtl": "ipb.rdata(1)",
+     "entity": "neorv32_cpu_frontend",
+     "realization": "stores"
+    },
+    {
+     "asset rtl": "ipb.avail",
+     "entity": "neorv32_cpu_frontend",
+     "realization": "stores"
+    },
+    {
+     "asset rtl": "ipb.free",
+     "entity": "neorv32_cpu_frontend",
+     "realization": "stores"
+    }
+   ]
+  },
+  {
+   "concept": "Instruction alignment state that selects halfword pairing / decompression (issue.algn)",
+   "security objective": "Integrity",
+   "reasoning": "The alignment flag issue.algn is stored and updated in 'issue_fsm_sync' ('issue.algn <= ctrl_i.pc_nxt(1)' on restart; then updated on if_ack from issue.aset/aclr) and the combinational issue logic branches on 'if (issue.algn = '0') then ... else ...' to choose which IPB halves are assembled or decompressed into frontend_o.instr. The RTL therefore depends on issue.algn for correct instruction framing; corruption alters instruction assembly, establishing Integrity. Structural realization: the flag is stored in issue.algn and initially set from ctrl_i.",
+   "related structural assets": [
+    {
+     "asset rtl": "issue.algn",
+     "entity": "neorv32_cpu_frontend",
+     "realization": "stores"
+    },
+    {
+     "asset rtl": "ctrl_i",
+     "entity": "neorv32_cpu_frontend",
+     "realization": "sets"
+    }
+   ]
+  },
+  {
+   "concept": "Issue selection decision (issue.ack) and the resulting IPB read enables (ipb.re) that control which prefetched entries are consumed",
+   "security objective": "Integrity",
+   "reasoning": "The combinational issue FSM drives 'issue.ack' to codes such as '01','10','11' while selecting frontend_o.valid/instr; the module then asserts FIFO read enables via 'ipb.re(0) <= issue.ack(0) and ctrl_i.if_ack;' and 'ipb.re(1) <= issue.ack(1) and ctrl_i.if_ack;'. The chosen ack code therefore determines which IPB entry is consumed and which bytes are presented; integrity of that decision is required by the implemented issue and consumption flow. Structural realization: the decision is computed in issue.ack and applied to the FIFOs as ipb.re(0) and ipb.re(1) (gated by ctrl_i.if_ack).",
+   "related structural assets": [
+    {
+     "asset rtl": "issue.ack",
+     "entity": "neorv32_cpu_frontend",
+     "realization": "computes"
+    },
+    {
+     "asset rtl": "ipb.re(0)",
+     "entity": "neorv32_cpu_frontend",
+     "realization": "sets"
+    },
+    {
+     "asset rtl": "ipb.re(1)",
+     "entity": "neorv32_cpu_frontend",
+     "realization": "sets"
+    },
+    {
+     "asset rtl": "ctrl_i",
+     "entity": "neorv32_cpu_frontend",
+     "realization": "sets"
+    }
+   ]
+  },
+  {
+   "concept": "Instruction and metadata presented to the pipeline (frontend_o)",
+   "security objective": "Integrity",
+   "reasoning": "The issue logic drives the frontend interface with assembled or decompressed instructions and metadata in both RVC and non-RVC flows, e.g. 'frontend_o.instr <= issue.cmd32' or 'frontend_o.instr <= ipb.rdata(1)(15 downto 0) & ipb.rdata(0)(15 downto 0)'; 'frontend_o.compr' and 'frontend_o.valid' are also assigned from issue logic; 'frontend_o.fault' is set from ipb.rdata(...)(16). The value leaving the entity via frontend_o must match these RTL transformations; corruption would violate those flows, establishing Integrity. Structural realization: the concept leaves through the frontend_o port (exit port) and is produced from internal signals such as issue.cmd32 and ipb.rdata(0)/ipb.rdata(1).",
+   "related structural assets": [
+    {
+     "asset rtl": "frontend_o",
+     "entity": "neorv32_cpu_frontend",
+     "realization": "exit port"
+    },
+    {
+     "asset rtl": "issue.cmd32",
+     "entity": "neorv32_cpu_frontend",
+     "realization": "stores"
+    },
+    {
+     "asset rtl": "ipb.rdata(0)",
+     "entity": "neorv32_cpu_frontend",
+     "realization": "stores"
+    },
+    {
+     "asset rtl": "ipb.rdata(1)",
+     "entity": "neorv32_cpu_frontend",
+     "realization": "stores"
+    }
+   ]
+  },
+  {
+   "concept": "Fetch restart control that clears FIFOs and reinitializes fetch state (fetch.restart)",
+   "security objective": "Integrity",
+   "reasoning": "fetch.restart is asserted on reset and ORed with ctrl_i.if_reset in the FSM ('fetch.restart <= fetch.restart or ctrl_i.if_reset;') and is connected to the FIFO clear input ('clear_i => fetch.restart' in the prefetch_buffer port map). The FSM also examines fetch.restart to return to S_RESTART and reload fetch.pc. Integrity of fetch.restart is required to ensure the implemented clear-and-restart behavior. Structural realization: the flag is held in fetch.restart and is driven/qualified by ctrl_i.",
+   "related structural assets": [
+    {
+     "asset rtl": "fetch.restart",
+     "entity": "neorv32_cpu_frontend",
+     "realization": "stores"
+    },
+    {
+     "asset rtl": "ctrl_i",
+     "entity": "neorv32_cpu_frontend",
+     "realization": "sets"
+    }
+   ]
+  },
+  {
+   "concept": "IPB write enables and write data that determine how bus responses are recorded into the prefetch FIFOs",
+   "security objective": "Integrity",
+   "reasoning": "The RTL computes per-half write enables ('ipb.we(0) <= '1' when (fetch.state = S_PENDING) and (ibus_rsp_i.ack = '1') and ((fetch.pc(1) = '0') or (not RVC_EN)) else '0';' and 'ipb.we(1) <= ...') and derives write data from the bus response ('ipb.wdata(0) <= ibus_rsp_i.err & ibus_rsp_i.data(15 downto 0);', 'ipb.wdata(1) <= ibus_rsp_i.err & ibus_rsp_i.data(31 downto 16);'). Those signals are connected into the FIFO ('we_i => ipb.we(i)', 'wdata_i => ipb.wdata(i)'); their correctness determines what becomes stored in the IPB, establishing an Integrity objective. Structural realization: the write-enable decisions are computed in ipb.we(0) and ipb.we(1), and the write-data inputs reside in ipb.wdata(0) and ipb.wdata(1).",
+   "related structural assets": [
+    {
+     "asset rtl": "ipb.we(0)",
+     "entity": "neorv32_cpu_frontend",
+     "realization": "computes"
+    },
+    {
+     "asset rtl": "ipb.we(1)",
+     "entity": "neorv32_cpu_frontend",
+     "realization": "computes"
+    },
+    {
+     "asset rtl": "ipb.wdata(0)",
+     "entity": "neorv32_cpu_frontend",
+     "realization": "sets"
+    },
+    {
+     "asset rtl": "ipb.wdata(1)",
+     "entity": "neorv32_cpu_frontend",
+     "realization": "sets"
+    }
+   ]
+  }
+ ]
+}

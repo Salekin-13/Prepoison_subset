@@ -1,0 +1,221 @@
+{
+  "module name": "neorv32_trng",
+  "module purpose": "neorv32_trng is a bus-controlled random-data peripheral. It stores an enable bit and a clear request from bus_req_i, runs neoTRNG to generate 8-bit samples when enabled, buffers them in a FIFO, and returns status or sample bytes through bus_rsp_o.",
+  "use-case flows": [
+    {
+      "flow": "configure",
+      "value": "enable setting written from the bus into the held control state",
+      "lines": [
+        103,
+        104,
+        105,
+        109
+      ]
+    },
+    {
+      "flow": "start",
+      "value": "enabled random-sampling operation propagated into neoTRNG and its entropy cells",
+      "lines": [
+        137,
+        304,
+        311,
+        354
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "cell outputs combined, debiased, accumulated into an 8-bit sample, and marked valid for FIFO write",
+      "lines": [
+        138,
+        139,
+        161,
+        162,
+        315,
+        320,
+        322,
+        334,
+        336,
+        341,
+        342,
+        355,
+        358,
+        359,
+        360,
+        366,
+        367
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "status readback of enable state, FIFO size, simulation mode, and buffered-data availability",
+      "lines": [
+        108,
+        109,
+        110,
+        111,
+        112
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "buffered random byte returned on a data-register read, with a FIFO read request issued",
+      "lines": [
+        114,
+        115,
+        117,
+        165,
+        166,
+        171
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "control and sampling state cleared by rstn_i low, and buffered data flushed when disabled or explicitly cleared",
+      "lines": [
+        92,
+        93,
+        94,
+        95,
+        170,
+        330,
+        331,
+        332,
+        349,
+        350,
+        351,
+        352,
+        413,
+        414,
+        467,
+        468
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "TRNG enable state",
+      "security objective": "Integrity",
+      "reasoning": "The configure/start flows depend on the held enable state: a bus write stores `enable <= bus_req_i.data(ctrl_en_c)` under the write path (lines 103-105), status readback reports it (line 109), the value is delivered to neoTRNG `enable_i` (line 137), and neoTRNG captures it in `sample_en` (line 354). When disabled, the sampler clears its accumulation state (lines 355-357) and the FIFO clear condition is forced through line 170. Integrity is established because generation and flush behavior must follow the programmed enable state; availability of random-byte production is established only while the setting remains enabled. The bus request port is a transport record, so the surviving structural references are the internal store and the consumed sub-entity input/state.",
+      "related structural assets": [
+        {
+          "asset rtl": "enable",
+          "entity": "neorv32_trng",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "enable_i",
+          "entity": "neoTRNG",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "sample_en"
+          }
+        },
+        {
+          "asset rtl": "sample_en",
+          "entity": "neoTRNG",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Decision to flush buffered random bytes",
+      "security objective": "Integrity",
+      "reasoning": "The reset/clear flow depends on the clear control: a bus write stores `fifo_clr <= bus_req_i.data(ctrl_fifo_clr_c)` (line 106), and the FIFO clear signal is computed as `'1' when (enable = '0') or (fifo_clr = '1') else '0'` (line 170) and sent to the FIFO `clear_i` port (line 157). Integrity is established because buffered random data must be discarded exactly under those RTL conditions; availability is also established because an unintended clear removes readable bytes while a missed clear retains bytes that the RTL says to flush. The transport bus request is excluded, so the internal stored request and computed clear decision are the eligible references.",
+      "related structural assets": [
+        {
+          "asset rtl": "fifo_clr",
+          "entity": "neorv32_trng",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "fifo.clear",
+          "entity": "neorv32_trng",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "fifo_clr"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Buffered-random-data availability status",
+      "security objective": "Integrity",
+      "reasoning": "The report/read-out flows depend on the non-empty status carried in `fifo.avail`: status readback copies it to the control register view (line 112), and the data-read path uses it to choose between zeros and `fifo.rdata` (lines 114-117). Integrity is established because a wrong availability status makes the module report readiness incorrectly or return the wrong zero/data behavior. `fifo.avail` is an internal record field driven by the FIFO sub-unit (connection at line 167); it is eligible under the sub-unit-wiring exception because this block tests it in the `if` at line 114.",
+      "related structural assets": [
+        {
+          "asset rtl": "fifo.avail",
+          "entity": "neorv32_trng",
+          "realization": "sets",
+          "occurrence": 4,
+          "edge": {
+            "type": "CONNECTS",
+            "partner": "rnd_pool_fifo_inst.avail_o"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Generated random byte",
+      "security objective": "Integrity",
+      "reasoning": "The operate/read-out flows depend on the byte assembled in `sample_sreg`: cell outputs are XOR-combined into `cell_sum` (lines 315-323), debiasing derives `debias_valid` and `debias_data` (lines 334-342), and on accepted bits the sampler updates `sample_cnt` and `sample_sreg` (lines 358-360). neoTRNG exports the byte as `data_o` (line 366); the top entity forwards it into the FIFO on lines 139 and 161, and later a data read can return the corresponding FIFO output on line 117. Integrity is established because downstream consumers must receive exactly the byte defined by these update rules; availability is conditionally established when accepted bits accumulate to a complete byte. The FIFO internals are unavailable and the bus response is a transport record, so the eligible references stop at the stored byte in neoTRNG and its exit port.",
+      "related structural assets": [
+        {
+          "asset rtl": "sample_sreg",
+          "entity": "neoTRNG",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "data_o",
+          "entity": "neoTRNG",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "sample_sreg"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Decision to consume one buffered random byte on a data-register read",
+      "security objective": "Integrity",
+      "reasoning": "The read-out flow depends on the FIFO read request `fifo.re`: it is asserted only for a bus access with `stb='1'`, `rw='0'`, and `addr(2)='1'` (line 171), and that decision is delivered to the FIFO `re_i` input (line 165). Integrity is established because popping under any other condition, or failing to pop on this read, changes which random byte is later available and returned; availability is also affected because extra pops deplete the pool. The bus request record is transport-excluded, so the computed internal decision is the surviving structural reference.",
+      "related structural assets": [
+        {
+          "asset rtl": "fifo.re",
+          "entity": "neorv32_trng",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "bus_req_i.stb"
+          }
+        }
+      ]
+    }
+  ]
+}

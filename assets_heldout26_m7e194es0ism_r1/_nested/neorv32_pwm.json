@@ -1,0 +1,140 @@
+{
+  "module name": "neorv32_pwm",
+  "conceptual assets": [
+    {
+      "concept": "Per-channel configuration state (enable, prescaler index, polarity, clock divider, duty)",
+      "security objective": "Integrity",
+      "reasoning": "Each channel stores configuration fields and updates them on bus writes: the channel's config_write process does `if (we_i = '1') then cfg_en <= wdata_i(31); cfg_prsc <= wdata_i(30 downto 28); cfg_pol <= wdata_i(27); cfg_cdiv <= wdata_i(17 downto 8); cfg_duty <= wdata_i(7 downto 0); end if;`. The same fields are returned on a read by the channel: `rdata_o <= cfg_en & cfg_prsc & cfg_pol & \"000000000\" & cfg_cdiv & cfg_duty when (re_i = '1') else (others => '0');`. Corruption or incorrect setting of these stored configuration values directly changes PWM generation and readback, establishing an RTL-derived Integrity property. Structural realization: the cfg_* signals are the stored configuration, wdata_i and we_i are the input points that set those stores, and rdata_o is the channel exit used to report the stored config.",
+      "related structural assets": [
+        {
+          "asset rtl": "cfg_en",
+          "entity": "neorv32_pwm_channel",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cfg_prsc",
+          "entity": "neorv32_pwm_channel",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cfg_pol",
+          "entity": "neorv32_pwm_channel",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cfg_cdiv",
+          "entity": "neorv32_pwm_channel",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cfg_duty",
+          "entity": "neorv32_pwm_channel",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "we_i",
+          "entity": "neorv32_pwm_channel",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "wdata_i",
+          "entity": "neorv32_pwm_channel",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "rdata_o",
+          "entity": "neorv32_pwm_channel",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Per-channel bus access decoding and read/write qualification (which channel a bus transaction targets and whether it is a read or write)",
+      "security objective": "Integrity",
+      "reasoning": "Top-level generate computes selection and R/W qualification per channel: `sel(i) <= '1' when (bus_req_i.addr(5 downto 2) = std_ulogic_vector(to_unsigned(i, 4))) else '0'; we(i) <= sel(i) and bus_req_i.stb and (bus_req_i.rw); re(i) <= sel(i) and bus_req_i.stb and (not bus_req_i.rw);`. Those decisions determine which channel receives writes (mapped to channel ports we_i) and reads (re_i). Incorrect selection or qualification would route, suppress or misdirect configuration updates/reads, establishing Integrity. Structural realizations: top-level sel/we/re signals are the computed decisions (computes) and the channel input ports we_i and re_i are where those decisions are delivered (sets).",
+      "related structural assets": [
+        {
+          "asset rtl": "sel",
+          "entity": "neorv32_pwm",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "we",
+          "entity": "neorv32_pwm",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "re",
+          "entity": "neorv32_pwm",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "we_i",
+          "entity": "neorv32_pwm_channel",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "re_i",
+          "entity": "neorv32_pwm_channel",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Aggregated per-channel readback data returned on the bus (rdata_sum)",
+      "security objective": "Integrity",
+      "reasoning": "The module's read-back flow computes an aggregate of per-channel read data and uses it as the bus read response: the read_back process ORs rdata(i) into tmp_v and assigns `rdata_sum <= tmp_v;`, and bus_access drives the bus response with `bus_rsp_o.data <= rdata_sum` when `bus_req_i.stb = '1'`. Corruption of rdata_sum or the per-channel rdata values would produce incorrect bus read results, establishing Integrity. Structural realizations: the top-level rdata_sum (stores) collects the result, the top-level rdata array (rdata) holds per-channel read values, and each channel's rdata_o (neorv32_pwm_channel) is the exit that supplies its readback value.",
+      "related structural assets": [
+        {
+          "asset rtl": "rdata_sum",
+          "entity": "neorv32_pwm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rdata",
+          "entity": "neorv32_pwm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rdata_o",
+          "entity": "neorv32_pwm_channel",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Clock-generator enable output (aggregated request from channels)",
+      "security objective": "Integrity",
+      "reasoning": "Each channel exposes its enable on its clkgen_en_o port (`clkgen_en_o <= cfg_en;`), and the top-level aggregates per-channel enables with `clkgen_en_o <= or_reduce_f(ce);` where ce is driven by the channel clkgen_en_o outputs. The top-level clkgen_en_o output therefore reflects whether any channel requests the shared clock generator; incorrect values would enable or disable the clock generator incorrectly, establishing Integrity. Structural realizations: the top-level clkgen_en_o port is the entity exit (exit port) and each channel's clkgen_en_o port is the per-channel exit that drives the aggregation (exit port).",
+      "related structural assets": [
+        {
+          "asset rtl": "clkgen_en_o",
+          "entity": "neorv32_pwm",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "clkgen_en_o",
+          "entity": "neorv32_pwm_channel",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "PWM output signals leaving the IP (per-channel PWM outputs)",
+      "security objective": "Integrity",
+      "reasoning": "Each channel computes its PWM output in pwm_core using stored configuration and runtime counters (`if (cfg_en = '0') or (unsigned(cnt_duty) >= unsigned(cfg_duty)) then pwm_o <= cfg_pol; else pwm_o <= not cfg_pol;`). Top-level pwm_channel_connect maps per-channel pwm signals into the exported vector `pwm_o`. The PWM signals delivered at the top-level output must reflect those computations; corruption or suppression of the computed PWM values violates Integrity. Structural realizations: the top-level pwm_o port is the exit for the vector of PWM outputs (exit port) and each channel's pwm_o port (neorv32_pwm_channel) is the per-channel exit producing the value (exit port).",
+      "related structural assets": [
+        {
+          "asset rtl": "pwm_o",
+          "entity": "neorv32_pwm",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "pwm_o",
+          "entity": "neorv32_pwm_channel",
+          "realization": "exit port"
+        }
+      ]
+    }
+  ]
+}

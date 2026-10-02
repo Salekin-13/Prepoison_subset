@@ -1,0 +1,66 @@
+{"module name": "neorv32_onewire",
+ "conceptual assets": [
+  {
+   "concept": "Control configuration (enable, clear, clock prescaler, clock divider)",
+   "security objective": "Integrity",
+   "reasoning": "Bus writes set control fields: in bus_access when bus_req_i.stb='1' and bus_req_i.rw='1' and bus_req_i.addr(2)='0' the RTL assigns ctrl.enable <= bus_req_i.data(ctrl_en_c), ctrl.clear <= bus_req_i.data(ctrl_clear_c), ctrl.clk_prsc <= bus_req_i.data(ctrl_prsc1_c downto ctrl_prsc0_c) and ctrl.clk_div <= bus_req_i.data(ctrl_clkdiv7_c downto ctrl_clkdiv0_c). These fields directly gate module behavior: clock_generator uses ctrl.enable and ctrl.clk_prsc/ctrl.clk_div to produce clk_tick; fifo.tx_clr and fifo.rx_clr and serial.state(2) are driven from ctrl.enable/ctrl.clear; irq_o also depends on ctrl.enable. Therefore integrity of these stored control values is required for the implemented flows to behave as specified.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.enable", "entity": "neorv32_onewire", "realization": "stores"},
+    {"asset rtl": "ctrl.clear", "entity": "neorv32_onewire", "realization": "stores"},
+    {"asset rtl": "ctrl.clk_prsc", "entity": "neorv32_onewire", "realization": "stores"},
+    {"asset rtl": "ctrl.clk_div", "entity": "neorv32_onewire", "realization": "stores"},
+    {"asset rtl": "clkgen_en_o", "entity": "neorv32_onewire", "realization": "exit port"}
+   ]
+  },
+  {
+   "concept": "Transmit FIFO contents and read/consume decision (commands and payloads queued for transmission)",
+   "security objective": "Integrity",
+   "reasoning": "The tx FIFO produces fifo.tx_rdata and fifo.tx_avail (tx_fifo_inst port map) and the serial state machine consumes them: serial_engine tests fifo.tx_avail (when \"100\" uses 'if (fifo.tx_avail = '1')') and loads serial.sreg <= fifo.tx_rdata(...). The entity computes fifo.tx_re <= '1' when (serial.state = \"101\") and (clk_tick = '1') to consume entries. Corruption or incorrect timing of fifo.tx_rdata, fifo.tx_avail or the fifo read decision fifo.tx_re would violate the implemented transmit-command/data flow.",
+   "related structural assets": [
+    {"asset rtl": "fifo.tx_rdata", "entity": "neorv32_onewire", "realization": "stores"},
+    {"asset rtl": "fifo.tx_avail", "entity": "neorv32_onewire", "realization": "stores"},
+    {"asset rtl": "fifo.tx_re", "entity": "neorv32_onewire", "realization": "computes"},
+    {"asset rtl": "serial.sreg", "entity": "neorv32_onewire", "realization": "stores"}
+   ]
+  },
+  {
+   "concept": "Received word (presence flag + sampled byte) stored to RX FIFO and delivered to bus reads",
+   "security objective": "Integrity",
+   "reasoning": "The serial engine forms received words and writes them into the RX FIFO: fifo.rx_wdata <= serial.presence & serial.sreg and fifo.rx_we <= serial.done. The rx FIFO instance exposes fifo.rx_rdata and fifo.rx_avail which bus_access reads back into bus_rsp_o (bus_rsp_o.data <= fifo.rx_rdata(...) and bus_rsp_o.data(ctrl_rx_avail_c) <= fifo.rx_avail). Therefore the integrity of serial.presence/serial.sreg, the fifo.rx_wdata/fifo.rx_we write points, and the stored fifo.rx_rdata/fifo.rx_avail values is required for correct received-data delivery to bus reads.",
+   "related structural assets": [
+    {"asset rtl": "serial.presence", "entity": "neorv32_onewire", "realization": "stores"},
+    {"asset rtl": "serial.sreg", "entity": "neorv32_onewire", "realization": "stores"},
+    {"asset rtl": "fifo.rx_wdata", "entity": "neorv32_onewire", "realization": "sets"},
+    {"asset rtl": "fifo.rx_we", "entity": "neorv32_onewire", "realization": "sets"},
+    {"asset rtl": "fifo.rx_rdata", "entity": "neorv32_onewire", "realization": "stores"},
+    {"asset rtl": "fifo.rx_avail", "entity": "neorv32_onewire", "realization": "stores"}
+   ]
+  },
+  {
+   "concept": "Internal timing tick(s) that schedule serial actions (clk_tick and clk_tick2)",
+   "security objective": "Integrity",
+   "reasoning": "The clock_generator process produces clk_tick and clk_tick2 using ctrl.clk_prsc, clk_src and ctrl.clk_div ('if (clk_cnt = unsigned(ctrl.clk_div)) then clk_cnt <= 0; clk_tick <= '1'; ... clk_tick2 <= clk_tick'). serial_engine uses clk_tick and clk_tick2 to advance serial.tick_cnt, to schedule wire_lo/wire_hi, and to sample bits ('if (clk_tick = '1') then serial.tick_cnt <= serial.tick_cnt + 1' and 'if (serial.tick_cnt = t_read_sample_c) and (clk_tick2 = '1') then serial.sample <= serial.wire_in(1)'). Integrity of these tick signals is necessary for the implemented timing of serial transmit/receive flows.",
+   "related structural assets": [
+    {"asset rtl": "clk_tick", "entity": "neorv32_onewire", "realization": "computes"},
+    {"asset rtl": "clk_tick2", "entity": "neorv32_onewire", "realization": "stores"}
+   ]
+  },
+  {
+   "concept": "Interrupt request output (irq_o) produced by module conditions",
+   "security objective": "Integrity",
+   "reasoning": "The irq_generator process computes and drives the external interrupt: on rising clk_i it assigns irq_o <= ctrl.enable and (not fifo.tx_avail) and (not serial.busy). The RTL therefore defines irq_o as the module's event signal derived from control, FIFO availability and serial busy state; corruption or suppression of irq_o violates the implemented interrupt-reporting flow.",
+   "related structural assets": [
+    {"asset rtl": "irq_o", "entity": "neorv32_onewire", "realization": "exit port"}
+   ]
+  },
+  {
+   "concept": "Serial engine run state and busy indicator (serial.state, serial.busy) that gate FIFO reads and line-driver behavior",
+   "security objective": "Integrity",
+   "reasoning": "The serial_engine process stores the FSM state in serial.state and the design derives serial.busy ('serial.busy <= '0' when (serial.state(1 downto 0) = \"00\") else '1'). serial.state controls flow choices (state transitions, loading sreg from fifo.tx_rdata in state \"101\", setting wire_lo/wire_hi, producing serial.done) and the entity uses (serial.state = \"101\") and clk_tick to assert fifo.tx_re. These RTL relations establish that integrity of serial.state/serial.busy is required for correct operation and FIFO gating.",
+   "related structural assets": [
+    {"asset rtl": "serial.state", "entity": "neorv32_onewire", "realization": "stores"},
+    {"asset rtl": "serial.busy", "entity": "neorv32_onewire", "realization": "stores"}
+   ]
+  }
+ ]
+}

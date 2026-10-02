@@ -1,0 +1,314 @@
+{
+ "module name": "neorv32_sdi",
+ "module purpose": "neorv32_sdi holds a bus-written control register (an enable bit and five interrupt-source enables), pushes bus-written bytes into a TX FIFO sub-unit and pops received bytes from an RX FIFO sub-unit on bus reads, synchronizes the external serial clock, select and data inputs, and runs a serial engine that shifts a TX byte out on sdi_dat_o while shifting sdi_dat_i bits in and writing each completed byte into the RX FIFO; it raises irq_o when an enabled FIFO condition holds.",
+ "use-case flows": [
+  {
+   "flow": "configure",
+   "value": "enable bit and five interrupt-source enable bits taken from bus write data at addr(2) = '0' and held in ctrl",
+   "lines": [130, 131, 132, 133, 135, 136, 137, 138, 139]
+  },
+  {
+   "flow": "operate",
+   "value": "transmit byte pushed from bus write data into the TX FIFO sub-unit at addr(2) = '1'",
+   "lines": [190, 191, 201, 202]
+  },
+  {
+   "flow": "start",
+   "value": "transfer start: in the enabled idle phase the TX FIFO byte (or zeros when it is empty) is loaded into the shift register and, on active select, a start pulse pops the TX FIFO",
+   "lines": [205, 296, 297, 299, 301, 302, 303, 305, 307, 308, 309]
+  },
+  {
+   "flow": "operate",
+   "value": "serial bit transfer: synchronized clock level changes sample sdi_dat_i, shift the register and count bits, while the register MSB drives sdi_dat_o",
+   "lines": [268, 269, 270, 274, 275, 276, 312, 314, 315, 316, 317, 318, 319, 322, 324, 325, 326, 327, 328, 332, 345]
+  },
+  {
+   "flow": "operate",
+   "value": "completed received byte written into the RX FIFO sub-unit",
+   "lines": [225, 226, 235, 236, 329, 330]
+  },
+  {
+   "flow": "report",
+   "value": "interrupt request from enabled FIFO conditions, and FIFO and select status bits on control reads",
+   "lines": [153, 154, 155, 156, 157, 158, 160, 248, 249, 250, 251, 252, 253, 254]
+  },
+  {
+   "flow": "read out",
+   "value": "control register readback and received byte returned on bus reads, with an RX FIFO pop on a data read",
+   "lines": [142, 143, 145, 147, 148, 149, 150, 151, 162, 240]
+  },
+  {
+   "flow": "reset",
+   "value": "ctrl, irq_o, synchronizer and serial-engine registers forced to zero while rstn_i = '0'; both FIFOs held clear and the engine held idle while ctrl.enable = '0'",
+   "lines": [115, 116, 117, 118, 119, 120, 121, 122, 200, 239, 246, 247, 263, 264, 265, 266, 283, 284, 285, 286, 287, 288, 289, 296, 338]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Serial interface enable setting -- whether the serial engine runs, the FIFOs keep their contents and interrupts can be raised",
+   "security objective": "Integrity",
+   "reasoning": "The configure flow stores `ctrl.enable <= bus_req_i.data(ctrl_en_c);` (line 133) only when bus_req_i.stb = '1', rw = '1' and addr(2) = '0' (lines 130-132), reset to '0' (line 117). Module behavior depends on this held setting: `tx_fifo.clear <= not ctrl.enable;` (line 200) and `rx_fifo.clear <= not ctrl.enable;` (line 239) hold both FIFO sub-units clear while it is '0'; `serial.state(2) <= ctrl.enable;` (line 296, COPIES) makes the case arms \"100\", \"110\" and \"111\" (lines 299, 312, 322) reachable only while it is '1', the others arm returning the phase bits to \"00\" (line 338); and it gates irq_o (GATES at occurrence 7, line 249). Integrity is Established: a wrong value starts or stops the engine, clears queued bytes and masks interrupts against the written setting. Availability is also Established: while it is '0' no transfer starts, FIFO contents are discarded and no interrupt is raised. No line restricts reading it (line 143), so confidentiality is not established. ctrl.enable stores (CLOCKED_BY clk_i, occurrence 3, line 133). bus_req_i carries complete requests (address, data, byte enables, strobe, read/write) and bus_rsp_o returns ack, err and data, so both are transport and are neither setting point nor exit; tx_fifo.clear and rx_fifo.clear only pass the inverted setting to the sub-units (lines 186, 221) and are carriers.",
+   "related structural assets": [
+    {
+     "asset rtl": "ctrl.enable",
+     "entity": "neorv32_sdi",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Interrupt-source enable settings -- which FIFO conditions may raise the interrupt request",
+   "security objective": "Integrity",
+   "reasoning": "The configure flow stores five enable bits from bus write data (lines 135-139) under the predicates of lines 130-132, resets them to '0' (lines 118-122) and returns them on control reads (lines 147-151). The report flow depends on them: `irq_o <= ctrl.enable and ((ctrl.irq_rx_avail and rx_fifo.avail) or ...` (lines 249-254) admits each FIFO condition only when its enable is '1'. Integrity is Established: a corrupted enable raises or suppresses the interrupt against the written configuration. Each field stores its bit (CLOCKED_BY clk_i at occurrence 3, lines 135-139) and is read here into irq_o (SOURCES at occurrence 5, lines 250-254). The write path (bus_req_i) and the readback (bus_rsp_o) are transport and are not cited.",
+   "related structural assets": [
+    {
+     "asset rtl": "ctrl.irq_rx_avail",
+     "entity": "neorv32_sdi",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "ctrl.irq_rx_half",
+     "entity": "neorv32_sdi",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "ctrl.irq_rx_full",
+     "entity": "neorv32_sdi",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "ctrl.irq_tx_empty",
+     "entity": "neorv32_sdi",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "ctrl.irq_tx_nhalf",
+     "entity": "neorv32_sdi",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Interrupt request -- the registered decision that an enabled FIFO condition holds",
+   "security objective": "Integrity",
+   "reasoning": "The report flow registers `irq_o <= ctrl.enable and ((ctrl.irq_rx_avail and rx_fifo.avail) or (ctrl.irq_rx_half and rx_fifo.half) or (ctrl.irq_rx_full and (not rx_fifo.free)) or (ctrl.irq_tx_empty and (not tx_fifo.avail)) or (ctrl.irq_tx_nhalf and (not tx_fifo.half)));` (lines 249-254) on each rising edge of clk_i (line 248), reset to '0' (line 247). The value leaves the entity on irq_o and its consumer is not supplied, so Integrity is Established: the consumer must receive exactly this expression. Availability is Established under the implemented conditions: the request is recomputed at every clock edge while rstn_i is '1', and is forced low while ctrl.enable is '0'. irq_o is the exit port (DERIVES_FROM ctrl.irq_rx_avail at occurrence 3), which takes precedence over its storage role (CLOCKED_BY at the same occurrence). rx_fifo.avail, rx_fifo.half, rx_fifo.free and tx_fifo.half only receive sub-unit outputs and are read here as data (lines 250-254), so they are carriers; tx_fifo.avail is reported under its own concept.",
+   "related structural assets": [
+    {
+     "asset rtl": "irq_o",
+     "entity": "neorv32_sdi",
+     "realization": "exit port",
+     "occurrence": 3,
+     "edge": {"type": "DERIVES_FROM", "partner": "ctrl.irq_rx_avail"}
+    }
+   ]
+  },
+  {
+   "concept": "Transmit data -- the byte loaded from the TX FIFO and shifted out serially",
+   "security objective": "Integrity",
+   "reasoning": "The start flow loads `serial.sreg <= tx_fifo.rdata;` (line 305) in phase \"100\" when tx_fifo.avail is not '0' (zeros otherwise, line 303); the operate flow shifts it left on each detected serial clock change (line 327) and drives its MSB out with `sdi_dat_o <= serial.sreg(serial.sreg'left);` (line 345). The consumer of sdi_dat_o is outside this file, so Integrity is Established: sdi_dat_o must present the loaded byte bit by bit in the shift order of line 327. serial.sreg stores (CLOCKED_BY clk_i at occurrence 5, line 305) and sdi_dat_o is the exit port (DERIVES_FROM serial.sreg at occurrence 2, line 345). The byte enters through bus_req_i.data, a transport field; tx_fifo.wdata (line 201) and tx_fifo.rdata (lines 195, 305) only pass it into and out of the tx_fifo_inst sub-unit, whose internals are not supplied, so they are carriers. No line restricts observation of sdi_dat_o, so confidentiality is not established.",
+   "related structural assets": [
+    {
+     "asset rtl": "sdi_dat_o",
+     "entity": "neorv32_sdi",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "DERIVES_FROM", "partner": "serial.sreg"}
+    },
+    {
+     "asset rtl": "serial.sreg",
+     "entity": "neorv32_sdi",
+     "realization": "stores",
+     "occurrence": 5,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Received data -- serial input bits assembled into a byte for the RX FIFO",
+   "security objective": "Integrity",
+   "reasoning": "The operate flow samples the input with `sync.sdi_ff <= sync.sdi_ff(0) & sdi_dat_i;` (line 270), captures the synchronized bit with `serial.sdi_ff <= sync.sdi;` (line 314) in phase \"110\", and shifts it in with `serial.sreg <= serial.sreg(serial.sreg'left-1 downto 0) & serial.sdi_ff;` (line 327) on each detected clock change while select is active; when serial.cnt(3) = '1' (line 328) the byte is handed over by `rx_fifo.wdata <= serial.sreg;` (line 235) with `rx_fifo.we <= serial.done;` (line 236). The consumer is the rx_fifo_inst sub-unit, not supplied, so Integrity is Established: it must receive exactly the assembled byte. sdi_dat_i sets (SOURCES sync.sdi_ff at occurrence 2, line 270), sync.sdi_ff stores (CLOCKED_BY clk_i at occurrence 3, line 270), serial.sdi_ff stores (CLOCKED_BY clk_i at occurrence 3, line 314) and serial.sreg stores (CLOCKED_BY clk_i at occurrence 6, line 327). sync.sdi only takes one bit of sync.sdi_ff (line 276) and rx_fifo.wdata only passes the byte to the sub-unit: both forward. The readback through bus_rsp_o.data (line 162) is transport and is not cited.",
+   "related structural assets": [
+    {
+     "asset rtl": "sdi_dat_i",
+     "entity": "neorv32_sdi",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "SOURCES", "partner": "sync.sdi_ff"}
+    },
+    {
+     "asset rtl": "sync.sdi_ff",
+     "entity": "neorv32_sdi",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "serial.sdi_ff",
+     "entity": "neorv32_sdi",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "serial.sreg",
+     "entity": "neorv32_sdi",
+     "realization": "stores",
+     "occurrence": 6,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Serial transfer sequencing state -- engine phase and bit count within the current byte",
+   "security objective": "Integrity",
+   "reasoning": "The operate flow is sequenced by `case serial.state is` (line 297): phase \"100\" clears the count and loads the register (lines 301-305) and moves to \"110\" on active select (line 309); \"110\" samples a bit and, on a clock change, increments `serial.cnt <= std_ulogic_vector(unsigned(serial.cnt) + 1);` (line 318) and moves to \"111\" (line 319); \"111\" shifts (line 327) and, when serial.cnt(3) = '1', raises done and returns to \"00\" (lines 328-330), otherwise returns to \"110\" (line 332); deselect returns to \"00\" (lines 316, 325). The flow graph lists serial.cnt as self-updating, and serial.state selects its own next value (SELECTED_BY serial.state, lines 309-338). Integrity is Established: a corrupted phase or count shifts at the wrong time, ends a byte early or late, or hands a misaligned byte to the RX FIFO. serial.state stores (CLOCKED_BY clk_i at occurrence 5, line 309) and serial.cnt stores (CLOCKED_BY clk_i at occurrence 4, line 318); bit 2 of the phase copies ctrl.enable (line 296) and is covered under the enable concept.",
+   "related structural assets": [
+    {
+     "asset rtl": "serial.state",
+     "entity": "neorv32_sdi",
+     "realization": "stores",
+     "occurrence": 5,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "serial.cnt",
+     "entity": "neorv32_sdi",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Transfer start event -- the pulse that begins a transfer and pops the TX FIFO",
+   "security objective": "Integrity",
+   "reasoning": "The start flow raises `serial.start <= '1';` (line 308) in phase \"100\" when sync.csn = '0' (line 307), a one-cycle pulse cleared by the default `serial.start <= '0';` (line 292); `tx_fifo.re <= serial.start;` (line 205) delivers it to the re_i input of tx_fifo_inst (line 194). That consumer is not supplied, so Integrity is Established: it must receive exactly one read pulse per transfer start, or transmit bytes are skipped or repeated. serial.start stores (CLOCKED_BY clk_i at occurrence 5, line 308); tx_fifo.re only copies it into the sub-unit and is a carrier.",
+   "related structural assets": [
+    {
+     "asset rtl": "serial.start",
+     "entity": "neorv32_sdi",
+     "realization": "stores",
+     "occurrence": 5,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Byte-complete event -- the pulse that writes a received byte into the RX FIFO",
+   "security objective": "Integrity",
+   "reasoning": "The operate flow raises `serial.done <= '1';` (line 329) in phase \"111\" on a clock change with select active when serial.cnt(3) = '1' (lines 324-328), a one-cycle pulse cleared by line 293; `rx_fifo.we <= serial.done;` (line 236) delivers it to the we_i input of rx_fifo_inst (line 226). That consumer is not supplied, so Integrity is Established: the RX FIFO must be written exactly once per completed byte, or received bytes are lost or duplicated. serial.done stores (CLOCKED_BY clk_i at occurrence 5, line 329); rx_fifo.we only copies it into the sub-unit and is a carrier.",
+   "related structural assets": [
+    {
+     "asset rtl": "serial.done",
+     "entity": "neorv32_sdi",
+     "realization": "stores",
+     "occurrence": 5,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Select state -- the synchronized select level that starts and aborts transfers",
+   "security objective": "Integrity",
+   "reasoning": "The select input is sampled by `sync.csn_ff <= sync.csn_ff(0) & sdi_csn_i;` (line 269) and used as `sync.csn <= sync.csn_ff(1);` (line 275). The serial engine depends on it: sync.csn = '0' starts a transfer (lines 307-309), sync.csn = '1' returns phases \"110\" and \"111\" to idle (lines 315-316, 324-325), and it is reported as a status bit (line 160). Integrity is Established: a corrupted select level starts a transfer that pops the TX FIFO, or aborts a byte in progress. sdi_csn_i sets (SOURCES sync.csn_ff at occurrence 2, line 269) and sync.csn_ff stores (CLOCKED_BY clk_i at occurrence 3, line 269). sync.csn only takes one bit of sync.csn_ff (line 275) and forwards it to the conditions; the status readback is through transport bus_rsp_o and is not cited.",
+   "related structural assets": [
+    {
+     "asset rtl": "sdi_csn_i",
+     "entity": "neorv32_sdi",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "SOURCES", "partner": "sync.csn_ff"}
+    },
+    {
+     "asset rtl": "sync.csn_ff",
+     "entity": "neorv32_sdi",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Serial clock change event -- the detected level change of the sampled serial clock that paces sampling, shifting and counting",
+   "security objective": "Integrity",
+   "reasoning": "The serial clock input is sampled as data by `sync.sck_ff <= sync.sck_ff(1 downto 0) & sdi_clk_i;` (line 268), and its level changes are detected by `sync.sck <= sync.sck_ff(1) xor sync.sck_ff(2);` (line 274). That decision gates the bit count (line 318), the shift (line 327), the done pulse (line 329) and the phase changes (lines 319, 330, 332). Integrity is Established: a spurious or missed change decision shifts the wrong bits, or the wrong number of bits, into the received byte and out on sdi_dat_o. sdi_clk_i drives no SEQUENCES record and is not wired to a sub-unit clock port, so the clock rule does not exclude it; it sets the concept (SOURCES sync.sck_ff at occurrence 2, line 268). sync.sck_ff stores the sampled levels (CLOCKED_BY clk_i at occurrence 3, line 268) and sync.sck computes the change decision (DERIVES_FROM sync.sck_ff at occurrence 2, line 274).",
+   "related structural assets": [
+    {
+     "asset rtl": "sdi_clk_i",
+     "entity": "neorv32_sdi",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "SOURCES", "partner": "sync.sck_ff"}
+    },
+    {
+     "asset rtl": "sync.sck_ff",
+     "entity": "neorv32_sdi",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "sync.sck",
+     "entity": "neorv32_sdi",
+     "realization": "computes",
+     "occurrence": 2,
+     "edge": {"type": "DERIVES_FROM", "partner": "sync.sck_ff"}
+    }
+   ]
+  },
+  {
+   "concept": "TX FIFO write decision -- whether a bus access pushes a byte into the transmit FIFO",
+   "security objective": "Integrity",
+   "reasoning": "`tx_fifo.we <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '1') else '0';` (line 202) decides whether a bus access pushes bus_req_i.data(7 downto 0) (line 201) into the TX FIFO through we_i (line 191). The consumer is the tx_fifo_inst sub-unit, not supplied, so Integrity is Established: it must receive exactly this write decision; a wrong decision injects or drops transmit bytes. The predicate operands are transport fields and are excluded; the decision itself is computed here, so tx_fifo.we satisfies the sub-unit wiring exception and computes the concept (GATED_BY bus_req_i.stb at occurrence 3, line 202).",
+   "related structural assets": [
+    {
+     "asset rtl": "tx_fifo.we",
+     "entity": "neorv32_sdi",
+     "realization": "computes",
+     "occurrence": 3,
+     "edge": {"type": "GATED_BY", "partner": "bus_req_i.stb"}
+    }
+   ]
+  },
+  {
+   "concept": "RX FIFO read decision -- whether a bus access pops a byte from the receive FIFO",
+   "security objective": "Integrity",
+   "reasoning": "`rx_fifo.re <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(2) = '1') else '0';` (line 240) decides whether a bus read pops the RX FIFO through re_i (line 229) while the read returns rx_fifo.rdata (line 162). The consumer is the rx_fifo_inst sub-unit, not supplied, so Integrity is Established: it must receive exactly this read decision; a wrong decision discards received bytes or returns the same byte again. The predicate operands are transport fields and are excluded; the decision is computed here, so rx_fifo.re satisfies the sub-unit wiring exception and computes the concept (GATED_BY bus_req_i.stb at occurrence 3, line 240).",
+   "related structural assets": [
+    {
+     "asset rtl": "rx_fifo.re",
+     "entity": "neorv32_sdi",
+     "realization": "computes",
+     "occurrence": 3,
+     "edge": {"type": "GATED_BY", "partner": "bus_req_i.stb"}
+    }
+   ]
+  },
+  {
+   "concept": "TX FIFO data-available status -- whether a queued transmit byte exists when a transfer is prepared",
+   "security objective": "Integrity",
+   "reasoning": "The start flow tests `if (tx_fifo.avail = '0') then serial.sreg <= (others => '0'); else serial.sreg <= tx_fifo.rdata;` (lines 302-305): the status decides whether the next transmitted byte is FIFO data or zeros; it is also reported (line 156) and is an interrupt condition (line 253). The value is produced by tx_fifo_inst (avail_o, line 196), whose internals are not supplied, and is used in this entity, so it is judged by line 302: Integrity is Established because a wrong status transmits zeros instead of queued data, or loads a read value while the FIFO is empty. tx_fifo.avail is tested here in an if condition, so the sub-unit wiring exception applies; it sets the concept through the connection from tx_fifo_inst.avail_o (occurrence 3, line 196). The other FIFO status fields (rx_fifo.avail, rx_fifo.half, rx_fifo.free, tx_fifo.half, tx_fifo.free) are only read as data (lines 153-158, 250-254) and remain carriers.",
+   "related structural assets": [
+    {
+     "asset rtl": "tx_fifo.avail",
+     "entity": "neorv32_sdi",
+     "realization": "sets",
+     "occurrence": 3,
+     "edge": {"type": "CONNECTS", "partner": "tx_fifo_inst.avail_o"}
+    }
+   ]
+  }
+ ]
+}

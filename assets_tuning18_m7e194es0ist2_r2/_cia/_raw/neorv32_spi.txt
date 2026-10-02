@@ -1,0 +1,302 @@
+{
+  "module name": "neorv32_spi",
+  "concepts": [
+    {
+      "concept": "SPI enable configuration (ctrl.enable) that gates FIFO clears, clock generation and overall SPI activity",
+      "kind": "configuration",
+      "writers": "rstn_i reset: ctrl.enable <= '0' at line 120; bus write: ctrl.enable <= bus_req_i.data(ctrl_en_c) at line 140 (guard: bus_req_i.stb='1' and bus_req_i.rw='1' and bus_req_i.addr(2)='0').",
+      "observers": "bus readback: bus_rsp_o.data(ctrl_en_c) at line 153; clkgen enable output: clkgen_en_o <= ctrl.enable at line 383; irq output depends on it: irq_o computed at line 255; SPI signals indirectly reflect it (spi_clk_o at line 344).",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 153,
+          "via": "bus_rsp_o",
+          "reason": "ctrl.enable is copied into the bus response at line 153 (and also exported on clkgen_en_o and affects irq/spi outputs), so external observers can learn its value."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 140,
+          "via": "bus_req_i.data",
+          "reason": "ctrl.enable is written directly from the bus at line 140 under the bus request guard and that write is not blocked while FIFOs are cleared (line 211/243) or the clock generator and transceiver use it (line 369/281), so external writes can change it during operation."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 369,
+          "via": "bus_req_i",
+          "reason": "the clock generator checks ctrl.enable at line 369 and will not advance the divider or assert spi_clk_en when ctrl.enable='0', and ctrl.enable is controllable by bus writes (line 140), so an external write can prevent SPI progress."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 140,
+          "via": "bus_req_i.data",
+          "reason": "ctrl.enable only has the documented bus write (line 140) and reset driver (line 120) in the RTL and there is no alternate debug/test override provided."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "SPI phase and polarity configuration (ctrl.cpha, ctrl.cpol) that determine SCK transitions and sampling points",
+      "kind": "configuration",
+      "writers": "rstn_i reset: ctrl.cpha <= '0' at line 121 and ctrl.cpol <= '0' at line 122; bus writes: ctrl.cpha <= bus_req_i.data(ctrl_cpha_c) at line 141 and ctrl.cpol <= bus_req_i.data(ctrl_cpol_c) at line 142 (guard: bus_req_i.stb='1' and bus_req_i.rw='1' and bus_req_i.addr(2)='0').",
+      "observers": "bus readback: bus_rsp_o.data(ctrl_cpha_c) at line 154 and bus_rsp_o.data(ctrl_cpol_c) at line 155; externally visible SCK timing is affected (spi_clk_o at line 344).",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 154,
+          "via": "bus_rsp_o",
+          "reason": "ctrl.cpha and ctrl.cpol are copied to the bus response at lines 154/155 and they also affect externally observable SCK timing, so their values can be learned outside the module."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 141,
+          "via": "bus_req_i.data",
+          "reason": "these bits are written directly from the bus at lines 141/142 under the bus request guard and those writes are not prevented during active transfers while the transceiver uses them to select SCK transitions (e.g., line 301/309), so external writes can alter timing correctness."
+        },
+        "availability": {
+          "answer": "no",
+          "line": 141,
+          "via": "bus_req_i.data",
+          "reason": "there is no RTL condition that an external input uses to freeze or block the block by manipulating cpha/cpol; they are simply configuration registers updated by bus writes (lines 141/142)."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 141,
+          "via": "bus_req_i.data",
+          "reason": "ctrl.cpha and ctrl.cpol have a single documented driver (bus writes at lines 141/142 and reset at 121/122) and no alternate debug/test override is present in the RTL."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "SPI clock configuration (ctrl.prsc, ctrl.cdiv, ctrl.highspeed) that determine spi_clk_en and the generated SPI bit rate",
+      "kind": "configuration",
+      "writers": "rstn_i reset: ctrl.prsc <= (others=>'0') at line 123, ctrl.cdiv <= (others=>'0') at line 124, ctrl.highspeed <= '0' at line 125; bus writes: ctrl.prsc <= bus_req_i.data(ctrl_prsc2_c downto ctrl_prsc0_c) at line 143, ctrl.cdiv <= bus_req_i.data(ctrl_cdiv3_c downto ctrl_cdiv0_c) at line 144, ctrl.highspeed <= bus_req_i.data(ctrl_highspeed_c) at line 145 (guard: bus_req_i.stb='1' and bus_req_i.rw='1' and bus_req_i.addr(2)='0').",
+      "observers": "bus readback: bus_rsp_o.data(ctrl_prsc2_c downto ctrl_prsc0_c) at line 156, bus_rsp_o.data(ctrl_cdiv3_c downto ctrl_cdiv0_c) at line 157, bus_rsp_o.data(ctrl_highspeed_c) at line 158; SPI clock behavior observable on spi_clk_o at line 344.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 156,
+          "via": "bus_rsp_o",
+          "reason": "prescaler/divider/highspeed registers are copied to bus_rsp_o.data at lines 156-158 and they determine externally visible SPI bit timing, so their values are observable outside the module."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 144,
+          "via": "bus_req_i.data",
+          "reason": "ctrl.cdiv (and ctrl.prsc/ctrl.highspeed) are written directly from the bus at lines 144/143/145 and the clock_generator compares cdiv_cnt to ctrl.cdiv and uses ctrl.prsc/ctrl.highspeed at lines 371-377, so bus writes can change spi_clk_en/bit timing at runtime without write-protection."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 371,
+          "via": "clkgen_i",
+          "reason": "the clock generator requires clkgen_i(to_integer(unsigned(ctrl.prsc)))='1' or ctrl.highspeed='1' to advance the divider and assert spi_clk_en (line 371), so an external clkgen_i input (or control of ctrl.highspeed via the bus) can block or force SPI clock generation and thus affect progress."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 144,
+          "via": "bus_req_i.data",
+          "reason": "the prescaler/divider/highspeed fields are only driven by documented bus writes (lines 143-145) and reset, and no alternate debug/test override is present in RTL."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Transmitted frame entries enqueued to the TX FIFO (MSB = control/CS flag and lower 8-bit payload) that determine outgoing MOSI bytes and CS selection",
+      "kind": "data",
+      "writers": "tx_fifo.wdata <= bus_req_i.data(31) & bus_req_i.data(7 downto 0) at line 213 (source: bus_req_i.data); tx_fifo.we <= '1' when (bus_req_i.stb='1' and bus_req_i.rw='1' and bus_req_i.addr(2)='1') else '0' at line 212 (guarded by bus_req_i); tx_fifo.clear <= not ctrl.enable at line 211 (clear source: ctrl.enable).",
+      "observers": "MOSI output: spi_dat_o <= rtx_engine.sreg(7) at line 343 (drives outgoing bits); chip-select outputs: spi_csn_o driven at lines 352-354 (derived from rtx_engine.cs_ctrl which can be loaded from tx_fifo.rdata at line 290); FIFO status fields appear on bus_rsp_o at lines 161-163 (avail/half/free).",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 343,
+          "via": "spi_dat_o",
+          "reason": "TX FIFO entries are constructed from bus_req_i.data at line 213 and subsequently drive the external MOSI output spi_dat_o at line 343, so transmitted payload is observable externally."
+        },
+        "integrity": {
+          "answer": "yes-assumed",
+          "line": 213,
+          "via": "bus_req_i.data",
+          "reason": "TX FIFO contents are written from the bus at line 213 when tx_fifo.we is asserted (line 212) so the RTL shows an external writer for the transmitted words and trust in that writer depends on integration."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 212,
+          "via": "bus_req_i",
+          "reason": "tx_fifo.we is driven by the bus request condition at line 212 and tx_fifo.clear is driven by ctrl.enable at line 211, so external actors can fill, withhold or clear the TX FIFO (or repeatedly write) and thereby block or starve transmissions."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 212,
+          "via": "bus_req_i",
+          "reason": "the TX FIFO data path is driven by the bus write (lines 212-213) and the FIFO sub-unit; there is no separate debug/test override in the RTL that substitutes or bypasses these drivers."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Chip-select selection (rtx_engine.cs_ctrl) and the driven chip-select outputs (spi_csn_o)",
+      "kind": "state",
+      "writers": "reset rstn_i: rtx_engine.cs_ctrl <= (others => '0') at line 275; transceiver load: rtx_engine.cs_ctrl <= tx_fifo.rdata(3 downto 0) at line 290 when in state \"100\" and tx_fifo.avail='1' and tx_fifo.rdata(8)='1'; idle/others assignment: rtx_engine.cs_ctrl <= (others => '0') at line 332.",
+      "observers": "spi chip-select outputs: spi_csn_o <= (others => '1') at line 352 and spi_csn_o(...) <= '0' when cs_ctrl selects at line 354; bus readback: bus_rsp_o.data(ctrl_cs_active_c) <= rtx_engine.cs_ctrl(3) at line 171.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 354,
+          "via": "spi_csn_o",
+          "reason": "rtx_engine.cs_ctrl is used to drive the external chip-select outputs at lines 352-354 (and its top bit is read back at line 171), so external observers can learn the selection values."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 290,
+          "via": "tx_fifo.rdata",
+          "reason": "cs_ctrl is loaded from tx_fifo.rdata at line 290 when the transceiver starts a frame (state=\"100\" and tx_fifo.avail), and the FIFO contents originate from bus writes (line 213), so external writes can cause mis-selection of chip-selects during operation."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 281,
+          "via": "ctrl.enable",
+          "reason": "rtx_engine.state(2) is driven from ctrl.enable at line 281 and clearing ctrl.enable (writable by the bus at line 140) forces the engine into idle/other paths (lines 331-333) and the chip_select logic drives spi_csn_o inactive (line 352), so an external write can deassert CS and prevent peripheral access."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 290,
+          "via": "tx_fifo.rdata",
+          "reason": "the only drivers for cs_ctrl in the RTL are the transceiver assignments (line 290) and the reset/idle defaults (lines 275,332); no alternate debug/test bypass is present."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Received data queued in RX FIFO (rx_fifo.wdata / rx_fifo.we / rx_fifo.rdata) and its readback to the bus",
+      "kind": "data",
+      "writers": "rx_fifo.wdata <= '0' & rtx_engine.sreg at line 244 (data source: rtx_engine.sreg influenced by spi_dat_i); rx_fifo.we <= rtx_engine.done at line 245 (write strobe by transceiver done); rx_fifo.clear <= not ctrl.enable at line 243 (clear source: ctrl.enable); rx_fifo.re <= '1' when (bus_req_i.stb='1' and bus_req_i.rw='0' and bus_req_i.addr(2)='1') else '0' at line 246 (read strobe from bus).",
+      "observers": "bus readback: bus_rsp_o.data(7 downto 0) <= rx_fifo.rdata(7 downto 0) at line 174 (returns RX payload to requester); irq status uses rx_fifo.avail at line 256 to generate irq_o.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 174,
+          "via": "bus_rsp_o",
+          "reason": "rx_fifo.rdata is connected to the bus response at line 174 when the RX read address is selected, so received payload stored in the RX FIFO is exposed to the requester and can be learned externally."
+        },
+        "integrity": {
+          "answer": "yes-assumed",
+          "line": 244,
+          "via": "rtx_engine.sreg / spi_dat_i",
+          "reason": "RX FIFO writes are driven by the transceiver at lines 244-245 (rx_fifo.wdata from rtx_engine.sreg and rx_fifo.we from rtx_engine.done) and the source of rtx_engine.sreg is the external MISO input (spi_dat_i), so the RTL shows an external-influenced writer and trust in that writer depends on integration."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 243,
+          "via": "ctrl.enable",
+          "reason": "rx_fifo.clear is driven from not ctrl.enable at line 243, and ctrl.enable is writable by the bus (line 140), so an external write can clear or prevent accumulation of received data and thereby block readback or processing."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 244,
+          "via": "rtx_engine.sreg",
+          "reason": "RX FIFO write and clear behavior is provided only by the transceiver and ctrl.enable-driven clear in RTL (lines 244-245,243) and there is no separate debug/test bypass for the RX data path."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Interrupt generation configuration and output (ctrl.irq_* masks and irq_o)",
+      "kind": "decision",
+      "writers": "rstn_i reset sets masks to '0' at lines 126-129; bus writes set masks: ctrl.irq_rx_avail <= bus_req_i.data(ctrl_irq_rx_avail_c) at line 146, ctrl.irq_tx_empty <= bus_req_i.data(ctrl_irq_tx_empty_c) at line 147, ctrl.irq_tx_nhalf <= bus_req_i.data(ctrl_irq_tx_nhalf_c) at line 148, ctrl.irq_idle <= bus_req_i.data(ctrl_irq_idle_c) at line 149; irq_o <= '0' at reset line 253 and irq_o computed from masks/status at line 255 inside irq_generator.",
+      "observers": "bus readback: bus_rsp_o.data(ctrl_irq_rx_avail_c..ctrl_irq_idle_c) at lines 164-167; external interrupt output: irq_o assigned at line 255.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 164,
+          "via": "bus_rsp_o",
+          "reason": "the IRQ mask bits are copied into bus_rsp_o.data at lines 164-167 and the irq line is driven externally at line 255, so mask state and interrupt events are observable outside the module."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 146,
+          "via": "bus_req_i.data",
+          "reason": "the IRQ mask registers are written directly by bus writes at lines 146-149 and those writes are not protected while irq_o is computed from them in the irq_generator (line 255), so external writes can change interrupt behavior at runtime."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 255,
+          "via": "ctrl.irq_* / ctrl.enable",
+          "reason": "irq_o is computed from ctrl.enable and the irq mask bits at line 255, and both the masks (lines 146-149) and ctrl.enable (line 140) are writable by the bus, so an external write can prevent irq_o from asserting and thus stop interrupt-driven progress."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 146,
+          "via": "bus_req_i.data",
+          "reason": "IRQ masks and irq_o are driven only by the documented bus writes and the irq_generator process in RTL (lines 146-149,255) and no alternate debug/test override is present."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Transceiver run-time state (rtx_engine.state) that sequences transfers and controls bus/FIFO interactions",
+      "kind": "state",
+      "writers": "reset: rtx_engine.state <= (others => '0') at line 270; rtx_engine.state(2) <= ctrl.enable at line 281 (copy of enable); state transitions and assignments in the transceiver case set state(1 downto 0) at lines 293 (\"01\"), 303 (\"10\"), 312 (\"11\"), 322/325/333 etc (per-case assignments controlled by rtx_engine.state and spi_clk_en).",
+      "observers": "bus status: bus_rsp_o.data(ctrl_busy_c) <= rtx_engine.busy or tx_fifo.avail at line 172 (busy derived from state at line 340); external SPI outputs spi_dat_o (line 343) and spi_clk_o (line 344) reflect state-driven behavior; irq_o uses rtx_engine.busy at line 259.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 172,
+          "via": "bus_rsp_o",
+          "reason": "rtx_engine.busy (derived from rtx_engine.state) is reported on the bus response at line 172 and the engine state also affects externally visible SPI outputs, so observers can infer the engine's status from outside the module."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 281,
+          "via": "ctrl.enable",
+          "reason": "rtx_engine.state(2) is directly driven from ctrl.enable at line 281 and other transitions occur in the transceiver without write protection, so external writes to ctrl.enable or FIFO-supplied words can change state bits while the engine sequences, affecting correctness."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 281,
+          "via": "ctrl.enable",
+          "reason": "clearing ctrl.enable (writable by the bus at line 140) sets rtx_engine.state(2)=0 via line 281 and forces the engine into idle/other paths (lines 331-333), so an external write can stop transfers and prevent progress."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 281,
+          "via": "ctrl.enable",
+          "reason": "the engine state is produced by the internal transceiver process (reset and per-case assignments) and a single copy from ctrl.enable (line 281); there is no separate debug/test override to substitute state in the RTL."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Bus readback port (bus_rsp_o) carrying control register and status fields to the requester",
+      "kind": "data",
+      "writers": "reset driver: bus_rsp_o <= rsp_terminate_c at line 119; bus_access process updates: bus_rsp_o.ack <= bus_req_i.stb at line 132, bus_rsp_o.err <= '0' at line 133, bus_rsp_o.data <= (others => '0') at line 134 (default) and selected field copies into bus_rsp_o.data at lines 153-174 depending on bus_req_i.stb/rw/addr.",
+      "observers": "bus response port (external): bus_rsp_o.ack at line 132, bus_rsp_o.err at line 133, bus_rsp_o.data at lines 134 and selected field assignments 153-174 (e.g. ctrl fields at 153-158, FIFO/status at 160-167, rx data at 174).",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 153,
+          "via": "bus_rsp_o",
+          "reason": "bus_rsp_o.data is driven from internal control and status fields (e.g., ctrl.enable at line 153 and others at 153-174) and is an external output, so its contents reveal internal state and are observable outside the module."
+        },
+        "integrity": {
+          "answer": "no",
+          "line": 134,
+          "via": "bus_access process",
+          "reason": "bus_rsp_o is produced only by the module's bus_access process (default data at line 134 and field assignments at lines 153-174) and external actors do not directly drive bus_rsp_o, so only the intended module logic updates it."
+        },
+        "availability": {
+          "answer": "no",
+          "line": 134,
+          "via": "bus_access process",
+          "reason": "bus_rsp_o.data is assigned a default value unconditionally in the bus_access process each clock (line 134) and ack/err are driven each cycle (lines 132-133), so the port itself is not blocked by any special external stall aside from normal bus request timing."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 134,
+          "via": "bus_access process",
+          "reason": "there is a single controlling process that writes bus_rsp_o (lines 132-174) and the RTL provides no alternate debug/test bypass for the bus response outputs."
+        }
+      },
+      "security objective": "Confidentiality"
+    }
+  ]
+}

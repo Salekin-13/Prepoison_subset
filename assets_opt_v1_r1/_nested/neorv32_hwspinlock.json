@@ -1,0 +1,83 @@
+{
+ "module name": "neorv32_hwspinlock",
+ "module purpose": "neorv32_hwspinlock holds 32 one-bit locks in lock_q: a bus access with addr(7) = '0' sets the lock whose index matches addr(6 downto 2) on a read and clears it on a write, while the registered response returns that lock's previous bit, and a read with addr(7) = '1' returns all 32 lock bits (lines 36-51, 58-74).",
+ "use-case flows": [
+  {
+   "flow": "lock",
+   "value": "per-lock bit: set to '1' by a read access (not rw) and cleared to '0' by a write access to the lock selected by addr(6 downto 2), when stb = '1' and addr(7) = '0'",
+   "lines": [
+    36,
+    43,
+    44,
+    45,
+    51
+   ]
+  },
+  {
+   "flow": "read out",
+   "value": "test-and-set result: the selected lock's bit as it was before the same clock edge's update (lock_q and sel) for addr(7) = '0', or all 32 lock bits for addr(7) = '1', on a read access",
+   "lines": [
+    62,
+    65,
+    66,
+    67,
+    68,
+    70
+   ]
+  },
+  {
+   "flow": "report",
+   "value": "bus acknowledge copied from the strobe and an error bit tied to '0' on every clock edge",
+   "lines": [
+    63,
+    64
+   ]
+  },
+  {
+   "flow": "reset",
+   "value": "all lock bits cleared to '0' and the bus response forced to rsp_terminate_c while rstn_i = '0'",
+   "lines": [
+    41,
+    42,
+    60,
+    61
+   ]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Spinlock state -- whether each of the 32 locks is currently held or free",
+   "security objective": "Integrity",
+   "reasoning": "The lock flow updates each bit only under `if (bus_req_i.stb = '1') and (bus_req_i.addr(7) = '0') and (sel(i) = '1') then lock_q(i) <= not bus_req_i.rw;` (lines 44-45), so a read acquires (sets) and a write releases (clears) the addressed lock. The read-out flow returns `bus_rsp_o.data <= lock_q and sel;` (line 68) in the same clocked process edge (line 62) as the update edge (line 43), so the requester receives the selected lock's value before its own access set it: the test-and-set relation between returned bit and new state depends on lock_q holding exactly the value written by the last acquire, release or reset. Integrity is Established from lines 42, 45 and 68. Availability is also Established: lock_q is assigned only under the line 44 condition or the reset arm (line 42), so a held lock is preserved between accesses until a write to its index or reset, and its value is delivered on every qualifying read (lines 68, 70). Confidentiality is not established: line 70 returns all lock bits on any read with addr(7) = '1', and no line restricts the requester (bus_req_i.priv and bus_req_i.src have no local use). lock_q stores the state (occurrence 3, CLOCKED_BY clk_i, line 45) and its records show its use toward an output field (CARRIES bus_rsp_o.data at occurrence 5, line 70; SOURCES bus_rsp_o.data at occurrence 4, line 68). bus_req_i and bus_rsp_o are records carrying complete bus transactions (address, write data, byte enables, strobe, read/write, acknowledge, read data), so the transport rule excludes them and their fields: bus_req_i.rw is not listed as a setting point and bus_rsp_o is not listed as an exit; this is a mapping limitation, not absence of the flow. clk_i and rstn_i are clock and reset inputs (SEQUENCES line 43, RESETS line 41).",
+   "related structural assets": [
+    {
+     "asset rtl": "lock_q",
+     "entity": "neorv32_hwspinlock",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {
+      "type": "CLOCKED_BY",
+      "partner": "clk_i"
+     }
+    }
+   ]
+  },
+  {
+   "concept": "Lock-index selection decision -- which of the 32 locks a bus access acquires, releases or tests",
+   "security objective": "Integrity",
+   "reasoning": "The decision is computed per lock by `sel(i) <= '1' when (bus_req_i.addr(6 downto 2) = std_ulogic_vector(to_unsigned(i, 5))) else '0';` (line 51), a comparison result (GATED_BY bus_req_i.addr at occurrence 3). The lock flow depends on it: it is a term of the update condition of lock_q(i) (line 44; GATES lock_q at occurrence 2), so only the lock whose index matches is set or cleared. The read-out flow depends on it: it masks the test-and-set response `bus_rsp_o.data <= lock_q and sel;` (line 68; SOURCES bus_rsp_o.data at occurrence 4), so only the addressed lock's prior bit is returned. Integrity is Established: a wrong selection would acquire or release a lock other than the addressed one and report another lock's prior state, breaking the per-lock test-and-set relation of lines 44-45 and 68. sel is combinational (storage none), so no storage availability claim is made; confidentiality is not established. The map lists sel as not reached from any source because its value arms are the constants '1' and '0' (line 51); its own value is still the decision. The address field it compares, bus_req_i.addr, belongs to a transport record and is not listed.",
+   "related structural assets": [
+    {
+     "asset rtl": "sel",
+     "entity": "neorv32_hwspinlock",
+     "realization": "computes",
+     "occurrence": 3,
+     "edge": {
+      "type": "GATED_BY",
+      "partner": "bus_req_i.addr"
+     }
+    }
+   ]
+  }
+ ]
+}

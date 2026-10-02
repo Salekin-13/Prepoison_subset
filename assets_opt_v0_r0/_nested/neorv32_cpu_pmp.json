@@ -1,0 +1,86 @@
+{
+ "module name": "neorv32_cpu_pmp",
+ "module purpose": "neorv32_cpu_pmp holds per-region configuration (pmpcfg) and address (pmpaddr) registers that CSR writes carried on ctrl_i update and that csr_o returns on CSR reads. It checks each instruction-fetch or load/store access address and privilege against the regions, and registers an access fault on fault_o.",
+ "use-case flows": [
+  {"flow": "start", "value": "CSR write request decoded into a configuration-group or address-register write enable", "lines": [113, 114, 157, 158]},
+  {"flow": "configure", "value": "per-region permission bits (R/W/X), legalized address-matching mode and lock bit taken from ctrl_i.csr_wdata", "lines": [127, 129, 130, 131, 133, 134, 135, 136, 137, 138, 140, 143, 145]},
+  {"flow": "configure", "value": "per-region address taken from ctrl_i.csr_wdata, and the NAPOT size mask derived from it", "lines": [170, 172, 173, 176, 254, 257, 266, 267, 269]},
+  {"flow": "lock", "value": "per-region lock bit that blocks configuration and address writes and applies permissions to machine mode", "lines": [127, 145, 170, 172, 323, 330, 337]},
+  {"flow": "read out", "value": "stored configuration bytes and region addresses returned on csr_o for a PMP CSR address", "lines": [188, 189, 190, 192, 195, 203, 208, 210, 211, 215, 218, 219, 229, 230, 236]},
+  {"flow": "operate", "value": "access address and privilege selected for the check, and the region match decision", "lines": [244, 245, 285, 289, 290, 295, 296, 303, 305, 307, 309, 310, 312]},
+  {"flow": "operate", "value": "per-region permission decision for the access type and privilege", "lines": [321, 322, 323, 325, 328, 329, 330, 332, 336, 337, 339]},
+  {"flow": "report", "value": "access fault verdict from the region priority chain, registered on fault_o and suppressed in debug mode", "lines": [351, 354, 362, 363]},
+  {"flow": "reset", "value": "pmpcfg, pmpaddr, addr_mask and fault_o cleared while rstn_i is low", "lines": [124, 125, 167, 168, 263, 264, 360, 361]}
+ ],
+ "conceptual assets": [
+  {
+   "concept": "PMP region configuration -- per-region read/write/execute permission bits and address-matching mode",
+   "security objective": "Integrity",
+   "reasoning": "The configure flow writes each region's byte from ctrl_i.csr_wdata only when `if (pmpcfg_we(i/4) = '1') and (pmpcfg(i)(cfg_l_c) = '0') then` holds (line 127): R/W/X at lines 129-131, the mode legalized against TOR_EN, NAP_EN and g_c (lines 133-140), reserved bits cleared (line 143). The permission bits decide allow (lines 323-339, e.g. `allow(r) <= pmpcfg(r)(cfg_x_c);` line 325), and the mode bits decide which comparison feeds match (lines 303-312) and the NAPOT mask (line 266). Integrity is Established: corrupted configuration changes the permission and match decisions that produce fault_o. Availability is also Established: the byte is held between writes and cleared only by rstn_i (line 125). The byte is returned on csr_o through cfg_rd and cfg_rd32 (lines 203, 236, 190); no line restricts that read, so confidentiality is not established. pmpcfg stores (CLOCKED_BY clk_i, line 129); ctrl_i sets it through its csr_wdata field (SOURCES pmpcfg, line 129); csr_o is the exit (DERIVES_FROM cfg_rd32, line 190). cfg_rd and cfg_rd32 only forward and pack the bytes. ctrl_i is a CPU control record with no acknowledge, byte enables or read data, so it is not a complete-transaction transport record; it is named whole. Exists for NUM_REGIONS > 0 (generate at line 120).",
+   "related structural assets": [
+    {"asset rtl": "pmpcfg", "entity": "neorv32_cpu_pmp", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_pmp", "realization": "sets", "occurrence": 6, "edge": {"type": "SOURCES", "partner": "pmpcfg"}},
+    {"asset rtl": "csr_o", "entity": "neorv32_cpu_pmp", "realization": "exit port", "occurrence": 2, "edge": {"type": "DERIVES_FROM", "partner": "cfg_rd32"}}
+   ]
+  },
+  {
+   "concept": "Region lock state -- the per-region lock bit that freezes the region's configuration and address and removes the machine-mode bypass",
+   "security objective": "Integrity",
+   "reasoning": "`pmpcfg(i)(cfg_l_c) <= ctrl_i.csr_wdata((i mod 4)*8+cfg_l_c);` (line 145) stores the lock bit. Once set it blocks configuration writes (line 127) and address writes for the region (line 170), and a locked TOR region i+1 blocks writes to pmpaddr(i) (line 172). It also decides machine-mode permission: `allow(r) <= pmpcfg(r)(cfg_x_c) or (not pmpcfg(r)(cfg_l_c));` (line 323, likewise lines 330 and 337). Integrity is Established: a flipped lock bit lets locked settings be rewritten or changes machine-mode permission results. Only rstn_i clears it (line 125), because the write at line 145 is itself under the unlocked condition of line 127. The bit is read back on csr_o with the configuration byte (line 190). pmpcfg stores (CLOCKED_BY clk_i, line 145); ctrl_i sets it (csr_wdata SOURCES pmpcfg, line 145).",
+   "related structural assets": [
+    {"asset rtl": "pmpcfg", "entity": "neorv32_cpu_pmp", "realization": "stores", "occurrence": 10, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_pmp", "realization": "sets", "occurrence": 10, "edge": {"type": "SOURCES", "partner": "pmpcfg"}}
+   ]
+  },
+  {
+   "concept": "PMP region address -- the per-region address register (TOR bound or NAPOT base and size) and the NAPOT size mask derived from it",
+   "security objective": "Integrity",
+   "reasoning": "pmpaddr(i) takes ctrl_i.csr_wdata(XLEN-3 downto 0) with two zero bits on top (lines 173, 176) when pmpaddr_we(i) is set and the region is unlocked (line 170), and not when region i+1 is a locked TOR region (line 172). It is compared with the access address in cmp_ge and cmp_lt (lines 295-296) and cmp_na (line 285), which decide match. With NAP_EN, addr_mask(r) stores the mask computed from pmpaddr (line 257) when the A bit is set (lines 266-267), else all ones (line 269); without NAP_EN it is constant zero (line 279). Integrity is Established: a wrong address or mask changes which accesses match a region (lines 285, 295-296) and therefore fault_o. Availability is also Established: both are held between updates and reset only by rstn_i (lines 168, 264). The address is returned on csr_o through addr_rd (lines 208, 192) with granularity-dependent bits forced (lines 210-219); no line restricts that read, so confidentiality is not established. pmpaddr stores (CLOCKED_BY clk_i, line 173); addr_mask stores (CLOCKED_BY clk_i, line 267, only when NAP_EN); ctrl_i sets (csr_wdata SOURCES pmpaddr, line 173); csr_o is the exit (DERIVES_FROM addr_rd, line 192). addr_mask_napot is the combinational term whose result addr_mask stores, and addr_rd only formats the readback.",
+   "related structural assets": [
+    {"asset rtl": "pmpaddr", "entity": "neorv32_cpu_pmp", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "addr_mask", "entity": "neorv32_cpu_pmp", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_pmp", "realization": "sets", "occurrence": 15, "edge": {"type": "SOURCES", "partner": "pmpaddr"}},
+    {"asset rtl": "csr_o", "entity": "neorv32_cpu_pmp", "realization": "exit port", "occurrence": 3, "edge": {"type": "DERIVES_FROM", "partner": "addr_rd"}}
+   ]
+  },
+  {
+   "concept": "PMP CSR write eligibility -- whether a CSR write is decoded to a configuration group or to an address register",
+   "security objective": "Integrity",
+   "reasoning": "`if (ctrl_i.csr_addr(11 downto 2) = csr_pmpcfg0_c(11 downto 2)) and (ctrl_i.csr_we = '1') then` sets one pmpcfg_we bit chosen by csr_addr(1 downto 0) (lines 113-114); lines 157-158 do the same for pmpaddr_we. pmpcfg_we gates every configuration update (line 127) and pmpaddr_we every address update (line 170). Integrity is Established: a wrong decision writes a register that was not addressed or drops one that was. The map lists both as constant-valued sources because each assignment is a literal; the RTL shows the literal chosen by conditions on ctrl_i fields, so each holds a decision. pmpcfg_we and pmpaddr_we compute it (GATED_BY ctrl_i.csr_we, lines 114 and 158); ctrl_i sets it through csr_we and csr_addr (GATES pmpcfg_we, line 113).",
+   "related structural assets": [
+    {"asset rtl": "pmpcfg_we", "entity": "neorv32_cpu_pmp", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "ctrl_i.csr_we"}},
+    {"asset rtl": "pmpaddr_we", "entity": "neorv32_cpu_pmp", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "ctrl_i.csr_we"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_pmp", "realization": "sets", "occurrence": 3, "edge": {"type": "GATES", "partner": "pmpcfg_we"}}
+   ]
+  },
+  {
+   "concept": "Region match decision -- whether the checked access address falls inside a region under its configured mode",
+   "security objective": "Integrity",
+   "reasoning": "acc_addr takes ctrl_i.pc_nxt for an instruction fetch or addr_ls_i for a load/store (line 244). The TOR comparisons (lines 295-296) and the NAPOT comparison (line 285) feed `match(r) <= cmp_ge(r) and (not cmp_ge(r+1));` (line 307), `match(r) <= cmp_ge(r) and cmp_lt(r);` (line 305) or `match(r) <= cmp_na(r);` (line 310), chosen by the mode bits (lines 303, 309), otherwise '0' (line 312). match decides whether a region's permission or the next region decides fail (line 354). Integrity is Established: a wrong match applies the wrong region's permission or the default. TOR terms exist only with TOR_EN and NAPOT terms only with NAP_EN. The map lists match as not reached from an input, but lines 285 and 295-296 read acc_addr, which addr_ls_i and ctrl_i.pc_nxt drive (line 244); the RTL wins. match computes (GATED_BY cmp_ge, line 305); addr_ls_i sets (SOURCES acc_addr, line 244); ctrl_i sets through pc_nxt (SOURCES acc_addr, line 244). acc_addr only routes one of two inputs, and cmp_ge, cmp_lt and cmp_na are operands of the match computation.",
+   "related structural assets": [
+    {"asset rtl": "match", "entity": "neorv32_cpu_pmp", "realization": "computes", "occurrence": 2, "edge": {"type": "GATED_BY", "partner": "cmp_ge"}},
+    {"asset rtl": "addr_ls_i", "entity": "neorv32_cpu_pmp", "realization": "sets", "occurrence": 2, "edge": {"type": "SOURCES", "partner": "acc_addr"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_pmp", "realization": "sets", "occurrence": 22, "edge": {"type": "SOURCES", "partner": "acc_addr"}}
+   ]
+  },
+  {
+   "concept": "Region permission decision -- whether a region's R/W/X bits allow the current access type at the current privilege",
+   "security objective": "Integrity",
+   "reasoning": "perm_gen picks the permission bit by access type, instruction fetch when ctrl_i.lsu_mo_we = '0' (line 321), read when ctrl_i.lsu_rw = '0' (line 328), else write, and by privilege acc_priv (lines 322, 329, 336), as in `allow(r) <= pmpcfg(r)(cfg_r_c) or (not pmpcfg(r)(cfg_l_c));` (line 330) and `allow(r) <= pmpcfg(r)(cfg_r_c);` (line 332). fail uses it when the region matches (line 354). Integrity is Established: a wrong allow lets a forbidden access pass or faults a permitted one. allow computes (DERIVES_FROM pmpcfg, line 325); ctrl_i sets the access type and privilege through lsu_rw (GATES allow, line 328), lsu_mo_we (line 321) and cpu_priv / lsu_priv (SOURCES acc_priv, line 245). acc_priv only routes one of two privilege fields (line 245).",
+   "related structural assets": [
+    {"asset rtl": "allow", "entity": "neorv32_cpu_pmp", "realization": "computes", "occurrence": 3, "edge": {"type": "DERIVES_FROM", "partner": "pmpcfg"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_pmp", "realization": "sets", "occurrence": 29, "edge": {"type": "GATES", "partner": "allow"}}
+   ]
+  },
+  {
+   "concept": "Access fault decision -- the verdict that the checked access is not permitted, reported on fault_o",
+   "security objective": "Integrity",
+   "reasoning": "`fail(NUM_REGIONS) <= '1' when (acc_priv /= priv_mode_m_c) else '0';` (line 351) gives the default when no region matches, and `fail(r) <= not allow(r) when (match(r) = '1') else fail(r+1);` (line 354) lets the lowest-numbered matching region decide. `fault_o <= (not ctrl_i.cpu_debug) and fail(0);` (line 363) registers the verdict, suppressed in debug mode; reset clears it (line 361). Integrity is Established: the reported fault must equal the priority-chain result, and its consumer lies outside this entity. Availability is Established under the implemented conditions: at each rising clk_i edge with rstn_i high, fault_o takes the new verdict (lines 362-363). fail computes (DERIVES_FROM allow, line 354); fault_o is the exit port (GATED_BY fail, line 363), ahead of its storage role; ctrl_i sets through cpu_debug (GATES fault_o, line 363).",
+   "related structural assets": [
+    {"asset rtl": "fail", "entity": "neorv32_cpu_pmp", "realization": "computes", "occurrence": 3, "edge": {"type": "DERIVES_FROM", "partner": "allow"}},
+    {"asset rtl": "fault_o", "entity": "neorv32_cpu_pmp", "realization": "exit port", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "fail"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_pmp", "realization": "sets", "occurrence": 30, "edge": {"type": "GATES", "partner": "fault_o"}}
+   ]
+  }
+ ]
+}

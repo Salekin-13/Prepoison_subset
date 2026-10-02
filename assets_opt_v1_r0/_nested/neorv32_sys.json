@@ -1,0 +1,176 @@
+{
+ "module name": "neorv32_sys",
+ "module purpose": "The file holds two entities. neorv32_sys_reset turns an external reset input and two synchronous reset-request inputs (rstn_wdt_i, rstn_dbg_i) into a stretched external reset (rstn_ext_o) and a stretched system reset (rstn_sys_o) through two 4-bit shift registers, and registers the two request inputs onto xrstn_wdt_o and xrstn_ocd_o; neorv32_sys_clock registers whether any enable_i bit is set, counts clock edges while it is, and drives one-cycle clock-enable pulses on clk_en_o when selected count bits rise.",
+ "use-case flows": [
+  {
+   "flow": "reset",
+   "value": "sreg_ext, sreg_sys, rstn_ext_o, rstn_sys_o, xrstn_wdt_o and xrstn_ocd_o forced to '0' while rstn_ext_i = '0'",
+   "lines": [44, 45, 46, 47, 48, 68, 69, 70]
+  },
+  {
+   "flow": "operate",
+   "value": "external reset release: sreg_ext shifts in a '1' at each clock edge and rstn_ext_o goes high only after all four bits are '1'",
+   "lines": [49, 51, 52]
+  },
+  {
+   "flow": "operate",
+   "value": "system reset: sreg_sys is cleared while rstn_wdt_i or rstn_dbg_i is '0', otherwise shifts in a '1' per edge; rstn_sys_o is the AND of its bits",
+   "lines": [49, 54, 55, 56, 57, 59]
+  },
+  {
+   "flow": "report",
+   "value": "the two reset-request inputs registered onto xrstn_wdt_o and xrstn_ocd_o",
+   "lines": [71, 72, 73]
+  },
+  {
+   "flow": "start",
+   "value": "prescaler run decision en: the OR of the enable_i bits, registered; the count advances while it is '1' and is cleared otherwise",
+   "lines": [129, 130, 131, 133]
+  },
+  {
+   "flow": "operate",
+   "value": "prescaler count cnt, its one-edge-delayed copy cnt2, and one-cycle clock-enable pulses on clk_en_o when selected count bits rise",
+   "lines": [131, 135, 140, 141, 142, 143, 144, 145, 146, 147]
+  },
+  {
+   "flow": "reset",
+   "value": "en, cnt and cnt2 cleared while rstn_i = '0'",
+   "lines": [124, 125, 126, 127]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "System reset decision -- whether rstn_sys_o holds the system in reset, combining the external reset with the two synchronous reset requests",
+   "security objective": "Integrity",
+   "reasoning": "The system-reset flow clears the sequencer on a request: `if (rstn_wdt_i = '0') or (rstn_dbg_i = '0') then sreg_sys <= (others => '0');` (lines 54-55), otherwise shifts in a '1' (line 57), and drives `rstn_sys_o <= and_reduce_f(sreg_sys);` (line 59); rstn_ext_i clears both asynchronously (lines 44, 47-48). rstn_sys_o leaves neorv32_sys_reset to consumers that are not supplied, so Integrity is Established from lines 54-59: the consumer must receive '0' after any request and '1' only once sreg_sys has refilled with ones. Availability is also Established under the implemented conditions (rstn_ext_i high, clock edges occurring): a low request clears sreg_sys at the next edge and rstn_sys_o follows one edge later (line 59). Confidentiality is not established: no line restricts who observes the value. rstn_sys_o is exit port (occurrence 3, DERIVES_FROM sreg_sys, line 59), ahead of its own storage role. sreg_sys stores the sequencing state (occurrence 4, CLOCKED_BY clk_i, line 57); it self-updates (DERIVES_FROM sreg_sys) and its SOURCES rstn_sys_o record (occurrence 7, line 59) is its use into an output port. rstn_wdt_i and rstn_dbg_i set the decision (occurrence 2 each, GATES sreg_sys, line 54): they drive neither SEQUENCES nor RESETS, so the reset-input exclusion does not apply. rstn_ext_i drives RESETS (lines 44, 68) and clk_i drives SEQUENCES (line 49), so both are excluded. The MAP CHECK lists sreg_sys CLOCKED_BY clk_i as lacking a partner, but clk_i's SEQUENCES record at occurrence 3 names sreg_sys and line 49 confirms the clock edge.",
+   "related structural assets": [
+    {
+     "asset rtl": "rstn_sys_o",
+     "entity": "neorv32_sys_reset",
+     "realization": "exit port",
+     "occurrence": 3,
+     "edge": {"type": "DERIVES_FROM", "partner": "sreg_sys"}
+    },
+    {
+     "asset rtl": "sreg_sys",
+     "entity": "neorv32_sys_reset",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "rstn_wdt_i",
+     "entity": "neorv32_sys_reset",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "GATES", "partner": "sreg_sys"}
+    },
+    {
+     "asset rtl": "rstn_dbg_i",
+     "entity": "neorv32_sys_reset",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "GATES", "partner": "sreg_sys"}
+    }
+   ]
+  },
+  {
+   "concept": "External reset output -- the stretched form of the external reset that rstn_ext_o delivers",
+   "security objective": "Integrity",
+   "reasoning": "sreg_ext is cleared while rstn_ext_i = '0' (lines 44-45) and then shifts in a '1' at each edge, `sreg_ext <= sreg_ext(sreg_ext'left-1 downto 0) & '1';` (line 51); `rstn_ext_o <= and_reduce_f(sreg_ext);` (line 52) releases the output only after all four bits are '1', and line 46 holds it at '0' during the external reset. rstn_ext_o is delivered out of neorv32_sys_reset to consumers not supplied, so Integrity is Established from lines 46, 51 and 52: the consumer must see '0' during the external reset and through the release delay. Availability is Established for release at clock edges after rstn_ext_i returns high, without assuming any external timing. Confidentiality is not established. rstn_ext_o is exit port (occurrence 3, DERIVES_FROM sreg_ext, line 52), ahead of its storage role. sreg_ext stores the release state (occurrence 3, CLOCKED_BY clk_i, line 51); it self-updates and its SOURCES rstn_ext_o record (occurrence 6, line 52) is its use into an output port. The only input that affects this value, rstn_ext_i, drives RESETS (occurrence 3, line 44) and is excluded as a reset input.",
+   "related structural assets": [
+    {
+     "asset rtl": "rstn_ext_o",
+     "entity": "neorv32_sys_reset",
+     "realization": "exit port",
+     "occurrence": 3,
+     "edge": {"type": "DERIVES_FROM", "partner": "sreg_ext"}
+    },
+    {
+     "asset rtl": "sreg_ext",
+     "entity": "neorv32_sys_reset",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Reset-request indications -- the two synchronous reset-request inputs, registered and delivered out of neorv32_sys_reset",
+   "security objective": "Integrity",
+   "reasoning": "`xrstn_wdt_o <= rstn_wdt_i;` (line 72) and `xrstn_ocd_o <= rstn_dbg_i;` (line 73) capture each request on the clock edge (line 71), and both outputs are forced to '0' while rstn_ext_i = '0' (lines 68-70). The values leave the entity to consumers not supplied, so Integrity is Established from lines 69-73: each output must equal its request input as sampled at the previous edge, or '0' during the external reset. Availability is Established for delivery at each clock edge while rstn_ext_i is high (line 71). Confidentiality is not established. xrstn_wdt_o and xrstn_ocd_o are exit ports (occurrence 3, COPIES rstn_wdt_i and COPIES rstn_dbg_i, lines 72-73), ahead of their storage role; ports are outside the copy rule. rstn_wdt_i (occurrence 3, CARRIES xrstn_wdt_o) and rstn_dbg_i (occurrence 3, CARRIES xrstn_ocd_o) set these values: the entity reads each to store it on a clock edge, and also decides on each at line 54, so neither is used only for unchanged forwarding.",
+   "related structural assets": [
+    {
+     "asset rtl": "xrstn_wdt_o",
+     "entity": "neorv32_sys_reset",
+     "realization": "exit port",
+     "occurrence": 3,
+     "edge": {"type": "COPIES", "partner": "rstn_wdt_i"}
+    },
+    {
+     "asset rtl": "xrstn_ocd_o",
+     "entity": "neorv32_sys_reset",
+     "realization": "exit port",
+     "occurrence": 3,
+     "edge": {"type": "COPIES", "partner": "rstn_dbg_i"}
+    },
+    {
+     "asset rtl": "rstn_wdt_i",
+     "entity": "neorv32_sys_reset",
+     "realization": "sets",
+     "occurrence": 3,
+     "edge": {"type": "CARRIES", "partner": "xrstn_wdt_o"}
+    },
+    {
+     "asset rtl": "rstn_dbg_i",
+     "entity": "neorv32_sys_reset",
+     "realization": "sets",
+     "occurrence": 3,
+     "edge": {"type": "CARRIES", "partner": "xrstn_ocd_o"}
+    }
+   ]
+  },
+  {
+   "concept": "Prescaler run decision -- whether the clock-enable counter runs, taken from any enable request",
+   "security objective": "Integrity",
+   "reasoning": "`en <= or_reduce_f(enable_i);` (line 129) registers the run decision, and `if (en = '1') then cnt <= std_ulogic_vector(unsigned(cnt) + 1); else cnt <= (others => '0');` (lines 130-133) makes counting depend on it. Integrity is Established: a wrong en advances the count when no enable_i bit is set, or clears it when one is (lines 130-133), which changes when clk_en_o pulses (lines 140-147). Availability is Established under the implemented conditions: while some enable_i bit is '1' and rstn_i is high, en is '1' from the next edge and cnt advances at each edge. Confidentiality is not established. enable_i sets the decision (occurrence 2, SOURCES en, line 129); its width is the generic NUM_EN (lines 103, 108). enable_i drives neither SEQUENCES nor RESETS and does not gate a clock: through en it chooses between counting and clearing, so the clock-enable exclusion does not apply. en stores the decision (occurrence 3, CLOCKED_BY clk_i, line 129); its GATES cnt record (occurrence 4, line 130) is its use. rstn_i drives RESETS (line 124) and clk_i drives SEQUENCES (line 128); both are excluded.",
+   "related structural assets": [
+    {
+     "asset rtl": "enable_i",
+     "entity": "neorv32_sys_clock",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "SOURCES", "partner": "en"}
+    },
+    {
+     "asset rtl": "en",
+     "entity": "neorv32_sys_clock",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Clock-enable ticks -- the divided-rate one-cycle enable pulses that clk_en_o delivers, and the count they come from",
+   "security objective": "Integrity",
+   "reasoning": "cnt advances while en = '1' (line 131), cnt2 holds cnt one edge later (line 135), and each clk_en_o bit is formed as in `clk_en_o(clk_div2_c) <= cnt(0) and (not cnt2(0));` (line 140; lines 141-147 use count bits 1, 2, 5, 6, 9, 10 and 11). Each bit is therefore a one-cycle pulse whenever its count bit changes from '0' to '1', every 2^(i+1) counted edges for bit i. The pulses leave neorv32_sys_clock to consumers not supplied, so Integrity is Established from lines 131, 135 and 140-147: each output bit must pulse exactly when its count bit rises. Availability is Established only while en = '1' and rstn_i is high (lines 124, 130-133); no liveness beyond that is claimed. Confidentiality is not established. clk_en_o is exit port (occurrence 2, GATED_BY cnt, line 140): the map writes the single-bit AND operands as GATES, and the flow graph lists clk_en_o as not reached from a source for that reason, while lines 140-147 show its value is computed from cnt and cnt2. cnt stores the count (occurrence 3, CLOCKED_BY clk_i, line 131); it self-updates and its GATES clk_en_o record (occurrence 7, line 140) is its use. cnt2's only COPIES record names cnt (line 135) and it has no DERIVES_FROM record, so it holds cnt's value one clock later and is not listed separately. The bit positions clk_div2_c to clk_div4096_c are package constants that are not supplied, so which output bit carries which rate is not visible here.",
+   "related structural assets": [
+    {
+     "asset rtl": "clk_en_o",
+     "entity": "neorv32_sys_clock",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "GATED_BY", "partner": "cnt"}
+    },
+    {
+     "asset rtl": "cnt",
+     "entity": "neorv32_sys_clock",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  }
+ ]
+}

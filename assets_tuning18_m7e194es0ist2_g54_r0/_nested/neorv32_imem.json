@@ -1,0 +1,178 @@
+{
+  "module name": "neorv32_imem",
+  "module purpose": "neorv32_imem maps bus requests to an internal word-addressed memory. It derives a word index from bus_req_i.addr, reads either a constant image when IMEM_INIT=true or writable byte arrays when IMEM_INIT=false into rdata, and returns acknowledge and read data on bus_rsp_o while err is tied low.",
+  "use-case flows": [
+    {
+      "flow": "operate",
+      "value": "word address derived from the request address and used to index memory reads and RAM writes",
+      "lines": [
+        101,
+        81,
+        116,
+        119,
+        122,
+        125,
+        128,
+        129,
+        130,
+        131
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "when IMEM_INIT is false, write data bytes stored into selected byte lanes of the internal memory on a write strobe",
+      "lines": [
+        114,
+        115,
+        116,
+        118,
+        119,
+        121,
+        122,
+        124,
+        125
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "addressed memory word captured in rdata and driven to the response data path only for read requests",
+      "lines": [
+        80,
+        81,
+        128,
+        129,
+        130,
+        131,
+        176,
+        185
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "acknowledge response asserted for reads in IMEM_INIT=true builds and for any strobe in IMEM_INIT=false builds",
+      "lines": [
+        172,
+        174,
+        175,
+        177,
+        178,
+        180
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "rden and the acknowledge response cleared to '0' when rstn_i='0'",
+      "lines": [
+        172,
+        173,
+        174
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Selected word address for the current memory access",
+      "security objective": "Integrity",
+      "reasoning": "The access flow computes the internal word index with 'addr <= unsigned(bus_req_i.addr(addr_hi_c downto 2));' (line 101) and then uses that value to select the ROM word at line 81 and the RAM write/read locations at lines 116, 119, 122, 125 and 128-131. Integrity is established because the implemented read-out and write flows depend on using the intended word location; corruption would redirect writes or return data from a different location. The map also shows addr_ff on an alternative path, but RTL line 38 fixes alt_style_c to false, so the active design uses addr directly and ties addr_ff to zeros at lines 84 and 134.",
+      "related structural assets": [
+        {
+          "asset rtl": "addr",
+          "entity": "neorv32_imem",
+          "realization": "computes",
+          "occurrence": 4,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "bus_req_i.addr"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Writable memory contents held in the internal byte arrays",
+      "security objective": "Integrity",
+      "reasoning": "In builds with IMEM_INIT=false, the operate flow stores request data into byte lanes only when the write conditions hold: lines 114-125 write bus_req_i.data bytes into mem_ram_b0..mem_ram_b3 under bus_req_i.stb, bus_req_i.rw and bus_req_i.ben. Those stored bytes are later read into rdata at lines 128-131 and then reach the response data path at line 185. Integrity is established because later returned words must match the bytes previously written; availability is also established because these elements are edge-storage arrays that retain their values between writes. The request and response ports are transport records, so the eligible structural references are the internal memory arrays.",
+      "related structural assets": [
+        {
+          "asset rtl": "mem_ram_b0",
+          "entity": "neorv32_imem",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "mem_ram_b1",
+          "entity": "neorv32_imem",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "mem_ram_b2",
+          "entity": "neorv32_imem",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "mem_ram_b3",
+          "entity": "neorv32_imem",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Addressed memory word buffered for a read response",
+      "security objective": "Integrity",
+      "reasoning": "The read path stores the selected word in rdata: in ROM builds, line 81 assigns rdata from mem_rom_c(to_integer(addr)); in RAM builds, lines 128-131 assign rdata byte lanes from mem_ram_b0..mem_ram_b3 at the selected address. Line 185 then makes the response data derive from rdata when rden='1'. Integrity is established because the read-out flow depends on rdata matching the addressed memory word; availability is also established because the active default implementation captures rdata on clk_i edges. The map marks rdata as mixed storage only because it also lists inactive alternative-style assignments, but RTL line 38 fixes alt_style_c to false, so the active assignments are the clocked ones.",
+      "related structural assets": [
+        {
+          "asset rtl": "rdata",
+          "entity": "neorv32_imem",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Read-data qualification decision",
+      "security objective": "Integrity",
+      "reasoning": "The module computes and holds the decision to expose read data with 'rden <= bus_req_i.stb and (not bus_req_i.rw);' (line 176), clears it on reset at line 173, and uses it to gate the response data at line 185. Integrity is established because the implemented read-out flow requires memory data to appear only for read requests and to be forced to zeros otherwise; availability is also established because a read request causes this qualifier to be produced on the next rising edge when rstn_i is not asserting reset.",
+      "related structural assets": [
+        {
+          "asset rtl": "rden",
+          "entity": "neorv32_imem",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Bus-acknowledge response event",
+      "security objective": "Integrity",
+      "reasoning": "The report flow generates the completion event directly on the output field: reset forces bus_rsp_o.ack to '0' at line 174, line 178 assigns it to 'bus_req_i.stb and (not bus_req_i.rw)' when IMEM_INIT=true, and line 180 assigns it to bus_req_i.stb when IMEM_INIT=false. Integrity is established because external logic receives this event as the module's implemented acknowledgment, and availability is established under the corresponding request conditions. No eligible structural reference survives the reporting rules because the only realization is bus_rsp_o.ack, a field of the transport output port bus_rsp_o, which is excluded whole and by field.",
+      "related structural assets": []
+    }
+  ]
+}

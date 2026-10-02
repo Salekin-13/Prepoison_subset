@@ -1,0 +1,174 @@
+{
+  "module name": "neorv32_cpu_cp_muldiv",
+  "conceptual assets": [
+    {
+      "concept": "Detected multiply/divide command decision (instruction decode)",
+      "security objective": "Integrity",
+      "reasoning": "The combinational signal valid_cmd is computed from the control input and the DIVISION_EN generic (valid_cmd <= '1' when ctrl_i.alu_cp_alu='1' and ctrl_i.ir_opcode(5)='1' and ctrl_i.ir_funct12(11 downto 5) = \"0000001\" and ((ctrl_i.ir_funct3(2)='0') or ((ctrl_i.ir_funct3(2)='1') and DIVISION_EN)) else '0'). The control process consumes valid_cmd to transition from S_IDLE into S_BUSY or S_DONE and mul.start/div.start also depend on it. RTL evidence: the control process case uses 'if (valid_cmd = '1') then ...' and mul.start/div.start assignments use valid_cmd. Integrity is established because corrupting this decoded decision changes whether the core begins a multiply/divide flow.",
+      "related structural assets": [
+        {
+          "asset rtl": "valid_cmd",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Operation lifecycle state and timing that schedule, run and enable result delivery",
+      "security objective": "Integrity",
+      "reasoning": "The synchronous control process initializes and updates the record fields ctrl.state and ctrl.cnt and sets ctrl.out_en when a flow completes: on reset ctrl.state <= S_IDLE; on rising_edge the state machine moves between S_IDLE/S_BUSY/S_DONE, decrements ctrl.cnt in S_BUSY (ctrl.cnt <= unsigned(ctrl.cnt)-1) and sets ctrl.out_en <= '1' in the DONE branch. These fields implement operation scheduling and the gate that enables result export. Integrity is established because corruption of ctrl.state, ctrl.cnt or ctrl.out_en changes operation progress, completion timing and whether outputs are enabled.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.state",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.cnt",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.out_en",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Operation completion indicator observable to peers",
+      "security objective": "Integrity",
+      "reasoning": "The output valid_o is driven directly from the state machine: 'valid_o <= '1' when (ctrl.state = S_DONE) else '0''. valid_o externally reports that an operation is done. Integrity is established because altering valid_o or the ctrl.state equality semantics would misreport completion to consumers.",
+      "related structural assets": [
+        {
+          "asset rtl": "valid_o",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "ctrl.state",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Computation result exported from the unit (multiplier product or divider result)",
+      "security objective": "Integrity",
+      "reasoning": "The operation_result process drives res_o only when ctrl.out_en = '1' and selects the source by ctrl_i.ir_funct3: for op_mul_c it assigns res_o <= mul.prod(31 downto 0), for op_mulh/mulhsu/mulhu it assigns mul.prod(63 downto 32), and otherwise res_o <= div.res. RTL evidence: the case in operation_result and the gating by ctrl.out_en. Integrity is established because corruption of mul.prod, div.res, the gating (ctrl.out_en) or the operation selection (ctrl_i) produces incorrect exported results.",
+      "related structural assets": [
+        {
+          "asset rtl": "res_o",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "mul.prod",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "div.res",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "ctrl.out_en",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Operand signedness decisions used to sign-extend/negate inputs",
+      "security objective": "Integrity",
+      "reasoning": "The concurrent assignments set ctrl.rs1_is_signed and ctrl.rs2_is_signed from the instruction funct3 (e.g. ctrl.rs1_is_signed <= '1' when ctrl_i.ir_funct3 = op_mulh_c or op_mulhsu_c or op_div_c or op_rem_c else '0'). These flags are consumed where operands are sign-extended or negated in multiplier and divider code (mul.dsp_x/y formation and the div.quotient/div.rs2_abs initializations). Integrity is established because wrong signedness changes arithmetic semantics and yields incorrect results.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.rs1_is_signed",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "ctrl.rs2_is_signed",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Multiplier operand captures (sign-extended inputs) that determine the product",
+      "security objective": "Integrity",
+      "reasoning": "When mul.start = '1' the FAST_MUL_EN path captures inputs into mul.dsp_x and mul.dsp_y as signed((rs?_i(rs?_i'left) and ctrl.rs?_is_signed) & rs?_i). mul.dsp_z is computed as mul.dsp_x * mul.dsp_y and mul.prod is registered from mul.dsp_z. RTL evidence: multiplier_core_in_reg process assigns mul.dsp_x/dsp_y and mul.dsp_z <= mul.dsp_x * mul.dsp_y, and multiplier_core_out_reg registers mul.prod. Integrity is established because corruption of the captured operands or of rs1_i/rs2_i changes the computed product.",
+      "related structural assets": [
+        {
+          "asset rtl": "mul.dsp_x",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "mul.dsp_y",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rs1_i",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "rs2_i",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Divider iterative core state and subtraction decision used to form quotient/remainder",
+      "security objective": "Integrity",
+      "reasoning": "The divider_core process initializes div.quotient and div.rs2_abs on div.start (possibly negating inputs using ctrl.rs?_is_signed), then in S_BUSY/DONE shifts and updates div.quotient and div.remainder using div.sub and the conditional 'if (div.sub(32) = '0') ...'. div.sub is computed as unsigned('0' & div.remainder(30 downto 0) & div.quotient(31)) - unsigned('0' & div.rs2_abs). div.sign_mod and div.res_u/regulate final sign; div.res is then used for output. RTL evidence: divider_core process, the concurrent div.sub assignment, and selection of div.res_u/div.res. Integrity is established because corruption of quotient/remainder/rs2_abs/sub/sign_mod alters the produced quotient/remainder and final result.",
+      "related structural assets": [
+        {
+          "asset rtl": "div.quotient",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "div.remainder",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "div.rs2_abs",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "div.sub",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "div.sign_mod",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "computes"
+        }
+      ]
+    }
+  ]
+}

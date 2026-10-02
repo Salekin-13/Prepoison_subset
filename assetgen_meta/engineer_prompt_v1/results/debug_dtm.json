@@ -1,0 +1,1480 @@
+{
+ "module": "neorv32_debug_dtm",
+ "purpose": "RISC-V debug transport module: a JTAG TAP (state machine, 5-bit instruction register, IDCODE/BYPASS/DTMCS/DMI data registers) that turns host scans on jtag_tdi_i/jtag_tms_i/jtag_tck_i into debug-module-interface read/write requests on dmi_req_o. It returns the response data from dmi_rsp_i and the DTM status on jtag_tdo_o, and lets the host clear a DMI error (dmireset) or block the interface (dmihardreset) through dtmcs.",
+ "flows": [
+  {
+   "name": "F1 issue DMI command",
+   "value": "41-bit command word shifted in on TDI: addr = tap_reg.dmi(40:34), wdata = (33:2), op = (1:0) (lines 65, 266-269)",
+   "path": [
+    {
+     "element": "jtag_tdi_i",
+     "occ": [
+      2
+     ],
+     "line": [
+      100
+     ],
+     "edge": "SOURCES tap_sync.tdi_ff (L100)"
+    },
+    {
+     "element": "tap_sync.tdi_ff",
+     "occ": [
+      3,
+      5
+     ],
+     "line": [
+      100,
+      111
+     ],
+     "edge": "SOURCES tap_sync.tdi (L111)"
+    },
+    {
+     "element": "tap_sync.tdi",
+     "occ": [
+      6
+     ],
+     "line": [
+      196
+     ],
+     "edge": "SOURCES tap_reg.dmi (L196)"
+    },
+    {
+     "element": "tap_reg.dmi",
+     "occ": [
+      4,
+      8,
+      9,
+      12
+     ],
+     "line": [
+      196,
+      266,
+      267,
+      269
+     ],
+     "edge": "SOURCES dmi_ctrl.addr (L266); SOURCES dmi_ctrl.wdata (L267); SOURCES dmi_ctrl.op (L269)"
+    },
+    {
+     "element": "dmi_ctrl.addr",
+     "occ": [
+      4,
+      5
+     ],
+     "line": [
+      266,
+      285
+     ],
+     "edge": "CARRIES dmi_req_o.addr (L285)"
+    },
+    {
+     "element": "dmi_ctrl.wdata",
+     "occ": [
+      3,
+      4
+     ],
+     "line": [
+      267,
+      284
+     ],
+     "edge": "CARRIES dmi_req_o.data (L284)"
+    },
+    {
+     "element": "dmi_ctrl.op",
+     "occ": [
+      4,
+      5
+     ],
+     "line": [
+      269,
+      283
+     ],
+     "edge": "CARRIES dmi_req_o.op (L283)"
+    },
+    {
+     "element": "dmi_req_o.addr",
+     "occ": [
+      2
+     ],
+     "line": [
+      285
+     ],
+     "edge": "COPIES dmi_ctrl.addr (L285)"
+    },
+    {
+     "element": "dmi_req_o.data",
+     "occ": [
+      2
+     ],
+     "line": [
+      284
+     ],
+     "edge": "COPIES dmi_ctrl.wdata (L284)"
+    },
+    {
+     "element": "dmi_req_o.op",
+     "occ": [
+      2
+     ],
+     "line": [
+      283
+     ],
+     "edge": "COPIES dmi_ctrl.op (L283)"
+    }
+   ],
+   "controls": [
+    {
+     "element": "tap_reg.ireg",
+     "edge": "SELECTS tap_reg.dmi (L186,193); GATES dmi_ctrl.addr (L265)",
+     "decided_by": "the host, by shifting TDI during IR_SHIFT (L181); forced to addr_idcode_c in LOGIC_RESET/IR_CAPTURE (L178-179)",
+     "occ": [
+      8,
+      13
+     ]
+    },
+    {
+     "element": "tap_ctrl_state",
+     "edge": "GATES tap_reg.dmi (L185,192)",
+     "decided_by": "tap_sync.tms on tap_sync.tck_rising (L121-138)",
+     "occ": [
+      41,
+      42
+     ]
+    },
+    {
+     "element": "dr_trigger.valid",
+     "edge": "GATES dmi_ctrl.addr (L265)",
+     "decided_by": "dr_trigger.sreg = \"01\" (L161), i.e. one clock after tap_ctrl_state = DR_UPDATE (L151-156)",
+     "occ": [
+      5
+     ]
+    },
+    {
+     "element": "dmi_ctrl.busy",
+     "edge": "GATES dmi_ctrl.addr (L264); GATES dmi_ctrl.op (L264)",
+     "decided_by": "set at L270 when a command is accepted, cleared only by dmi_rsp_i.ack (L275-276) or rstn_i (L237)",
+     "occ": [
+      5
+     ]
+    },
+    {
+     "element": "dmi_ctrl.dmihardreset",
+     "edge": "GATES dmi_ctrl.addr (L265)",
+     "decided_by": "tap_reg.dtmcs(17) written by the host (L249); reset value 1 (L239)",
+     "occ": [
+      7
+     ]
+    },
+    {
+     "element": "tap_reg.dmi",
+     "edge": "GATES dmi_ctrl.op (L268); GATES dmi_ctrl.busy (L268)",
+     "decided_by": "the op field shifted in by the host; only read or write codes start a transaction (L268)",
+     "occ": [
+      10,
+      11
+     ]
+    }
+   ]
+  },
+  {
+   "name": "F2 read out DMI response",
+   "value": "data returned by the debug module (dmi_rsp_i.data), packed with the echoed address and a 2-bit status into the 41-bit DMI capture word (L229) and shifted out on TDO",
+   "path": [
+    {
+     "element": "dmi_rsp_i.data",
+     "occ": [
+      2
+     ],
+     "line": [
+      274
+     ],
+     "edge": "CARRIES dmi_ctrl.rdata (L274)"
+    },
+    {
+     "element": "dmi_ctrl.rdata",
+     "occ": [
+      4,
+      2
+     ],
+     "line": [
+      229,
+      274
+     ],
+     "edge": "COPIES dmi_rsp_i.data (L274); SOURCES tap_reg.dmi_nxt (L229)"
+    },
+    {
+     "element": "tap_reg.dmi_nxt",
+     "occ": [
+      4,
+      2
+     ],
+     "line": [
+      189,
+      229
+     ],
+     "edge": "DERIVES_FROM dmi_ctrl.rdata (L229); CARRIES tap_reg.dmi (L189)"
+    },
+    {
+     "element": "tap_reg.dmi",
+     "occ": [
+      3,
+      7
+     ],
+     "line": [
+      189,
+      209
+     ],
+     "edge": "COPIES tap_reg.dmi_nxt (L189); SOURCES jtag_tdo_o (L209)"
+    },
+    {
+     "element": "jtag_tdo_o",
+     "occ": [
+      6
+     ],
+     "line": [
+      209
+     ],
+     "edge": "DERIVES_FROM tap_reg.dmi (L209)"
+    }
+   ],
+   "controls": [
+    {
+     "element": "dmi_ctrl.busy",
+     "edge": "GATES dmi_ctrl.rdata (L264)",
+     "decided_by": "rdata follows dmi_rsp_i.data on every cycle while busy = 1 (else branch of L264); not gated by ack",
+     "occ": [
+      5
+     ]
+    },
+    {
+     "element": "tap_reg.ireg",
+     "edge": "SELECTS tap_reg.dmi (L186,193); SELECTS jtag_tdo_o (L206)",
+     "decided_by": "host-set instruction (L181)",
+     "occ": [
+      7,
+      10
+     ]
+    },
+    {
+     "element": "tap_ctrl_state",
+     "edge": "GATES tap_reg.dmi (L185,192); GATES jtag_tdo_o (L203)",
+     "decided_by": "tap_sync.tms (DR_CAPTURE at L185, not IR_SHIFT at L203)",
+     "occ": [
+      41,
+      43
+     ]
+    },
+    {
+     "element": "tap_sync.tck_falling",
+     "edge": "GATES jtag_tdo_o (L202)",
+     "decided_by": "jtag_tck_i falling edge seen in tap_sync.tck_ff (L107)",
+     "occ": [
+      3
+     ]
+    }
+   ]
+  },
+  {
+   "name": "F3 request DMI reset",
+   "value": "dtmcs bit 17 (dmihardreset) and bit 16 (dmireset) shifted in by the host",
+   "path": [
+    {
+     "element": "jtag_tdi_i",
+     "occ": [
+      2
+     ],
+     "line": [
+      100
+     ],
+     "edge": "SOURCES tap_sync.tdi_ff (L100)"
+    },
+    {
+     "element": "tap_sync.tdi_ff",
+     "occ": [
+      3,
+      5
+     ],
+     "line": [
+      100,
+      111
+     ],
+     "edge": "SOURCES tap_sync.tdi (L111)"
+    },
+    {
+     "element": "tap_sync.tdi",
+     "occ": [
+      5
+     ],
+     "line": [
+      195
+     ],
+     "edge": "SOURCES tap_reg.dtmcs (L195)"
+    },
+    {
+     "element": "tap_reg.dtmcs",
+     "occ": [
+      4,
+      8,
+      9
+     ],
+     "line": [
+      195,
+      248,
+      249
+     ],
+     "edge": "SOURCES dmi_ctrl.dmireset (L248); SOURCES dmi_ctrl.dmihardreset (L249)"
+    },
+    {
+     "element": "dmi_ctrl.dmireset",
+     "occ": [
+      4,
+      6
+     ],
+     "line": [
+      248,
+      256
+     ],
+     "edge": "DERIVES_FROM tap_reg.dtmcs (L248); GATES dmi_ctrl.err (L256)"
+    },
+    {
+     "element": "dmi_ctrl.dmihardreset",
+     "occ": [
+      4,
+      6,
+      7
+     ],
+     "line": [
+      249,
+      256,
+      265
+     ],
+     "edge": "DERIVES_FROM tap_reg.dtmcs (L249); GATES dmi_ctrl.err (L256); GATES dmi_ctrl.busy (L265)"
+    }
+   ],
+   "controls": [
+    {
+     "element": "dr_trigger.valid",
+     "edge": "GATES dmi_ctrl.dmireset (L247)",
+     "decided_by": "update pulse after DR_UPDATE (L151-161)",
+     "occ": [
+      3
+     ]
+    },
+    {
+     "element": "tap_reg.ireg",
+     "edge": "GATES dmi_ctrl.dmihardreset (L247)",
+     "decided_by": "host-set instruction must equal addr_dtmcs_c (L247)",
+     "occ": [
+      11
+     ]
+    },
+    {
+     "element": "dmi_ctrl.busy",
+     "edge": "GATES dmi_ctrl.dmihardreset (L250)",
+     "decided_by": "the reset request is cleared only when busy = 0 (L250-252), so it is held for the whole transaction",
+     "occ": [
+      3
+     ]
+    }
+   ]
+  },
+  {
+   "name": "F4 report DTM status",
+   "value": "dtmcs capture word: dmihardreset (bit 17), dmireset (16), dmistat = err (11:10), constant abits and version (9:0); also the 2-bit op/status field of the DMI capture word (= err)",
+   "path": [
+    {
+     "element": "dmi_ctrl.err",
+     "occ": [
+      2
+     ],
+     "line": [
+      229
+     ],
+     "edge": "SOURCES tap_reg.dmi_nxt (L229)"
+    },
+    {
+     "element": "tap_reg.dmi_nxt",
+     "occ": [
+      3
+     ],
+     "line": [
+      224
+     ],
+     "edge": "SOURCES tap_reg.dtmcs_nxt (L224)"
+    },
+    {
+     "element": "dmi_ctrl.dmihardreset",
+     "occ": [
+      2
+     ],
+     "line": [
+      220
+     ],
+     "edge": "CARRIES tap_reg.dtmcs_nxt (L220)"
+    },
+    {
+     "element": "dmi_ctrl.dmireset",
+     "occ": [
+      2
+     ],
+     "line": [
+      221
+     ],
+     "edge": "CARRIES tap_reg.dtmcs_nxt (L221)"
+    },
+    {
+     "element": "tap_reg.dtmcs_nxt",
+     "occ": [
+      2,
+      4,
+      5,
+      8
+     ],
+     "line": [
+      188,
+      220,
+      221,
+      224
+     ],
+     "edge": "CARRIES tap_reg.dtmcs (L188)"
+    },
+    {
+     "element": "tap_reg.dtmcs",
+     "occ": [
+      3,
+      7
+     ],
+     "line": [
+      188,
+      208
+     ],
+     "edge": "COPIES tap_reg.dtmcs_nxt (L188); SOURCES jtag_tdo_o (L208)"
+    },
+    {
+     "element": "jtag_tdo_o",
+     "occ": [
+      5
+     ],
+     "line": [
+      208
+     ],
+     "edge": "DERIVES_FROM tap_reg.dtmcs (L208)"
+    }
+   ],
+   "controls": [
+    {
+     "element": "dmi_ctrl.busy",
+     "edge": "GATES dmi_ctrl.err (L258)",
+     "decided_by": "err is set when an update for addr_dmi_c arrives while busy = 1 (L258-259): the command is dropped",
+     "occ": [
+      4
+     ]
+    },
+    {
+     "element": "dr_trigger.valid",
+     "edge": "GATES dmi_ctrl.err (L258)",
+     "decided_by": "update pulse (L161)",
+     "occ": [
+      4
+     ]
+    },
+    {
+     "element": "dmi_ctrl.dmireset",
+     "edge": "GATES dmi_ctrl.err (L256)",
+     "decided_by": "host write of dtmcs(16) (L248)",
+     "occ": [
+      6
+     ]
+    },
+    {
+     "element": "dmi_ctrl.dmihardreset",
+     "edge": "GATES dmi_ctrl.err (L256)",
+     "decided_by": "host write of dtmcs(17) (L249)",
+     "occ": [
+      6
+     ]
+    }
+   ]
+  },
+  {
+   "name": "F5 DMI transaction handshake",
+   "value": "busy: a DMI transaction is in flight",
+   "path": [
+    {
+     "element": "dmi_ctrl.busy",
+     "occ": [
+      6,
+      7
+     ],
+     "line": [
+      270,
+      276
+     ],
+     "edge": "GATED_BY tap_reg.dmi (L270); GATED_BY dmi_rsp_i.ack (L276)"
+    },
+    {
+     "element": "dmi_rsp_i.ack",
+     "occ": [
+      2
+     ],
+     "line": [
+      275
+     ],
+     "edge": "GATES dmi_ctrl.busy (L275)"
+    }
+   ],
+   "controls": [
+    {
+     "element": "dmi_rsp_i.ack",
+     "edge": "GATES dmi_ctrl.busy (L275)",
+     "decided_by": "the debug module on the far side of dmi_rsp_i",
+     "occ": [
+      2
+     ]
+    },
+    {
+     "element": "dr_trigger.valid",
+     "edge": "GATES dmi_ctrl.busy (L265)",
+     "decided_by": "update pulse (L161)",
+     "occ": [
+      5
+     ]
+    },
+    {
+     "element": "tap_reg.ireg",
+     "edge": "GATES dmi_ctrl.busy (L265)",
+     "decided_by": "host-set instruction = addr_dmi_c (L265)",
+     "occ": [
+      13
+     ]
+    }
+   ]
+  },
+  {
+   "name": "F6 select instruction",
+   "value": "5-bit TAP instruction (ireg) that selects the data register",
+   "path": [
+    {
+     "element": "jtag_tdi_i",
+     "occ": [
+      2
+     ],
+     "line": [
+      100
+     ],
+     "edge": "SOURCES tap_sync.tdi_ff (L100)"
+    },
+    {
+     "element": "tap_sync.tdi",
+     "occ": [
+      3
+     ],
+     "line": [
+      181
+     ],
+     "edge": "SOURCES tap_reg.ireg (L181)"
+    },
+    {
+     "element": "tap_reg.ireg",
+     "occ": [
+      3,
+      4,
+      9
+     ],
+     "line": [
+      179,
+      181,
+      204
+     ],
+     "edge": "DERIVES_FROM tap_sync.tdi (L181); SOURCES jtag_tdo_o (L204)"
+    },
+    {
+     "element": "jtag_tdo_o",
+     "occ": [
+      3
+     ],
+     "line": [
+      204
+     ],
+     "edge": "DERIVES_FROM tap_reg.ireg (L204)"
+    }
+   ],
+   "controls": [
+    {
+     "element": "tap_ctrl_state",
+     "edge": "GATES tap_reg.ireg (L178,180)",
+     "decided_by": "tap_sync.tms: LOGIC_RESET/IR_CAPTURE load addr_idcode_c (L178-179), IR_SHIFT shifts TDI (L180-181)",
+     "occ": [
+      38,
+      39,
+      40
+     ]
+    },
+    {
+     "element": "tap_sync.tck_rising",
+     "edge": "GATES tap_reg.ireg (L180)",
+     "decided_by": "jtag_tck_i rising edge (L106)",
+     "occ": [
+      4
+     ]
+    }
+   ]
+  },
+  {
+   "name": "F7 identify device",
+   "value": "IDCODE built from generics IDCODE_VERSION, IDCODE_PARTID, IDCODE_MANID (L187); generics are not in the map",
+   "path": [
+    {
+     "element": "tap_reg.idcode",
+     "occ": [
+      3,
+      7
+     ],
+     "line": [
+      187,
+      207
+     ],
+     "edge": "SOURCES jtag_tdo_o (L207)"
+    },
+    {
+     "element": "jtag_tdo_o",
+     "occ": [
+      4
+     ],
+     "line": [
+      207
+     ],
+     "edge": "DERIVES_FROM tap_reg.idcode (L207)"
+    }
+   ],
+   "controls": [
+    {
+     "element": "tap_reg.ireg",
+     "edge": "SELECTS tap_reg.idcode (L186,193)",
+     "decided_by": "host-set instruction (default after LOGIC_RESET, L179)",
+     "occ": [
+      7,
+      8
+     ]
+    }
+   ]
+  },
+  {
+   "name": "F8 bypass",
+   "value": "one TDI bit delayed to TDO",
+   "path": [
+    {
+     "element": "tap_sync.tdi",
+     "occ": [
+      7
+     ],
+     "line": [
+      197
+     ],
+     "edge": "CARRIES tap_reg.bypass (L197)"
+    },
+    {
+     "element": "tap_reg.bypass",
+     "occ": [
+      4,
+      5
+     ],
+     "line": [
+      197,
+      210
+     ],
+     "edge": "COPIES tap_sync.tdi (L197); CARRIES jtag_tdo_o (L210)"
+    },
+    {
+     "element": "jtag_tdo_o",
+     "occ": [
+      7
+     ],
+     "line": [
+      210
+     ],
+     "edge": "COPIES tap_reg.bypass (L210)"
+    }
+   ],
+   "controls": [
+    {
+     "element": "tap_reg.ireg",
+     "edge": "SELECTS tap_reg.bypass (L186,193)",
+     "decided_by": "any instruction other than IDCODE, DTMCS, DMI (L190, L197)",
+     "occ": [
+      7,
+      8
+     ]
+    }
+   ]
+  },
+  {
+   "name": "F9 TAP protocol control",
+   "value": "TMS sequence that walks the TAP state machine and produces the one-clock update pulse",
+   "path": [
+    {
+     "element": "jtag_tms_i",
+     "occ": [
+      2
+     ],
+     "line": [
+      101
+     ],
+     "edge": "SOURCES tap_sync.tms_ff (L101)"
+    },
+    {
+     "element": "tap_sync.tms_ff",
+     "occ": [
+      3,
+      5
+     ],
+     "line": [
+      101,
+      110
+     ],
+     "edge": "SOURCES tap_sync.tms (L110)"
+    },
+    {
+     "element": "tap_sync.tms",
+     "occ": [
+      3,
+      11
+     ],
+     "line": [
+      123,
+      131
+     ],
+     "edge": "GATES tap_ctrl_state (L123,124,125,126,127,128,129,130,131,132,133,134,135,136,137,138)"
+    },
+    {
+     "element": "tap_ctrl_state",
+     "occ": [
+      37
+     ],
+     "line": [
+      151
+     ],
+     "edge": "GATES dr_trigger.sreg (L151)"
+    },
+    {
+     "element": "dr_trigger.sreg",
+     "occ": [
+      3,
+      7
+     ],
+     "line": [
+      152,
+      161
+     ],
+     "edge": "GATES dr_trigger.valid (L161)"
+    },
+    {
+     "element": "dr_trigger.valid",
+     "occ": [
+      3,
+      4,
+      5
+     ],
+     "line": [
+      247,
+      258,
+      265
+     ],
+     "edge": "GATES dmi_ctrl.dmireset (L247); GATES dmi_ctrl.err (L258); GATES dmi_ctrl.addr (L265)"
+    }
+   ],
+   "controls": [
+    {
+     "element": "tap_sync.tck_rising",
+     "edge": "GATES tap_ctrl_state (L121)",
+     "decided_by": "jtag_tck_i rising edge (L106)",
+     "occ": [
+      3
+     ]
+    }
+   ]
+  }
+ ],
+ "conceptual_assets": [
+  {
+   "name": "CA1 debug command sent to the debug module (address, write data, operation)",
+   "flow": "F1",
+   "C": {
+    "answer": "no",
+    "line": 229,
+    "why": "The capture word packs addr, rdata and err but not wdata (L229), so the written data is never shifted back out on TDO; the address is echoed but carries no secret."
+   },
+   "I": {
+    "answer": "yes",
+    "line": 266,
+    "why": "L266-269 copy address, write data and op straight from the host-shifted tap_reg.dmi; the only check is that op is a read or write code (L268); L283-285 present the values to the debug module unchanged."
+   },
+   "A": {
+    "answer": "yes",
+    "line": 264,
+    "why": "A command is accepted only while busy = 0 (L264) and dmihardreset = 0 (L265); an update arriving while busy is discarded and only flagged (L258-259); busy clears only on dmi_rsp_i.ack (L275-276)."
+   },
+   "U": {
+    "answer": "yes",
+    "line": 265,
+    "why": "The whole acceptance condition is dmihardreset = 0, the update pulse and ireg = addr_dmi_c (L265); there is no authentication, lock or privilege term anywhere in the module, so any agent driving the JTAG pins issues arbitrary reads and writes."
+   },
+   "attack_effect": "An attacker on the JTAG pins shifts a chosen word into tap_reg.dmi (L196); at the next update pulse L266-269 copy it into dmi_ctrl.addr/wdata/op and L283-285 present it as a read or write of any 7-bit debug-module address, with nothing in this module able to refuse it."
+  },
+  {
+   "name": "CA2 debug read data returned to the host",
+   "flow": "F2",
+   "C": {
+    "answer": "yes",
+    "line": 274,
+    "why": "L274 latches dmi_rsp_i.data into dmi_ctrl.rdata, L229 packs it into the capture word, L189 captures it, L209 shifts it out on jtag_tdo_o. rdata is cleared only by rstn_i (L242), not by dmireset/dmihardreset (L248-257), so the last value read stays capturable by any later DMI scan until a system reset."
+   },
+   "I": {
+    "answer": "yes",
+    "line": 274,
+    "why": "L274 follows dmi_rsp_i.data on every busy cycle, not only on ack; the capture at L189 is not gated by busy and the status bits come only from err (L229), so a scan captured during a pending transaction returns an unfinished rdata marked as success (err = 0). replicate_f is not defined in this source; its 2-bit width follows from L65."
+   },
+   "A": {
+    "answer": "yes",
+    "line": 275,
+    "why": "The read completes only when dmi_rsp_i.ack = 1 (L275-276); there is no timeout or abort, so a withheld ack means the read never finishes."
+   },
+   "U": {
+    "answer": "yes",
+    "line": 189,
+    "why": "Capture (L189) and shift-out (L209) depend only on ireg and TAP state; no access condition limits who reads the response."
+   },
+   "attack_effect": "Any JTAG host that selects addr_dmi_c captures dmi_ctrl.rdata through L229/L189 and reads it on jtag_tdo_o at L209, including a value left by an earlier debug session because L242 is the only clear."
+  },
+  {
+   "name": "CA3 DMI transaction state (busy)",
+   "flow": "F5",
+   "C": {
+    "answer": "no",
+    "line": 219,
+    "why": "busy is not in the dtmcs capture (L219-226) or the DMI capture (L229); it is never exported."
+   },
+   "I": {
+    "answer": "yes",
+    "line": 264,
+    "why": "busy = 0 is the condition for loading a new addr/wdata/op (L264-269) and for clearing reset requests (L250-252); busy = 1 routes a new update to the drop-and-flag path (L258-259) and enables rdata capture (L274). A busy forced to 0 mid-transaction lets a new command overwrite dmi_ctrl.addr/wdata while L284-285 keep presenting them to the debug module."
+   },
+   "A": {
+    "answer": "yes",
+    "line": 276,
+    "why": "Only dmi_rsp_i.ack (L275-276) or rstn_i (L237) clear busy; the reset requests at L248-252 never assign it, so a missing ack disables the whole DMI path until a system reset."
+   },
+   "U": {
+    "answer": "no",
+    "line": 250,
+    "why": "No mode overrides busy; the reset requests are themselves held while busy = 1 (L250). The missing abort is recorded under A."
+   },
+   "attack_effect": "A debug module (or a fault) that never raises dmi_rsp_i.ack leaves busy at 1 (L275-276), so L264 refuses every later command and dmihardreset cannot recover it; forcing busy to 0 instead lets L266-267 overwrite the address and data of a transaction still in flight."
+  },
+  {
+   "name": "CA4 DMI reset control (dmireset, dmihardreset) written through dtmcs",
+   "flow": "F3",
+   "C": {
+    "answer": "no",
+    "line": 220,
+    "why": "Both bits are reported back in dtmcs by design (L220-221); nothing secret."
+   },
+   "I": {
+    "answer": "yes",
+    "line": 249,
+    "why": "On an update with ireg = addr_dtmcs_c, L248-249 copy dtmcs bits 16/17 into dmireset/dmihardreset; either one clears err (L256-257), and dmihardreset = 1 makes L265 refuse commands."
+   },
+   "A": {
+    "answer": "yes",
+    "line": 265,
+    "why": "While dmihardreset = 1 no command is accepted (L265); it is 1 out of reset (L239) and a host-set value is held for the whole of a busy transaction (L250-251)."
+   },
+   "U": {
+    "answer": "yes",
+    "line": 257,
+    "why": "The reset bits are an override that wipes err (L257), the only record that a command was dropped (L258-259)."
+   },
+   "attack_effect": "Setting dtmcs bit 17 or 16 (L248-249) erases the sticky error at L257, so a command dropped at L258 is no longer reported to the host, and bit 17 makes L265 refuse commands for as long as it is held."
+  },
+  {
+   "name": "CA5 DMI error status (err, reported as dmistat and as the DMI op field)",
+   "flow": "F4",
+   "C": {
+    "answer": "no",
+    "line": 229,
+    "why": "Status bits exported by design (L224, L229)."
+   },
+   "I": {
+    "answer": "yes",
+    "line": 259,
+    "why": "err is set when a DMI update arrives while busy and the command is discarded (L258-259); it is the only evidence the host gets of the drop (exported at L229 and L224). A forced 0 reports a dropped write as done; a forced 1 marks every result as failed."
+   },
+   "A": {
+    "answer": "no",
+    "line": 265,
+    "why": "err does not gate command acceptance: L265 has no err term."
+   },
+   "U": {
+    "answer": "yes",
+    "line": 265,
+    "why": "Because L265 ignores err, later commands keep executing after one was dropped, so the host command sequence runs with a gap until it reads the status."
+   },
+   "attack_effect": "Clearing err (L257) or preventing L259 hides that a command was dropped, so the host believes a debug write took effect when it did not."
+  },
+  {
+   "name": "CA6 selected TAP instruction (ireg)",
+   "flow": "F6",
+   "C": {
+    "answer": "no",
+    "line": 204,
+    "why": "ireg is shifted out on TDO during IR_SHIFT by design (L204)."
+   },
+   "I": {
+    "answer": "yes",
+    "line": 265,
+    "why": "ireg alone decides which data register a scan captures, shifts and drives to TDO (L186, L193, L206), and whether an update changes the DMI reset controls (L247) or issues a DMI command (L258, L265). A corrupted ireg turns a scan meant for IDCODE or BYPASS into a DMI command or reset."
+   },
+   "A": {
+    "answer": "no",
+    "line": 179,
+    "why": "LOGIC_RESET and IR_CAPTURE reload a fixed value (L178-179); no separate blocking mechanism beyond I."
+   },
+   "U": {
+    "answer": "yes",
+    "line": 193,
+    "why": "The decode at L186/L193 and the tests at L247/L265 accept addr_dtmcs_c and addr_dmi_c with no lock or unlock condition."
+   },
+   "attack_effect": "Whoever sets ireg = addr_dmi_c (L181) routes the next DR scan into tap_reg.dmi (L196) and, on update, into a DMI command (L265-269)."
+  }
+ ],
+ "primary": [
+  {
+   "element": "jtag_tdi_i",
+   "entity": "neorv32_debug_dtm",
+   "role": "sets",
+   "concept": "CA1; CA4; CA6",
+   "occ": [
+    2
+   ],
+   "line": [
+    100
+   ],
+   "edge": "SOURCES tap_sync.tdi_ff (L100)",
+   "why": "The only data input from the host: its bits reach tap_reg.dmi (L196), tap_reg.dtmcs (L195) and tap_reg.ireg (L181) through the synchronizer (L100, L111), and become the DMI command, the reset requests and the instruction."
+  },
+  {
+   "element": "jtag_tdo_o",
+   "entity": "neorv32_debug_dtm",
+   "role": "exit port",
+   "concept": "CA2; CA5; CA6",
+   "occ": [
+    3,
+    5,
+    6
+   ],
+   "line": [
+    204,
+    208,
+    209
+   ],
+   "edge": "DERIVES_FROM tap_reg.dmi (L209); DERIVES_FROM tap_reg.dtmcs (L208); DERIVES_FROM tap_reg.ireg (L204)",
+   "why": "The port through which read data (L209), status (L208) and the instruction (L204) leave the module."
+  },
+  {
+   "element": "dmi_req_o.addr",
+   "entity": "neorv32_debug_dtm",
+   "role": "exit port",
+   "concept": "CA1",
+   "occ": [
+    2
+   ],
+   "line": [
+    285
+   ],
+   "edge": "COPIES dmi_ctrl.addr (L285)",
+   "why": "Exit of the command address to the debug module (L285); a continuous copy that persists after the transaction."
+  },
+  {
+   "element": "dmi_req_o.data",
+   "entity": "neorv32_debug_dtm",
+   "role": "exit port",
+   "concept": "CA1",
+   "occ": [
+    2
+   ],
+   "line": [
+    284
+   ],
+   "edge": "COPIES dmi_ctrl.wdata (L284)",
+   "why": "Exit of the command write data (L284); stays on the port until the next command or reset."
+  },
+  {
+   "element": "dmi_req_o.op",
+   "entity": "neorv32_debug_dtm",
+   "role": "exit port",
+   "concept": "CA1",
+   "occ": [
+    2
+   ],
+   "line": [
+    283
+   ],
+   "edge": "COPIES dmi_ctrl.op (L283)",
+   "why": "Exit of the read/write strobe (L283); this is what makes the debug module act."
+  },
+  {
+   "element": "dmi_rsp_i.data",
+   "entity": "neorv32_debug_dtm",
+   "role": "sets",
+   "concept": "CA2",
+   "occ": [
+    2
+   ],
+   "line": [
+    274
+   ],
+   "edge": "CARRIES dmi_ctrl.rdata (L274)",
+   "why": "The module reads it into dmi_ctrl.rdata on every busy cycle (L274); entry point of the read data."
+  },
+  {
+   "element": "dmi_rsp_i.ack",
+   "entity": "neorv32_debug_dtm",
+   "role": "sets",
+   "concept": "CA3",
+   "occ": [
+    2
+   ],
+   "line": [
+    275
+   ],
+   "edge": "GATES dmi_ctrl.busy (L275)",
+   "why": "The only input that ends a transaction (L275-276); availability of the DMI path rests on it."
+  },
+  {
+   "element": "tap_reg.ireg",
+   "entity": "neorv32_debug_dtm",
+   "role": "stores",
+   "concept": "CA6",
+   "occ": [
+    3,
+    4,
+    7,
+    8,
+    10,
+    11,
+    12,
+    13
+   ],
+   "line": [
+    179,
+    181,
+    186,
+    193,
+    206,
+    247,
+    258,
+    265
+   ],
+   "edge": "DERIVES_FROM tap_sync.tdi (L181); SELECTS tap_reg.dmi (L186,193); SELECTS jtag_tdo_o (L206); GATES dmi_ctrl.addr (L265); GATES dmi_ctrl.dmireset (L247); GATES dmi_ctrl.err (L258)",
+   "why": "Holds the host-chosen instruction that decides what a scan does (L186, L193, L206) and whether an update issues a DMI command or reset (L247, L258, L265)."
+  },
+  {
+   "element": "tap_reg.dtmcs",
+   "entity": "neorv32_debug_dtm",
+   "role": "stores",
+   "concept": "CA4; CA5",
+   "occ": [
+    3,
+    4,
+    7,
+    8,
+    9
+   ],
+   "line": [
+    188,
+    195,
+    208,
+    248,
+    249
+   ],
+   "edge": "DERIVES_FROM tap_sync.tdi (L195); SOURCES dmi_ctrl.dmireset (L248); SOURCES dmi_ctrl.dmihardreset (L249); COPIES tap_reg.dtmcs_nxt (L188); SOURCES jtag_tdo_o (L208)",
+   "why": "Holds the host-written reset request bits read at L248-249, and the captured status (L188) shifted out at L208."
+  },
+  {
+   "element": "tap_reg.dmi",
+   "entity": "neorv32_debug_dtm",
+   "role": "stores",
+   "concept": "CA1; CA2",
+   "occ": [
+    3,
+    4,
+    7,
+    8,
+    9,
+    10,
+    12
+   ],
+   "line": [
+    189,
+    196,
+    209,
+    266,
+    267,
+    268,
+    269
+   ],
+   "edge": "DERIVES_FROM tap_sync.tdi (L196); SOURCES dmi_ctrl.addr (L266); SOURCES dmi_ctrl.wdata (L267); SOURCES dmi_ctrl.op (L269); GATES dmi_ctrl.op (L268); COPIES tap_reg.dmi_nxt (L189); SOURCES jtag_tdo_o (L209)",
+   "why": "Holds the command word shifted in by the host (L196) that L266-269 slice into the request, and the captured response (L189) that L209 shifts out."
+  },
+  {
+   "element": "dmi_ctrl.addr",
+   "entity": "neorv32_debug_dtm",
+   "role": "stores",
+   "concept": "CA1",
+   "occ": [
+    4,
+    5,
+    2
+   ],
+   "line": [
+    229,
+    266,
+    285
+   ],
+   "edge": "DERIVES_FROM tap_reg.dmi (L266); CARRIES dmi_req_o.addr (L285); SOURCES tap_reg.dmi_nxt (L229)",
+   "why": "Holds the command address (L266) presented to the debug module (L285) and echoed back (L229)."
+  },
+  {
+   "element": "dmi_ctrl.wdata",
+   "entity": "neorv32_debug_dtm",
+   "role": "stores",
+   "concept": "CA1",
+   "occ": [
+    3,
+    4
+   ],
+   "line": [
+    267,
+    284
+   ],
+   "edge": "DERIVES_FROM tap_reg.dmi (L267); CARRIES dmi_req_o.data (L284)",
+   "why": "Holds the command write data (L267) presented at L284; cleared only by rstn_i (L243)."
+  },
+  {
+   "element": "dmi_ctrl.op",
+   "entity": "neorv32_debug_dtm",
+   "role": "computes",
+   "concept": "CA1",
+   "occ": [
+    3,
+    4,
+    5
+   ],
+   "line": [
+    263,
+    269,
+    283
+   ],
+   "edge": "DERIVES_FROM tap_reg.dmi (L269); GATED_BY tap_reg.dmi (L269); CARRIES dmi_req_o.op (L283)",
+   "why": "Assigned the decided operation: the host op only if it is a read or write code (L268-269), otherwise nop every cycle (L263)."
+  },
+  {
+   "element": "dmi_ctrl.rdata",
+   "entity": "neorv32_debug_dtm",
+   "role": "stores",
+   "concept": "CA2",
+   "occ": [
+    4,
+    2
+   ],
+   "line": [
+    229,
+    274
+   ],
+   "edge": "COPIES dmi_rsp_i.data (L274); SOURCES tap_reg.dmi_nxt (L229)",
+   "why": "Holds the read data (L274) until the next transaction or a system reset (L242), and feeds the capture word (L229)."
+  },
+  {
+   "element": "dmi_ctrl.busy",
+   "entity": "neorv32_debug_dtm",
+   "role": "stores",
+   "concept": "CA3",
+   "occ": [
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "line": [
+    250,
+    258,
+    264,
+    270,
+    276
+   ],
+   "edge": "GATES dmi_ctrl.addr (L264); GATES dmi_ctrl.rdata (L264); GATES dmi_ctrl.err (L258); GATES dmi_ctrl.dmihardreset (L250); GATED_BY dmi_rsp_i.ack (L276)",
+   "why": "Holds the transaction-in-flight state that decides acceptance (L264), drop-and-flag (L258) and read capture (L274); only ack or rstn_i clear it."
+  },
+  {
+   "element": "dmi_ctrl.dmihardreset",
+   "entity": "neorv32_debug_dtm",
+   "role": "stores",
+   "concept": "CA4",
+   "occ": [
+    3,
+    4,
+    5,
+    6,
+    7,
+    2
+   ],
+   "line": [
+    220,
+    239,
+    249,
+    251,
+    256,
+    265
+   ],
+   "edge": "DERIVES_FROM tap_reg.dtmcs (L249); GATES dmi_ctrl.addr (L265); GATES dmi_ctrl.err (L256); CARRIES tap_reg.dtmcs_nxt (L220)",
+   "why": "Holds the hard-reset request (L249) that blocks command acceptance (L265) and clears err (L256-257)."
+  },
+  {
+   "element": "dmi_ctrl.dmireset",
+   "entity": "neorv32_debug_dtm",
+   "role": "stores",
+   "concept": "CA4",
+   "occ": [
+    4,
+    5,
+    6,
+    2
+   ],
+   "line": [
+    221,
+    248,
+    252,
+    256
+   ],
+   "edge": "DERIVES_FROM tap_reg.dtmcs (L248); GATES dmi_ctrl.err (L256); CARRIES tap_reg.dtmcs_nxt (L221)",
+   "why": "Holds the soft-reset request (L248) that clears err (L256-257)."
+  },
+  {
+   "element": "dmi_ctrl.err",
+   "entity": "neorv32_debug_dtm",
+   "role": "computes",
+   "concept": "CA5",
+   "occ": [
+    4,
+    5,
+    2
+   ],
+   "line": [
+    229,
+    257,
+    259
+   ],
+   "edge": "GATED_BY dmi_ctrl.busy (L259); GATED_BY dmi_ctrl.dmireset (L257,259); SOURCES tap_reg.dmi_nxt (L229)",
+   "why": "Assigned the dropped-command decision (L258-259), cleared by the reset requests (L256-257), exported at L229/L224."
+  }
+ ],
+ "secondary": [
+  {
+   "element": "tap_ctrl_state",
+   "influences": "dr_trigger.sreg (update pulse), tap_reg.ireg, tap_reg.dmi, tap_reg.dtmcs, jtag_tdo_o",
+   "edge": "GATES dr_trigger.sreg (L151); GATES tap_reg.ireg (L178,180); GATES tap_reg.dmi (L185,192); GATES jtag_tdo_o (L203)",
+   "occ": [
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43
+   ],
+   "why": "Decides when capture, shift and update happen (L151, L178-192, L203), not what value moves; illegal encodings fall to LOGIC_RESET (L139)."
+  },
+  {
+   "element": "dr_trigger.sreg",
+   "influences": "dr_trigger.valid",
+   "edge": "GATED_BY tap_ctrl_state (L152,154); GATES dr_trigger.valid (L161)",
+   "occ": [
+    3,
+    4,
+    7
+   ],
+   "why": "Two-flop edge detector on DR_UPDATE (L151-156, L161); timing only."
+  },
+  {
+   "element": "dr_trigger.valid",
+   "influences": "dmi_ctrl.addr/wdata/op/busy, dmi_ctrl.dmireset/dmihardreset, dmi_ctrl.err",
+   "edge": "GATES dmi_ctrl.addr (L265); GATES dmi_ctrl.dmireset (L247); GATES dmi_ctrl.err (L258)",
+   "occ": [
+    3,
+    4,
+    5
+   ],
+   "why": "One-clock update pulse that decides when a command or reset request is taken (L247, L258, L265)."
+  },
+  {
+   "element": "tap_sync.tdi_ff",
+   "influences": "tap_sync.tdi -> tap_reg.dmi / dtmcs / ireg",
+   "edge": "DERIVES_FROM jtag_tdi_i (L100); SOURCES tap_sync.tdi (L111)",
+   "occ": [
+    3,
+    5
+   ],
+   "why": "Three-flop synchronizer that forwards host bits (L100, L111); transport, not storage of the command."
+  },
+  {
+   "element": "tap_sync.tdi",
+   "influences": "tap_reg.dmi, tap_reg.dtmcs, tap_reg.ireg, tap_reg.bypass",
+   "edge": "SOURCES tap_reg.dmi (L196); SOURCES tap_reg.dtmcs (L195); SOURCES tap_reg.ireg (L181)",
+   "occ": [
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "why": "Forwards the synchronized TDI bit into the shift registers (L181, L194-197)."
+  },
+  {
+   "element": "jtag_tms_i",
+   "influences": "tap_ctrl_state via tap_sync.tms_ff and tap_sync.tms",
+   "edge": "SOURCES tap_sync.tms_ff (L101)",
+   "occ": [
+    2
+   ],
+   "why": "Host control input that walks the TAP state machine (L101, L123-138); decides when, not what."
+  },
+  {
+   "element": "tap_sync.tms_ff",
+   "influences": "tap_sync.tms -> tap_ctrl_state",
+   "edge": "SOURCES tap_sync.tms (L110)",
+   "occ": [
+    3,
+    5
+   ],
+   "why": "Synchronizer that forwards TMS (L101, L110)."
+  },
+  {
+   "element": "tap_sync.tms",
+   "influences": "tap_ctrl_state",
+   "edge": "GATES tap_ctrl_state (L123,124,125,126,127,128,129,130,131,132,133,134,135,136,137,138)",
+   "occ": [
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18
+   ],
+   "why": "Decides every TAP state transition (L123-138)."
+  },
+  {
+   "element": "tap_reg.dmi_nxt",
+   "influences": "tap_reg.dmi (capture), tap_reg.dtmcs_nxt(11:10)",
+   "edge": "DERIVES_FROM dmi_ctrl.rdata (L229); CARRIES tap_reg.dmi (L189); SOURCES tap_reg.dtmcs_nxt (L224)",
+   "occ": [
+    2,
+    3,
+    4
+   ],
+   "why": "Combinational packing of addr, rdata and err (L229); forwards read data and status, holds nothing."
+  },
+  {
+   "element": "tap_reg.dtmcs_nxt",
+   "influences": "tap_reg.dtmcs (capture)",
+   "edge": "COPIES dmi_ctrl.dmihardreset (L220); COPIES dmi_ctrl.dmireset (L221); DERIVES_FROM tap_reg.dmi_nxt (L224); CARRIES tap_reg.dtmcs (L188)",
+   "occ": [
+    2,
+    4,
+    5,
+    8
+   ],
+   "why": "Combinational packing of reset bits, dmistat and constants (L219-226); forwards status, holds nothing."
+  }
+ ],
+ "excluded": [
+  {
+   "element": "clk_i",
+   "reason": "clock input: decides when, not what (SEQUENCES only)."
+  },
+  {
+   "element": "rstn_i",
+   "reason": "reset input: decides when, not what (RESETS only)."
+  },
+  {
+   "element": "jtag_tck_i",
+   "reason": "the JTAG clock, oversampled into tap_sync.tck_ff (L99); decides when bits shift, not what."
+  },
+  {
+   "element": "tap_sync.tck_ff",
+   "reason": "synchronizer for the JTAG clock (L99, L106-107); clock-derived timing only."
+  },
+  {
+   "element": "tap_sync.tck_rising",
+   "reason": "clock-enable derived from TCK (L106); gates when the FSM and shift registers move (L121, L180, L192)."
+  },
+  {
+   "element": "tap_sync.tck_falling",
+   "reason": "clock-enable derived from TCK (L107); gates when TDO updates (L202)."
+  },
+  {
+   "element": "tap_reg.idcode",
+   "reason": "all four questions no: loaded from fixed generics on every capture (L187) and exported to any host by design (L207); no decision reads it. Kept as a hypothesis."
+  },
+  {
+   "element": "tap_reg.bypass",
+   "reason": "all four questions no: a one-bit delay from TDI to TDO (L197, L210); no decision reads it."
+  },
+  {
+   "element": "dmi_req_o",
+   "reason": "record port carrying the whole DMI request transaction; the map gives it no relationships; its fields and the internal dmi_ctrl registers are reported instead."
+  },
+  {
+   "element": "dmi_rsp_i",
+   "reason": "record port carrying the whole DMI response transaction; the map gives it no relationships; its fields and dmi_ctrl.rdata / dmi_ctrl.busy are reported instead."
+  },
+  {
+   "element": "tap_sync",
+   "reason": "record container; the map gives it no relationships; its fields are assessed individually."
+  },
+  {
+   "element": "tap_reg",
+   "reason": "record container; the map gives it no relationships; its fields are assessed individually."
+  },
+  {
+   "element": "dr_trigger",
+   "reason": "record container; the map gives it no relationships; its fields are assessed individually."
+  },
+  {
+   "element": "dmi_ctrl",
+   "reason": "record container; the map gives it no relationships; its fields are assessed individually."
+  }
+ ],
+ "hypotheses": [
+  "IDCODE (L187, L207) reveals version, part and manufacturer to any host. This is the purpose of IDCODE and nothing here makes it secret; it matters only if device identity is treated as sensitive.",
+  "The debug module behind dmi_req_o may or may not check authentication. That check is outside this source. If it does not, CA1 gives full debug control of the SoC to anyone holding the JTAG pins.",
+  "dmi_ctrl.wdata stays on dmi_req_o.data after the write (L284; cleared only at L243). This matters only if another agent can observe the DMI request bus.",
+  "TCK and TMS are sampled by clk_i through three-flop synchronizers (L99-111). A glitch that fakes a TCK edge could step the state machine into DR_UPDATE and fire a command from whatever sits in tap_reg.dmi. This is a fault-injection concern with no mechanism in this module to confirm or deny it.",
+  "The field widths of dmi_rsp_i.data and dmi_req_o.*, and the codes dmi_req_rd_c, dmi_req_wr_c and dmi_req_nop_c, come from a package that is not in the pack. I assumed widths from dmi_ctrl (L83-84)."
+ ],
+ "map_assessment": {
+  "used_for": "Indexing all 42 elements (13 ports incl. record fields, 29 signals incl. record fields). The data and control edges gave the paths of 9 flows without reading every line. Reciprocity and id checks all passed: 0 text mismatches over 403 occurrences, 0 unresolved ids, 0 edges without a reverse. Missing edges were the most useful evidence. There is no ack edge on dmi_ctrl.rdata. No reset request ever assigns busy. err gates nothing. dmi_nxt has no edge from wdata.",
+  "insufficient_for": "Branch polarity: GATES does not say whether the gate is =0/=1 or the else branch (for example busy at L264 gates addr on 0 and rdata on 1). Cycle timing: the one-clock update pulse, op as a one-cycle strobe (L263), dmihardreset reset-to-1 then cleared. Bit-slice meaning: which bits of tap_reg.dmi become addr, data or op (only in the occurrence text). Constants, generics and package items: addr_*_c, dmi_req_*_c, replicate_f, the IDCODE generics, the record types. The absence of any authentication. This had to be read as the full condition at L265, not from an edge. What the debug module does with the request, which is outside the module.",
+  "errors_found": "No wrong edges found in a full read of every relationship against its line. One inconsistency: the record port dmi_req_o is listed as drive \"undriven\" while all three of its fields are driven (L283-285). The functionality hints matched the source for every element I checked."
+ },
+ "process_notes": "1. Read the prompt, then the whole VHDL (one entity, about 200 lines). 2. Indexed the map with Python: listed elements, storage and counts, dumped every relationship with resolved lines to work/debug_dtm/elements.txt, and read it in full. 3. Ran check_map.py: occurrence text against source, line coverage, id resolution, edge reciprocity. All clean. 4. Named 9 flows from the ports and state: command, read-out, reset request, status, handshake, instruction, IDCODE, bypass, TAP control. Traced each from source to sink on map edges and confirmed each edge on its line. 5. Asked the four questions per value with a line each, giving 6 conceptual assets. IDCODE and bypass got four no answers. 6. Assigned roles. An element is primary if it holds, sets, computes or exports an asset value. It is secondary if it only forwards, or decides when a value moves. Clock and TCK-derived enables were excluded. Where the map changed a decision: (a) dmi_ctrl.rdata has no GATED_BY ack edge. Reading L274 showed rdata tracks the bus every busy cycle, which is the mid-transaction readout finding (CA2 I). (b) No edge from dmireset/dmihardreset to busy means no abort path. That made busy an availability asset (CA3). (c) err gates nothing, so commands continue after a drop (CA5 U). (d) tap_reg.dmi_nxt has no wdata source, so write data is never read back (CA1 C = no). (e) tap_reg.idcode feeds only itself and TDO, and its only non-reset driver is a constant, so it was excluded. Read from source rather than the map: branch polarities (L250, L264, L273), the L265 acceptance condition as a whole, the slice layout (L266-269, L219-229), and the reset value of dmihardreset (L239)."
+}

@@ -1,0 +1,190 @@
+{
+ "module name": "neorv32_cpu_cp_cfu",
+ "module purpose": "neorv32_cpu_cp_cfu holds four 32-bit words in key_mem that are written and read through scalar CSR ports (csr_we_i, csr_addr_i, csr_wdata_i, csr_rdata_o); on a start request with rtype_i = r3type_c it captures two operands from rs1_i and rs2_i, then on the next cycle loads, advances or rewinds a running sum by the constant xtea_delta_c and computes a 32-bit result from the operands, the sum and a stored word indexed by sum bits, driving that result on result_o with a valid flag on valid_o, both chosen by rtype_i and funct3_i.",
+ "use-case flows": [
+  {
+   "flow": "configure",
+   "value": "a 32-bit stored word written from csr_wdata_i into the key_mem entry indexed by csr_addr_i when csr_we_i = '1'",
+   "lines": [178, 179]
+  },
+  {
+   "flow": "read out",
+   "value": "the stored key_mem word indexed by csr_addr_i returned on csr_rdata_o",
+   "lines": [185]
+  },
+  {
+   "flow": "start",
+   "value": "operation request: start_i = '1' with rtype_i = r3type_c captures rs1_i and rs2_i into xtea.opa and xtea.opb and sets xtea.done(0)",
+   "lines": [204, 205, 206, 207]
+  },
+  {
+   "flow": "operate",
+   "value": "running sum update on the cycle after acceptance: load from xtea.opa, add xtea_delta_c, or subtract xtea_delta_c, chosen by funct3_i",
+   "lines": [211, 213, 214, 215, 216, 217, 218]
+  },
+  {
+   "flow": "operate",
+   "value": "result computation: operands ordered by funct3_i(0), mixed with the sum and the sum-indexed stored word, then added to or subtracted from tmp_b into xtea.res",
+   "lines": [221, 222, 224, 232, 233, 234, 235, 236, 237, 238]
+  },
+  {
+   "flow": "report",
+   "value": "result_o (xtea.res or zero) and valid_o (xtea.done(1), '1' or '0') selected by rtype_i and funct3_i, with done(0) shifted into done(1)",
+   "lines": [200, 201, 245, 247, 248, 249, 250, 251, 252, 253, 255, 256, 261, 262]
+  },
+  {
+   "flow": "reset",
+   "value": "key_mem and every xtea field cleared to zero while rstn_i = '0'",
+   "lines": [175, 176, 192, 193, 194, 195, 196, 197]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Configured key table -- the four 32-bit stored words written through the CSR ports, returned on read, and added into every result computation through the sum-indexed selection",
+   "security objective": "Integrity",
+   "reasoning": "Configure: under `if (csr_we_i = '1')` (line 178), `key_mem(to_integer(unsigned(csr_addr_i))) <= csr_wdata_i;` (line 179) stores a word at the indexed entry. Read out: `csr_rdata_o <= key_mem(to_integer(unsigned(csr_addr_i)));` (line 185). Operate: tmp_z takes key_mem(xtea.sum(1 downto 0)) or key_mem(xtea.sum(12 downto 11)) (lines 236-237), tmp_z is added to xtea.sum inside tmp_r (line 238), and tmp_r enters xtea.res (lines 222, 224). Integrity is Established: the result relation of lines 222-238 and the readback of line 185 require each entry to hold exactly the last word written to its index, and csr_rdata_o delivers it across the boundary. Availability is also Established: an entry is held between writes and cleared only by the reset arm (line 176). Confidentiality is not established: line 185 returns any entry for any csr_addr_i with no qualifying condition, and no line restricts observation. Roles: key_mem stores (occurrence 3, CLOCKED_BY clk_i, line 179) and its own records show use (SOURCES csr_rdata_o at line 185, SOURCES tmp_z at lines 236-237); csr_wdata_i sets (occurrence 2, CARRIES key_mem, line 179); csr_we_i sets because this entity reads it to decide whether a word is written (occurrence 2, GATES key_mem, line 178); csr_addr_i sets because it is the run-time index choosing which entry is written (occurrence 2, SELECTS key_mem, line 179; it also selects the readback at occurrence 3, line 185); csr_rdata_o is an exit port (occurrence 2, DERIVES_FROM key_mem, line 185). tmp_z only forwards one selected entry (DERIVES_FROM key_mem, SELECTED_BY xtea.sum, line 236) and is not listed. The CSR ports are separate scalar and vector ports, not a record carrying complete transactions, so the transport rule does not remove them.",
+   "related structural assets": [
+    {
+     "asset rtl": "key_mem",
+     "entity": "neorv32_cpu_cp_cfu",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "csr_wdata_i",
+     "entity": "neorv32_cpu_cp_cfu",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "CARRIES", "partner": "key_mem"}
+    },
+    {
+     "asset rtl": "csr_we_i",
+     "entity": "neorv32_cpu_cp_cfu",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "GATES", "partner": "key_mem"}
+    },
+    {
+     "asset rtl": "csr_addr_i",
+     "entity": "neorv32_cpu_cp_cfu",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "SELECTS", "partner": "key_mem"}
+    },
+    {
+     "asset rtl": "csr_rdata_o",
+     "entity": "neorv32_cpu_cp_cfu",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "DERIVES_FROM", "partner": "key_mem"}
+    }
+   ]
+  },
+  {
+   "concept": "Running sum state -- the 32-bit accumulator that is loaded, advanced or rewound by a constant on each accepted operation, persists across operations, picks the stored word and enters the mixing",
+   "security objective": "Integrity",
+   "reasoning": "When xtea.done(0) = '1' (line 211): funct3_i(2) = '1' loads `xtea.sum <= xtea.opa;` (line 214); funct3_i(1 downto 0) equal to xtea_enc_v0_c(1 downto 0) adds xtea_delta_c (line 216); equal to xtea_dec_v1_c(1 downto 0) subtracts it (line 218); otherwise the sum holds. The map lists xtea.sum as self-updating (DERIVES_FROM xtea.sum, lines 216, 218). Its value selects which stored word enters the computation (SELECTS tmp_z, lines 236-237) and is added to that word in `tmp_r` (line 238), which forms xtea.res (lines 222, 224). Integrity is Established: a corrupted sum changes the word selection and the mixing relation of lines 236-238 for this and every later operation until it is reloaded at line 214. Availability is Established under the implemented conditions: it updates only on the clock edge after an accepted start (done(0) set at line 207), with rstn_i high. Roles: xtea.sum stores (occurrence 4, CLOCKED_BY clk_i, line 216) and its own SELECTS tmp_z record shows its use; funct3_i sets because this entity reads it to decide load, add or subtract (occurrence 2, GATES xtea.sum, line 213). funct3_i is not captured at the request; it is read combinationally at lines 213-218, so its value in the update cycle decides. The load value enters from rs1_i through xtea.opa (CARRIES xtea.sum, line 214); xtea.opa is not listed (see the operand concept), and xtea.done is listed under the acceptance concept.",
+   "related structural assets": [
+    {
+     "asset rtl": "xtea.sum",
+     "entity": "neorv32_cpu_cp_cfu",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "funct3_i",
+     "entity": "neorv32_cpu_cp_cfu",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "GATES", "partner": "xtea.sum"}
+    }
+   ]
+  },
+  {
+   "concept": "Operation result -- the 32-bit value computed from the captured operands, the running sum and the selected stored word, returned to the requester",
+   "security objective": "Integrity",
+   "reasoning": "When xtea.done(0) = '1' (line 211), `xtea.res <= std_ulogic_vector(unsigned(tmp_b) + unsigned(tmp_r));` if funct3_i(1) = '0' (lines 221-222), otherwise tmp_b - tmp_r (line 224), with tmp_a, tmp_b, tmp_x, tmp_y, tmp_z and tmp_r formed at lines 232-238. The report flow drives `result_o <= xtea.res;` when rtype_i = r3type_c and funct3_i is one of the four codes of line 248 (line 249), and zero otherwise (lines 252, 255, 261). Integrity is Established from the delivering lines: the requester must receive exactly xtea.res under the codes of line 248 and zero under the others. Availability is Established under the implemented conditions: the result is registered on the edge after an accepted start (line 211) and stays on result_o while rtype_i and funct3_i select it. Roles: xtea.res stores ahead of computes (occurrence 3, CLOCKED_BY clk_i, line 222) and its own records show use (CARRIES result_o, line 249); result_o is an exit port (occurrence 2, COPIES xtea.res, line 249); funct3_i sets because this entity reads it to decide add or subtract (occurrence 5, GATES xtea.res, line 221). tmp_a to tmp_r are parts of the computation stored in xtea.res, not separate realizations.",
+   "related structural assets": [
+    {
+     "asset rtl": "xtea.res",
+     "entity": "neorv32_cpu_cp_cfu",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "result_o",
+     "entity": "neorv32_cpu_cp_cfu",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "COPIES", "partner": "xtea.res"}
+    },
+    {
+     "asset rtl": "funct3_i",
+     "entity": "neorv32_cpu_cp_cfu",
+     "realization": "sets",
+     "occurrence": 5,
+     "edge": {"type": "GATES", "partner": "xtea.res"}
+    }
+   ]
+  },
+  {
+   "concept": "Operation acceptance and completion -- whether a request starts an operation, which then enables the sum and result updates, and when the result is reported valid",
+   "security objective": "Integrity",
+   "reasoning": "`if (start_i = '1') and (rtype_i = r3type_c)` (line 204) captures the operands and sets `xtea.done(0) <= '1';` (line 207); done(0) is otherwise cleared each cycle (line 200) and shifts into done(1) (line 201). done(0) gates the sum and result updates (GATES xtea.sum and xtea.res, line 211), and `valid_o <= xtea.done(1);` reports completion for the codes of line 248 (line 250), while valid_o is '1' for xtea_init_c (line 253) and '0' otherwise (lines 256, 262). Integrity is Established: valid_o is delivered across the boundary and must be high exactly two cycles after an accepted request for those codes, and a done(0) set without line 204 holding would update the sum and result without a request (line 211). Availability is Established under the implemented conditions: completion is produced when start_i = '1' and rtype_i = r3type_c at a clock edge with rstn_i high, and is reported only if funct3_i still selects one of the line 248 codes at the reporting cycle, because funct3_i is not captured. Roles: xtea.done stores (occurrence 6, CLOCKED_BY clk_i, line 207) and its own records show use (GATES xtea.res, line 211; SOURCES valid_o, line 250); valid_o is an exit port (occurrence 2, DERIVES_FROM xtea.done, line 250); start_i and rtype_i set because this entity reads them to decide acceptance (occurrence 2 of each, GATES xtea.done, line 204); rtype_i also gates result_o and valid_o (occurrence 4, line 245). active_i and funct7_i have no local use and are not reported.",
+   "related structural assets": [
+    {
+     "asset rtl": "xtea.done",
+     "entity": "neorv32_cpu_cp_cfu",
+     "realization": "stores",
+     "occurrence": 6,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "valid_o",
+     "entity": "neorv32_cpu_cp_cfu",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "DERIVES_FROM", "partner": "xtea.done"}
+    },
+    {
+     "asset rtl": "start_i",
+     "entity": "neorv32_cpu_cp_cfu",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "GATES", "partner": "xtea.done"}
+    },
+    {
+     "asset rtl": "rtype_i",
+     "entity": "neorv32_cpu_cp_cfu",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "GATES", "partner": "xtea.done"}
+    }
+   ]
+  },
+  {
+   "concept": "Operand words -- the two 32-bit values captured at an accepted request and transformed into the result (and, for the load code, into the running sum)",
+   "security objective": "Integrity",
+   "reasoning": "On an accepted request (line 204), `xtea.opa <= rs1_i;` and `xtea.opb <= rs2_i;` (lines 205-206). The operands are ordered by funct3_i(0) into tmp_a, tmp_b, tmp_x and tmp_y (lines 232-235), mixed in tmp_r (line 238) and combined with tmp_b into xtea.res (lines 222, 224); for the load code xtea.opa becomes the running sum (line 214). Integrity is Established: the result relation of lines 222-238 and the sum load of line 214 require the operands to be exactly the values present on rs1_i and rs2_i at the accepted request. Roles: rs1_i sets (occurrence 2, CARRIES xtea.opa, line 205) and rs2_i sets (occurrence 2, CARRIES xtea.opb, line 206), because this entity reads them to store and compute from them. xtea.opa and xtea.opb hold the operands, but their records show only data passed on to internal elements (SOURCES tmp_a, tmp_b, tmp_x, tmp_y; CARRIES xtea.sum) with no GATES, SELECTS or CONSTRAINS record and no output, so under the section 6 store rule they are secondary and not listed. rs3_i has no local use and cannot realize this concept.",
+   "related structural assets": [
+    {
+     "asset rtl": "rs1_i",
+     "entity": "neorv32_cpu_cp_cfu",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "CARRIES", "partner": "xtea.opa"}
+    },
+    {
+     "asset rtl": "rs2_i",
+     "entity": "neorv32_cpu_cp_cfu",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "CARRIES", "partner": "xtea.opb"}
+    }
+   ]
+  }
+ ]
+}

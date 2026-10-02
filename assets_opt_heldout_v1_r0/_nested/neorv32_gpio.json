@@ -1,0 +1,190 @@
+{
+ "module name": "neorv32_gpio",
+ "module purpose": "neorv32_gpio decodes bus requests into writes of per-pin registers (output value port_out, trigger type irq_typ, trigger polarity irq_pol, interrupt enable irq_en, pending-clear mask irq_clrn), drives port_out on gpio_o, samples gpio_i into port_in and port_in2, computes a per-pin trigger irq_trig from type and polarity, latches enabled triggers in irq_pend, drives cpu_irq_o as the OR of the pending bits, and returns registers and sampled inputs on bus_rsp_o.data on reads.",
+ "use-case flows": [
+  {
+   "flow": "start",
+   "value": "write eligibility of a bus request to one of the GPIO registers (strobe, write direction, register address)",
+   "lines": [71, 72, 73, 79]
+  },
+  {
+   "flow": "configure",
+   "value": "output pin value taken from bus write data, held in port_out and driven on gpio_o",
+   "lines": [74, 109, 111, 112]
+  },
+  {
+   "flow": "configure",
+   "value": "per-pin interrupt trigger type and polarity taken from bus write data and held in irq_typ and irq_pol",
+   "lines": [75, 76, 123, 124]
+  },
+  {
+   "flow": "configure",
+   "value": "per-pin interrupt enable taken from bus write data, held in irq_en and applied to the pending update",
+   "lines": [77, 141]
+  },
+  {
+   "flow": "operate",
+   "value": "input pin values sampled from gpio_i into port_in and, one clock later, into port_in2",
+   "lines": [103, 104]
+  },
+  {
+   "flow": "operate",
+   "value": "per-pin trigger decision: level or edge of the sampled input selected by trigger type and polarity",
+   "lines": [123, 124, 125, 126, 127, 128, 129]
+  },
+  {
+   "flow": "report",
+   "value": "pending interrupt bits latched from enabled triggers and the CPU interrupt request derived from them",
+   "lines": [141, 142]
+  },
+  {
+   "flow": "reset",
+   "value": "pending bits cleared where a bus write to the pending register writes 0 into irq_clrn (all ones otherwise)",
+   "lines": [69, 78, 141]
+  },
+  {
+   "flow": "read out",
+   "value": "sampled inputs, output value, trigger type, trigger polarity, enable and pending bits returned on a read",
+   "lines": [66, 68, 82, 83, 84, 85, 86, 87, 88]
+  },
+  {
+   "flow": "reset",
+   "value": "all registers and the outputs cleared to zero while rstn_i is low",
+   "lines": [57, 58, 59, 60, 61, 62, 63, 99, 100, 101, 137, 138, 139]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Register write access -- whether a bus request is allowed to update one of the GPIO registers",
+   "security objective": "Integrity",
+   "reasoning": "Every configure flow and the pending-clear flow depend on the write predicate `if (bus_req_i.stb = '1')` (line 71), `if (bus_req_i.rw = '1')` (line 72) and `case bus_req_i.addr(4 downto 2)` (line 73), which select which register takes bus_req_i.data (lines 74-78). Integrity is Established: a register must change only when these conditions hold for its address. Mapping limitation: the decision is made inline in the process, with no declared signal holding it, and every operand is a field of bus_req_i, a record carrying complete read/write transactions (addr, data, ben, stb, rw; answered by bus_rsp_o ack, err, data, lines 66-68). Transport records are excluded whole and by field, so no eligible declaration remains and the list is empty.",
+   "related structural assets": []
+  },
+  {
+   "concept": "Output pin value configuration -- the value the module drives on its GPIO output pins",
+   "security objective": "Integrity",
+   "reasoning": "The configure flow stores bus write data with `when addr_out_c => port_out <= bus_req_i.data(GPIO_NUM-1 downto 0);` (line 74) and drives it out with `gpio_o(GPIO_NUM-1 downto 0) <= port_out;` (line 112). The consumer of gpio_o is not supplied, so integrity is Established from the delivering lines: gpio_o must carry exactly the last written value. Availability is also Established: the value is held between writes (port_out, CLOCKED_BY clk_i at occurrence 3, line 74) and driven continuously by the combinational process (lines 109-112); it is read back at line 84. port_out stores it and its own CARRIES record into the output port gpio_o (occurrence 6, line 112) shows the use. gpio_o is the exit port (COPIES port_out, occurrence 3, line 112); bits above GPIO_NUM-1 are tied to zero by line 111. bus_req_i.data and bus_rsp_o.data are transport fields and are not listed. No line restricts reading port_out, so confidentiality is not established.",
+   "related structural assets": [
+    {
+     "asset rtl": "port_out",
+     "entity": "neorv32_gpio",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "gpio_o",
+     "entity": "neorv32_gpio",
+     "realization": "exit port",
+     "occurrence": 3,
+     "edge": {"type": "COPIES", "partner": "port_out"}
+    }
+   ]
+  },
+  {
+   "concept": "Interrupt trigger mode configuration -- per-pin choice of level or edge and of polarity",
+   "security objective": "Integrity",
+   "reasoning": "The configure flow stores `irq_typ <= bus_req_i.data(GPIO_NUM-1 downto 0);` (line 75) and `irq_pol <= bus_req_i.data(GPIO_NUM-1 downto 0);` (line 76); the trigger computation reads both through `sel_v := irq_typ(i) & irq_pol(i);` (line 123) and `case sel_v is` (line 124), which chooses low level, high level, falling edge or rising edge for irq_trig (lines 125-128). Integrity is Established: a corrupted bit changes which input condition sets the pending bit at line 141. Availability: both settings are held between writes (CLOCKED_BY clk_i at occurrence 3, lines 75-76) and read back (lines 85-86). The map has no SELECTS record from irq_typ or irq_pol to irq_trig because the selection passes through the process variable sel_v (lines 123-124); the RTL is the authority. Their recorded use is CARRIES into the output field bus_rsp_o.data (occurrence 4, lines 85-86). Type and polarity together form the one 2-bit selector, so they realize one concept.",
+   "related structural assets": [
+    {
+     "asset rtl": "irq_typ",
+     "entity": "neorv32_gpio",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "irq_pol",
+     "entity": "neorv32_gpio",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Interrupt enable configuration -- per-pin setting that decides whether a trigger may become and stay pending",
+   "security objective": "Integrity",
+   "reasoning": "The configure flow stores `irq_en <= bus_req_i.data(GPIO_NUM-1 downto 0);` (line 77), and the pending update reads it as `irq_pend <= irq_en and ((irq_pend and irq_clrn) or irq_trig);` (line 141, SOURCES irq_pend at occurrence 5). Integrity is Established: a 0 bit forces the pending bit to 0 and a 1 bit lets a trigger set it, so a wrong enable suppresses or creates interrupt requests on cpu_irq_o (line 142). Availability: held between writes (CLOCKED_BY clk_i at occurrence 3, line 77) and read back (line 87). irq_en stores the setting.",
+   "related structural assets": [
+    {
+     "asset rtl": "irq_en",
+     "entity": "neorv32_gpio",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Sampled input pin value -- the GPIO input levels as captured by the module",
+   "security objective": "Integrity",
+   "reasoning": "The input flow captures `port_in <= gpio_i(GPIO_NUM-1 downto 0);` (line 103) on each rising edge of clk_i while rstn_i is high, and the module uses the captured value to decide triggers (lines 125-128) and returns it on a read (line 83). Integrity is Established: the trigger decision and the read-back value must reflect the sampled pins. gpio_i sets the value (SOURCES port_in, occurrence 2, line 103), since this entity reads it to store it. port_in stores it (CLOCKED_BY clk_i, occurrence 4, line 103); its GATES records on irq_trig (occurrences 9-10, lines 127-128) show the use. port_in2 is not listed: `port_in2 <= port_in;` (line 104) makes it a register whose only COPIES record names port_in, so it holds port_in's value one clock later. No line restricts reading port_in, so confidentiality is not established.",
+   "related structural assets": [
+    {
+     "asset rtl": "gpio_i",
+     "entity": "neorv32_gpio",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "SOURCES", "partner": "port_in"}
+    },
+    {
+     "asset rtl": "port_in",
+     "entity": "neorv32_gpio",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Per-pin interrupt trigger decision -- whether a pin's input meets its configured trigger condition this cycle",
+   "security objective": "Integrity",
+   "reasoning": "irq_trig is computed in the generate loop (lines 119-131): `when \"10\" => irq_trig(i) <= (not port_in(i)) and port_in2(i);` (line 127) and `when \"11\" => irq_trig(i) <= port_in(i) and (not port_in2(i));` (line 128), with level cases at lines 125-126, chosen by sel_v (lines 123-124). Integrity is Established: the decision feeds the pending update at line 141 (SOURCES irq_pend, occurrence 7), so a wrong decision sets a pending bit with no qualifying input or misses one. irq_trig computes the decision (GATED_BY port_in and port_in2, occurrence 5, line 128). port_in and port_in2 are operands of the decision, not the decision.",
+   "related structural assets": [
+    {
+     "asset rtl": "irq_trig",
+     "entity": "neorv32_gpio",
+     "realization": "computes",
+     "occurrence": 5,
+     "edge": {"type": "GATED_BY", "partner": "port_in"}
+    }
+   ]
+  },
+  {
+   "concept": "Pending interrupt state and CPU interrupt request -- latched per-pin interrupt events and the request raised from them",
+   "security objective": "Integrity",
+   "reasoning": "The report flow latches `irq_pend <= irq_en and ((irq_pend and irq_clrn) or irq_trig);` (line 141), a self-updating register (flow graph), and raises `cpu_irq_o <= or_reduce_f(irq_pend);` (line 142). The consumer of cpu_irq_o is not supplied, so integrity is Established from the delivering line: cpu_irq_o must be the OR of the pending bits, and each pending bit must follow line 141. Availability is Established under the implemented conditions: with rstn_i high, an enabled trigger is latched on the next rising edge and kept until cleared or disabled, and cpu_irq_o follows one edge later (lines 140-142). irq_pend stores the state (CLOCKED_BY clk_i, occurrence 4, line 141; its SOURCES record into the output port cpu_irq_o at occurrence 6 shows the use; read back at line 88). cpu_irq_o is the exit port (DERIVES_FROM irq_pend, occurrence 3, line 142), ahead of its own registered storage.",
+   "related structural assets": [
+    {
+     "asset rtl": "irq_pend",
+     "entity": "neorv32_gpio",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "cpu_irq_o",
+     "entity": "neorv32_gpio",
+     "realization": "exit port",
+     "occurrence": 3,
+     "edge": {"type": "DERIVES_FROM", "partner": "irq_pend"}
+    }
+   ]
+  },
+  {
+   "concept": "Pending-interrupt clear command -- the per-pin mask a bus write uses to clear pending bits",
+   "security objective": "Integrity",
+   "reasoning": "irq_clrn is set to all ones on every clock edge (`irq_clrn <= (others => '1');`, line 69) unless a write to addr_ip_c loads bus write data (line 78), so it holds a one-cycle clear command. The pending update reads it as `(irq_pend and irq_clrn)` (line 141, SOURCES irq_pend at occurrence 5): a 0 bit clears that pending bit unless a new trigger occurs in the same cycle. Integrity is Established: a wrong mask clears a pending interrupt that was not acknowledged, or keeps one that was cleared, changing cpu_irq_o (line 142). irq_clrn stores the command (CLOCKED_BY clk_i at occurrence 4, line 78); its value is a decision this entity reads in a computation, not data passed on. Reset sets it to all zeros (line 63), while irq_pend is also reset (line 138).",
+   "related structural assets": [
+    {
+     "asset rtl": "irq_clrn",
+     "entity": "neorv32_gpio",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  }
+ ]
+}

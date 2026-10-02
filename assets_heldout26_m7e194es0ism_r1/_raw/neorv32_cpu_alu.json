@@ -1,0 +1,265 @@
+{
+  "module name": "neorv32_cpu_alu",
+  "conceptual assets": [
+    {
+      "concept": "ALU control and selectors (control bus)",
+      "security objective": "Integrity",
+      "reasoning": "The entity reads the ctrl_i bus to select operands, arithmetic direction, the ALU operation and coprocessor/CSR actions: examples include \"opa <= ctrl_i.pc_cur when (ctrl_i.alu_opa_mux = '1') else rs1_i;\", \"opb <= ctrl_i.alu_imm when (ctrl_i.alu_opb_mux = '1') else rs2_i;\", \"addsub_res <= ... when (ctrl_i.alu_sub = '1') else ...;\" and the operation dispatch \"case ctrl_i.alu_op is ...\"; CSR gating also uses ctrl_i.csr_addr. The RTL therefore defines ctrl_i as the decision/delegation point whose integrity is required for correct ALU, coprocessor start and CSR selection.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_alu",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Operand inputs (RS1/RS2/RS3) used by arithmetic, compare and coprocessors",
+      "security objective": "Integrity",
+      "reasoning": "The RTL consumes rs1_i, rs2_i and rs3_i as primary operand sources for compare, add/sub and coprocessor units: \"cmp_rs1 <= (rs1_i(rs1_i'left) and (not ctrl_i.alu_unsigned)) & rs1_i;\", \"opa <= ... else rs1_i;\", \"opb <= ... else rs2_i;\", and multiple coprocessor instantiations map rs1_i/rs2_i/rs3_i to their res_o ports. Corruption of these inputs would change computed results.",
+      "related structural assets": [
+        {
+          "asset rtl": "rs1_i",
+          "entity": "neorv32_cpu_alu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "rs2_i",
+          "entity": "neorv32_cpu_alu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "rs3_i",
+          "entity": "neorv32_cpu_alu",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "ALU computed result (final ALU output)",
+      "security objective": "Integrity",
+      "reasoning": "The final ALU output is produced by the module and selected by the control word in the alu_core process: the case on ctrl_i.alu_op drives res_o from internal values (examples: \"when alu_op_add_c => res_o <= addsub_res(XLEN-1 downto 0);\", \"when alu_op_cp_c => res_o <= cp_res;\", \"when alu_op_xor_c => res_o <= opb xor rs1_i;\"). The RTL therefore establishes res_o as the primary exit whose integrity is required to reflect the implemented operations.",
+      "related structural assets": [
+        {
+          "asset rtl": "res_o",
+          "entity": "neorv32_cpu_alu",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "addsub_res",
+          "entity": "neorv32_cpu_alu",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "cp_res",
+          "entity": "neorv32_cpu_alu",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Adder/Subtractor result (adder output)",
+      "security objective": "Integrity",
+      "reasoning": "The adder/subtractor result is computed and exported: \"addsub_res <= std_ulogic_vector(unsigned(opa_x) - unsigned(opb_x)) when (ctrl_i.alu_sub = '1') else std_ulogic_vector(unsigned(opa_x) + unsigned(opb_x));\" and \"add_o <= addsub_res(XLEN-1 downto 0);\". The RTL therefore establishes add_o and addsub_res as the realized adder/subtractor value whose integrity is required.",
+      "related structural assets": [
+        {
+          "asset rtl": "add_o",
+          "entity": "neorv32_cpu_alu",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "addsub_res",
+          "entity": "neorv32_cpu_alu",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Comparison flags (equal/less) produced by the ALU",
+      "security objective": "Integrity",
+      "reasoning": "Compare flags are computed from operands and exported: \"cmp_rs1 <= (rs1_i(rs1_i'left) and (not ctrl_i.alu_unsigned)) & rs1_i;\", \"cmp_rs2 <= ...;\", \"cmp(cmp_equal_c) <= '1' when (rs1_i = rs2_i) else '0';\", \"cmp(cmp_less_c) <= '1' when (signed(cmp_rs1) < signed(cmp_rs2)) else '0';\" and \"cmp_o <= cmp;\". The RTL therefore establishes cmp_o (and the cmp computation) as the ALU comparison result whose integrity is required.",
+      "related structural assets": [
+        {
+          "asset rtl": "cmp_o",
+          "entity": "neorv32_cpu_alu",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "cmp",
+          "entity": "neorv32_cpu_alu",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "cmp_rs1",
+          "entity": "neorv32_cpu_alu",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "cmp_rs2",
+          "entity": "neorv32_cpu_alu",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Coprocessor result values (aggregated into cp_res)",
+      "security objective": "Integrity",
+      "reasoning": "Results from the integrated coprocessor units are collected and exposed to ALU operations: \"cp_res <= cp_result(0) or cp_result(1) or ... or cp_result(6);\" and the ALU uses cp_res when selected (\"when alu_op_cp_c => res_o <= cp_res;\"). Each cp_result(i) is produced by instantiated coprocessor units (or forced zero in absent generates). The RTL therefore establishes the coprocessor result values (cp_result elements and their aggregation cp_res) as primary data whose integrity affects ALU outputs.",
+      "related structural assets": [
+        {
+          "asset rtl": "cp_res",
+          "entity": "neorv32_cpu_alu",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "cp_result(0)",
+          "entity": "neorv32_cpu_alu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cp_result(1)",
+          "entity": "neorv32_cpu_alu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cp_result(2)",
+          "entity": "neorv32_cpu_alu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cp_result(3)",
+          "entity": "neorv32_cpu_alu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cp_result(4)",
+          "entity": "neorv32_cpu_alu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cp_result(5)",
+          "entity": "neorv32_cpu_alu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cp_result(6)",
+          "entity": "neorv32_cpu_alu",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Coprocessor validity flags and completion indicator (done)",
+      "security objective": "Integrity",
+      "reasoning": "The module reports coprocessor completion via done_o formed from the cp_valid flags: \"done_o <= cp_valid(0) or cp_valid(1) or ... or cp_valid(6);\"; cp_valid bits are driven by coprocessor valid outputs or by the cfu arbiter (cp_valid(4)). The RTL therefore establishes cp_valid bits and the done_o indicator as the correctness markers whose integrity affects operation completion and acceptance of coprocessor results.",
+      "related structural assets": [
+        {
+          "asset rtl": "done_o",
+          "entity": "neorv32_cpu_alu",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "cp_valid(0)",
+          "entity": "neorv32_cpu_alu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cp_valid(1)",
+          "entity": "neorv32_cpu_alu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cp_valid(2)",
+          "entity": "neorv32_cpu_alu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cp_valid(3)",
+          "entity": "neorv32_cpu_alu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cp_valid(4)",
+          "entity": "neorv32_cpu_alu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cp_valid(5)",
+          "entity": "neorv32_cpu_alu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cp_valid(6)",
+          "entity": "neorv32_cpu_alu",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "CSR readback data exported by the ALU (CSR multiplexer output)",
+      "security objective": "Integrity",
+      "reasoning": "CSR readback is formed and exported by the module: \"csr_o <= csr_rdata_fpu or csr_rdata_cfu;\". The RTL computes selection enables (\"fpu_csr_en <= '1' when (ctrl_i.csr_addr(11 downto 2) = csr_fflags_c(11 downto 2)) else '0';\" and analogous cfu_csr_en) and gates submodule read data into csr_rdata_fpu/cfu. Corruption of these signals or of the selected read data would change csr_o, so integrity of the readback data and selection is established.",
+      "related structural assets": [
+        {
+          "asset rtl": "csr_o",
+          "entity": "neorv32_cpu_alu",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "csr_rdata_fpu",
+          "entity": "neorv32_cpu_alu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr_rdata_cfu",
+          "entity": "neorv32_cpu_alu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "fpu_csr_en",
+          "entity": "neorv32_cpu_alu",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "cfu_csr_en",
+          "entity": "neorv32_cpu_alu",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Shifter shift amount (cp_shamt) used for shift operations",
+      "security objective": "Integrity",
+      "reasoning": "The shift amount is derived and passed to the shifter: \"cp_shamt <= opb(cp_shamt'left downto 0);\" and the shifter instance maps shamt_i => cp_shamt. The RTL therefore establishes cp_shamt as the computed shift-amount value whose integrity determines shift results produced by the coprocessor shifter (cp_result(0)).",
+      "related structural assets": [
+        {
+          "asset rtl": "cp_shamt",
+          "entity": "neorv32_cpu_alu",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "CFU arbiter busy state that gates CFU result acceptance",
+      "security objective": "Integrity",
+      "reasoning": "The cfu_arbiter process registers and uses cfu_busy to control when CFU results are accepted: on reset cfu_busy <= '0'; on rising_edge the process sets/clears cfu_busy based on cfu_done and ctrl_i.alu_cp_cfu (examples: \"if (cfu_done = '1') or (ctrl_i.cpu_trap = '1') then cfu_busy <= '0'; elsif (ctrl_i.alu_cp_cfu = '1') then cfu_busy <= '1';\"). cp_result(4) is assigned from cfu_res only when cfu_done and (ctrl_i.alu_cp_cfu or cfu_busy). The RTL therefore establishes cfu_busy as stored arbitration state whose integrity affects acceptance and publication of CFU results.",
+      "related structural assets": [
+        {
+          "asset rtl": "cfu_busy",
+          "entity": "neorv32_cpu_alu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cfu_done",
+          "entity": "neorv32_cpu_alu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "cfu_res",
+          "entity": "neorv32_cpu_alu",
+          "realization": "stores"
+        }
+      ]
+    }
+  ]
+}

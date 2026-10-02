@@ -1,0 +1,138 @@
+{
+ "module name": "neorv32_cpu_cp_muldiv",
+ "concepts": [
+  {
+   "concept": "Coprocessor command decode and operation-start decision (whether an incoming control packet starts a multiply or divide)",
+   "kind": "decision",
+   "writers": "valid_cmd is computed combinationally from control inputs: valid_cmd <= '1' when (ctrl_i.alu_cp_alu = '1') and (ctrl_i.ir_opcode(5) = '1') and (ctrl_i.ir_funct12(11 downto 5) = \"0000001\") and ((ctrl_i.ir_funct3(2) = '0') or ((ctrl_i.ir_funct3(2) = '1') and DIVISION_EN)) else '0' (lines 97-99). Per-operation starts are derived: mul.start <= '1' when (valid_cmd = '1') and (ctrl_i.ir_funct3(2) = '0') else '0' (line 154); div.start <= '1' when (valid_cmd = '1') and (ctrl_i.ir_funct3(2) = '1') else '0' (line 155). The control FSM samples valid_cmd in the clocked control process to change ctrl.state (lines 120-126).",
+   "observers": "External observation of the decision is via outputs that reflect the started/completed operation: valid_o <= '1' when (ctrl.state = S_DONE) else '0' (line 145) and the operation result res_o (operation_result process, lines 321-331; specific assignments at 325, 327, 329) which are only driven when ctrl.out_en is asserted (line 322), so timing and assertion of valid_o/res_o reveal that a command was accepted and started.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 145,
+     "via": "valid_o",
+     "reason": "The decode valid_cmd (driven from ctrl_i fields, lines 97-99) determines starting and state transitions and its effect is visible externally through valid_o when the operation completes (line 145), so an external observer can learn the decision."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 97,
+     "via": "ctrl_i",
+     "reason": "valid_cmd is driven combinationally from ctrl_i (lines 97-99) and mul.start/div.start are derived from it (lines 154-155) with no sequencing or lock that prevents changes while the unit is running, so an external writer to ctrl_i can alter the start decision and affect the FSM and starts."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 97,
+     "via": "ctrl_i.alu_cp_alu",
+     "reason": "The command-valid gate requires ctrl_i.alu_cp_alu (part of the combinational assignment at line 97), so clearing that external input prevents valid_cmd from asserting and blocks the unit from starting operations."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 97,
+     "via": "valid_cmd",
+     "reason": "There is a single combinational driver for the command-valid decision (valid_cmd assigned from ctrl_i at lines 97-99) and no alternate debug/test override in the RTL to replace or bypass it."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Operation sequencing and completion state (FSM state and cycle counter that determine operation duration and when results become valid)",
+   "kind": "state",
+   "writers": "ctrl.state, ctrl.cnt and ctrl.out_en are driven in the clocked control process: reset initializes ctrl.state <= S_IDLE (line 107), ctrl.cnt <= (others => '0') (line 108) and ctrl.out_en <= '0' (line 109); on rising_edge the process clears ctrl.out_en <= '0' (line 112) and presets ctrl.cnt <= std_ulogic_vector(to_unsigned(XLEN-2, ctrl.cnt'length)) (line 113); in S_IDLE the FSM transitions on valid_cmd (if valid_cmd = '1') to S_DONE (line 122) or S_BUSY (line 124); in S_BUSY the counter is decremented ctrl.cnt <= std_ulogic_vector(unsigned(ctrl.cnt) - 1) (line 130) and the FSM goes to S_DONE when (or_reduce_f(ctrl.cnt) = '0') or (ctrl_i.cpu_trap = '1') (line 131-132); in the 'others' branch ctrl.out_en <= '1' (line 137) and ctrl.state <= S_IDLE (line 138).",
+   "observers": "External observers see the FSM outcome via valid_o (valid_o <= '1' when (ctrl.state = S_DONE) else '0', line 145) and the result port res_o which is driven only when ctrl.out_en = '1' (operation_result process lines 321-331, gate at line 322), so both the state and its completion timing are externally observable.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 145,
+     "via": "valid_o",
+     "reason": "ctrl.state is directly reflected on the valid_o output (valid_o <= '1' when ctrl.state = S_DONE, line 145), so the FSM state (which reveals what the unit is doing) is observable outside the module."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 132,
+     "via": "ctrl_i.cpu_trap",
+     "reason": "While in S_BUSY the FSM will transition to S_DONE when (or_reduce_f(ctrl.cnt) = '0') or when ctrl_i.cpu_trap = '1' (lines 131-132), so an external input (cpu_trap) can change the state while an operation is in progress."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 131,
+     "via": "ctrl_i.cpu_trap",
+     "reason": "The control process checks ctrl_i.cpu_trap in S_BUSY (line 131) to move to S_DONE, thus an external signal can force or truncate the FSM and thereby stop or alter the expected sequencing and progress."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 116,
+     "via": "control process / ctrl",
+     "reason": "The FSM state is produced only by the clocked control process (case ctrl.state is ... starting at line 116 with assignments at 122/124/132/137/138) and there is no alternate debug/test mode in the RTL that substitutes or bypasses these assignments."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Computed arithmetic result (the 32-bit value the unit delivers: product low/high or division result) that the core exports on res_o",
+   "kind": "data",
+   "writers": "res_o is driven in the operation_result process: res_o <= (others => '0') (line 321); when ctrl.out_en = '1' (line 322) the case on ctrl_i.ir_funct3 selects the source: op_mul_c -> res_o <= mul.prod(31 downto 0) (line 325); op_mulh/op_mulhsu/op_mulhu -> res_o <= mul.prod(63 downto 32) (line 327); others -> res_o <= div.res (line 329). mul.prod is produced by the multiplier (registered from mul.dsp_z at line 184 in the parallel path, or built/shifted in the serial path lines 210-216 and updated in mul_update 221-231); div.res is computed from div.res_u and div.sign_mod (lines 299-300).",
+   "observers": "res_o is an output port (declaration line 37) and is driven by the operation_result logic (lines 321-331; specific assignments at 325/327/329), and completion is signalled on valid_o (line 145), so the computed 32-bit result is directly observable outside the module.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 325,
+     "via": "res_o",
+     "reason": "The computed result is presented on the module output res_o (assignment from mul.prod or div.res at lines 325/327/329) so an external observer can read the computed data."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 323,
+     "via": "ctrl_i.ir_funct3",
+     "reason": "The result selection and output are driven from ctrl_i.ir_funct3 at output time (case on ctrl_i.ir_funct3 in lines 323-329) without latching the opcode at operation start, and external changes to ctrl_i.ir_funct3 or other control inputs can therefore alter which value is driven to res_o or cause premature/incomplete results to be presented."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 97,
+     "via": "ctrl_i.alu_cp_alu",
+     "reason": "Start of operation depends on valid_cmd which requires ctrl_i.alu_cp_alu (line 97); clearing that external input prevents operations from starting and thus stops res_o from being produced."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 321,
+     "via": "res_o",
+     "reason": "res_o has a single functional driver in the operation_result process (initial assignment at line 321 and selection at lines 323-329) and there is no debug/test override in the RTL to substitute a different result source at runtime."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Operand signedness interpretation (the per-operation flags that decide signed vs unsigned semantics for rs1 and rs2)",
+   "kind": "configuration",
+   "writers": "ctrl.rs1_is_signed and ctrl.rs2_is_signed are computed combinationally from the instruction funct3 field: ctrl.rs1_is_signed <= '1' when (ctrl_i.ir_funct3 = op_mulh_c) or (ctrl_i.ir_funct3 = op_mulhsu_c) or (ctrl_i.ir_funct3 = op_div_c) or (ctrl_i.ir_funct3 = op_rem_c) else '0' (lines 148-149); ctrl.rs2_is_signed <= '1' when (ctrl_i.ir_funct3 = op_mulh_c) or (ctrl_i.ir_funct3 = op_div_c) or (ctrl_i.ir_funct3 = op_rem_c) else '0' (lines 150-151). These flags are then used to sign-extend/capture multiplier inputs (lines 171-173), to select add/sub in serial multiply (lines 221-228, mul_update), and to initialize/adjust divider operands and sign (lines 263-281).",
+   "observers": "There is no dedicated external readback of these flags; their effects are observable externally through result outputs and timing (res_o assignment and valid_o, operation_result lines 321-331 and valid_o line 145) but the flags themselves are derived directly from the input instruction field ctrl_i.ir_funct3 (lines 148-151).",
+   "answers": {
+    "confidentiality": {
+     "answer": "no",
+     "line": 148,
+     "via": "ctrl_i.ir_funct3",
+     "reason": "These signedness flags are directly computed from the instruction field ctrl_i.ir_funct3 (lines 148-151) which is the same external writer that supplied them, so the setting does not reveal new secret information beyond what its writer already provided."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 148,
+     "via": "ctrl_i.ir_funct3",
+     "reason": "ctrl.rs1_is_signed/ctrl.rs2_is_signed are driven combinationally from ctrl_i.ir_funct3 (lines 148-151) and are read by multiplier/divider logic during operation (e.g., mul.dsp_x/mul.dsp_y at 171-173 and mul_update at 221-228 and divider init at 263-273) with no latch to freeze them for the duration, so external changes can alter signedness while an operation is in progress."
+    },
+    "availability": {
+     "answer": "no",
+     "line": 148,
+     "via": "ctrl_i.ir_funct3",
+     "reason": "The signedness flags update combinationally from ctrl_i.ir_funct3 (lines 148-151) and there is no enable/hold/stall in the RTL that an external party can use to freeze these signals and block progress; they do not gate progress themselves."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 148,
+     "via": "ctrl_i.ir_funct3",
+     "reason": "There is a single combinational assignment for each signedness flag (lines 148-151) and no debug/test override path in the RTL that would replace or bypass these assignments at runtime."
+    }
+   },
+   "security objective": "Integrity"
+  }
+ ],
+ "_problems": []
+}

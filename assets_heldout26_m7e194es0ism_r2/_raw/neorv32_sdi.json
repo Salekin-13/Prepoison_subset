@@ -1,0 +1,180 @@
+{
+  "module name": "neorv32_sdi",
+  "conceptual assets": [
+    {
+      "concept": "Module enable configuration (ctrl.enable)",
+      "security objective": "Integrity",
+      "reasoning": "The bus_access process writes the control enable bit from the bus write data: `ctrl.enable <= bus_req_i.data(ctrl_en_c)` (writes to addr(2)= '0'); reset clears it (`ctrl.enable <= '0'` in reset). The enable bit gates module behavior: `serial.state(2) <= ctrl.enable` (serial_engine), `tx_fifo.clear <= not ctrl.enable` and `rx_fifo.clear <= not ctrl.enable`, and irq_generator gates irq_o with `ctrl.enable`. Corrupting ctrl.enable would change FIFO clear behavior, serial-state enabling and IRQ gating, violating the implemented operation-specific integrity requirements.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.enable",
+          "entity": "neorv32_sdi",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "IRQ mask configuration bits (ctrl.irq_rx_avail, ctrl.irq_rx_half, ctrl.irq_rx_full, ctrl.irq_tx_empty, ctrl.irq_tx_nhalf)",
+      "security objective": "Integrity",
+      "reasoning": "bus_access writes the IRQ mask bits from bus write data at the defined indices (examples: `ctrl.irq_rx_avail <= bus_req_i.data(ctrl_irq_rx_avail_c)`, `ctrl.irq_tx_nhalf <= bus_req_i.data(ctrl_irq_tx_nhalf_c)`) when writing addr(2)='0'. irq_generator uses these stored mask bits to qualify FIFO conditions in the interrupt expression: `irq_o <= ctrl.enable and ((ctrl.irq_rx_avail and rx_fifo.avail) or (ctrl.irq_rx_half and rx_fifo.half) or (ctrl.irq_rx_full and (not rx_fifo.free)) or (ctrl.irq_tx_empty and (not tx_fifo.avail)) or (ctrl.irq_tx_nhalf and (not tx_fifo.half)))`. Integrity of these mask bits is required because their corruption directly changes when irq_o is asserted.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.irq_rx_avail",
+          "entity": "neorv32_sdi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_rx_half",
+          "entity": "neorv32_sdi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_rx_full",
+          "entity": "neorv32_sdi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_tx_empty",
+          "entity": "neorv32_sdi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_tx_nhalf",
+          "entity": "neorv32_sdi",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Interrupt request output signal (irq_o)",
+      "security objective": "Integrity",
+      "reasoning": "The irq_generator process computes and drives the external interrupt output: `irq_o <= ctrl.enable and ((ctrl.irq_rx_avail and rx_fifo.avail) or ... (ctrl.irq_tx_nhalf and (not tx_fifo.half)))`. irq_o is exported from the entity; integrity of this exported decision is required because erroneous changes to irq_o violate the implemented interrupt signaling behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_o",
+          "entity": "neorv32_sdi",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Received-byte storage in RX FIFO",
+      "security objective": "Integrity",
+      "reasoning": "The serial receive flow writes completed 8-bit words into the RX FIFO: `rx_fifo.wdata <= serial.sreg` and `rx_fifo.we <= serial.done`; bus reads return stored bytes via `bus_rsp_o.data(7 downto 0) <= rx_fifo.rdata`. Corruption of stored RX bytes would change readback and interrupt qualification, so integrity of received-byte storage is required. Mapping limitation: the actual storage/memory is implemented inside the instantiated `neorv32.neorv32_fifo` sub-block; the local fields `rx_fifo.wdata`/`rx_fifo.rdata` are connection carriers to that instance and are not tested or computed here, so no eligible local store inside this entity survives the transport/carrier exclusions. (related structural assets left empty for that reason.)",
+      "related structural assets": []
+    },
+    {
+      "concept": "Transmit-byte storage in TX FIFO",
+      "security objective": "Integrity",
+      "reasoning": "The bus write path enqueues transmit bytes: `tx_fifo.wdata <= bus_req_i.data(7 downto 0)` and `tx_fifo.we <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '1')`; the serial engine consumes them: `serial.sreg <= tx_fifo.rdata` (when tx_fifo.avail='1') and `tx_fifo.re <= serial.start`. Corruption of TX FIFO contents would change transmitted bits, so integrity of stored TX bytes is required. Mapping limitation: the FIFO storage resides inside the instantiated `neorv32.neorv32_fifo` sub-block; top-level `tx_fifo.wdata`/`tx_fifo.rdata` are carriers and not eligible as primary stores under the exclusions; related structural assets list is empty.",
+      "related structural assets": []
+    },
+    {
+      "concept": "RX FIFO occupancy status (rx_fifo.avail, rx_fifo.half, rx_fifo.free)",
+      "security objective": "Integrity",
+      "reasoning": "The module reports and uses RX FIFO status: bus_access places `rx_fifo.avail` and `rx_fifo.half` into bus readback (`bus_rsp_o.data(ctrl_rx_avail_c) <= rx_fifo.avail`, `bus_rsp_o.data(ctrl_rx_half_c) <= rx_fifo.half`) and reports full via `bus_rsp_o.data(ctrl_rx_full_c) <= not rx_fifo.free`; irq_generator uses these status signals in the interrupt expression (e.g. `ctrl.irq_rx_avail and rx_fifo.avail`). These status values are declared fields and are tested in conditions; their integrity is required because incorrect status changes readback and IRQ behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "rx_fifo.avail",
+          "entity": "neorv32_sdi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rx_fifo.half",
+          "entity": "neorv32_sdi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rx_fifo.free",
+          "entity": "neorv32_sdi",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "TX FIFO occupancy status (tx_fifo.avail, tx_fifo.half, tx_fifo.free)",
+      "security objective": "Integrity",
+      "reasoning": "TX FIFO status is used for readback and flow control: bus_access reports `not tx_fifo.avail`, `not tx_fifo.half`, `not tx_fifo.free` into bus readback fields (`ctrl_tx_empty_c`, `ctrl_tx_nhalf_c`, `ctrl_tx_full_c`), irq_generator uses `(not tx_fifo.avail)` and `(not tx_fifo.half)`, and serial_engine tests `tx_fifo.avail` to decide whether to load `tx_fifo.rdata` or zeros (`if (tx_fifo.avail = '0') then serial.sreg <= (others => '0') else serial.sreg <= tx_fifo.rdata`). These declared fields are used in conditions; their integrity is required because incorrect occupancy signals change load behavior and IRQ/readback results.",
+      "related structural assets": [
+        {
+          "asset rtl": "tx_fifo.avail",
+          "entity": "neorv32_sdi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tx_fifo.half",
+          "entity": "neorv32_sdi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tx_fifo.free",
+          "entity": "neorv32_sdi",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Serial shift register content (serial.sreg) used for TX and RX",
+      "security objective": "Integrity",
+      "reasoning": "The serial_engine loads serial.sreg from the TX FIFO or zeros in state `\"100\"` (`serial.sreg <= tx_fifo.rdata` or zeros), shifts in sampled bits in state `\"111\"` (`serial.sreg <= serial.sreg(serial.sreg'left-1 downto 0) & serial.sdi_ff`), and the completed byte is written to RX FIFO (`rx_fifo.wdata <= serial.sreg`). The transmitted bit is driven from `serial.sreg(serial.sreg'left)` (`sdi_dat_o <= serial.sreg(serial.sreg'left)`). Corruption of serial.sreg alters transmitted bits and stored received bytes; serial.sreg is a clocked register in the `serial` record and therefore is the primary store for this concept.",
+      "related structural assets": [
+        {
+          "asset rtl": "serial.sreg",
+          "entity": "neorv32_sdi",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "SDI data output bit (sdi_dat_o)",
+      "security objective": "Integrity",
+      "reasoning": "The module exports the transmit bit with `sdi_dat_o <= serial.sreg(serial.sreg'left);`. This output is the signal that leaves the entity to the SDI line; integrity of the exported bit is required so the external line observes the value implemented by the shift register.",
+      "related structural assets": [
+        {
+          "asset rtl": "sdi_dat_o",
+          "entity": "neorv32_sdi",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Synchronized SDI input samples (sync.sck_ff, sync.csn_ff, sync.sdi_ff / sync.sck, sync.csn, sync.sdi)",
+      "security objective": "Integrity",
+      "reasoning": "The synchronizer process samples external SDI ports into flip-flops: `sync.sck_ff <= sync.sck_ff(1 downto 0) & sdi_clk_i`, `sync.csn_ff <= sync.csn_ff(0) & sdi_csn_i`, `sync.sdi_ff <= sync.sdi_ff(0) & sdi_dat_i` (reset clears them). Combinationally `sync.sck <= sync.sck_ff(1) xor sync.sck_ff(2)`, `sync.csn <= sync.csn_ff(1)`, `sync.sdi <= sync.sdi_ff(1)`. serial_engine uses these sampled signals to detect transaction start (`if (sync.csn = '0') then serial.start <= '1'`) and to sample/advance bits (`elsif (sync.sck = '1') then ...`). Integrity of these synchronized inputs is required because their corruption changes transaction detection and sampling. The sampled flip-flop fields are the declared stores realizing the synchronized inputs.",
+      "related structural assets": [
+        {
+          "asset rtl": "sync.sck_ff",
+          "entity": "neorv32_sdi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "sync.csn_ff",
+          "entity": "neorv32_sdi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "sync.sdi_ff",
+          "entity": "neorv32_sdi",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Serial transfer event decisions (serial.start and serial.done)",
+      "security objective": "Integrity",
+      "reasoning": "The serial_engine asserts the transfer-start event: `serial.start <= '1'` in state `\"100\"` when `sync.csn = '0'` and clears it each cycle; `tx_fifo.re <= serial.start` uses it to read a TX word. The receive-complete event is `serial.done <= '1'` in state `\"111\"` when `serial.cnt(3) = '1'` and `rx_fifo.we <= serial.done` writes the received byte. These stored decision signals directly control FIFO read/write and transaction boundaries; integrity of these decisions is required to preserve correct transfer behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "serial.start",
+          "entity": "neorv32_sdi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "serial.done",
+          "entity": "neorv32_sdi",
+          "realization": "stores"
+        }
+      ]
+    }
+  ]
+}

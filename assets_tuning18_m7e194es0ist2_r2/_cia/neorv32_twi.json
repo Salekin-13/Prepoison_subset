@@ -1,0 +1,371 @@
+{
+ "module name": "neorv32_twi",
+ "concepts": [
+  {
+   "concept": "Controller enable bit (ctrl.enable) that turns the TWI logic and clock-generator on or off",
+   "kind": "configuration",
+   "writers": "Reset: bus_access process sets ctrl.enable <= '0' at line 124 when rstn_i = '0'; Bus writes: bus_access writes ctrl.enable <= bus_req_i.data(ctrl_en_c) at line 136 when (bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '0') on the rising_edge(clk_i).",
+   "observers": "bus_rsp_o.data(ctrl_en_c) read-back at line 143; clkgen_en_o <= ctrl.enable exported at line 270; irq_o depends on ctrl.enable at line 239 (external IRQ).",
+   "answers": {
+    "confidentiality": {
+     "answer": "no",
+     "line": 143,
+     "via": "bus_rsp_o",
+     "reason": "ctrl.enable is a configuration bit written by bus_req_i and explicitly returned on bus reads (bus_rsp_o.data at line 143), so the RTL treats it as readable rather than secret."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 136,
+     "via": "bus_req_i",
+     "reason": "bus_access writes ctrl.enable from bus_req_i.data at line 136 with no guard preventing writes while the engine/clock-generator are active, allowing external bus writes to change the enable during operation."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 252,
+     "via": "ctrl.enable",
+     "reason": "clock_generator checks ctrl.enable at line 252 and clears clk_gen.tick and clk_gen.cnt when ctrl.enable = '0', so clearing this externally-writable bit prevents clocking and halts progress."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 136,
+     "via": "bus_req_i",
+     "reason": "ctrl.enable has a single write source in the bus_access process (line 136) and the RTL contains no debug/test override that substitutes a different assignment."
+    }
+   },
+   "security objective": "Integrity"
+  },
+  {
+   "concept": "Clock prescaler selection (ctrl.prsc) used to index clkgen_i for tick sampling",
+   "kind": "configuration",
+   "writers": "Reset: ctrl.prsc <= (others => '0') in bus_access reset branch at line 125 when rstn_i = '0'; Bus writes: bus_access writes ctrl.prsc <= bus_req_i.data(ctrl_prsc2_c downto ctrl_prsc0_c) at line 137 when (bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '0') on rising_edge(clk_i).",
+   "observers": "bus_rsp_o.data(ctrl_prsc2_c downto ctrl_prsc0_c) <= ctrl.prsc at line 144 (read-back); used to select clkgen_i bit at line 257 (internal selection).",
+   "answers": {
+    "confidentiality": {
+     "answer": "no",
+     "line": 144,
+     "via": "bus_rsp_o",
+     "reason": "ctrl.prsc is a configuration register written by the bus and explicitly read back via bus_rsp_o.data at line 144, so the RTL does not keep it secret."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 137,
+     "via": "bus_req_i",
+     "reason": "bus_access writes ctrl.prsc from bus_req_i.data at line 137 with no guard preventing writes while the clock/tick selection is in use, allowing external writes to change prescaler while running."
+    },
+    "availability": {
+     "answer": "no",
+     "line": 137,
+     "via": "bus_req_i",
+     "reason": "ctrl.prsc is updated only by the bus write at line 137 (on the clock edge) and there is no external stall input in the RTL that can freeze its update, so availability is not blocked by the design."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 137,
+     "via": "bus_req_i",
+     "reason": "ctrl.prsc has a single intended driver (the bus_access write at line 137) and the RTL shows no alternate/test override for this field."
+    }
+   },
+   "security objective": "Integrity"
+  },
+  {
+   "concept": "Clock divider value (ctrl.cdiv) that defines when clk_gen.tick is asserted (cnt == cdiv)",
+   "kind": "configuration",
+   "writers": "Reset: ctrl.cdiv <= (others => '0') in bus_access reset branch at line 126 when rstn_i = '0'; Bus writes: bus_access writes ctrl.cdiv <= bus_req_i.data(ctrl_cdiv3_c downto ctrl_cdiv0_c) at line 138 when (bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '0') on rising_edge(clk_i).",
+   "observers": "bus_rsp_o.data(ctrl_cdiv3_c downto ctrl_cdiv0_c) <= ctrl.cdiv at line 145 (read-back); used in clk_gen.cnt compare at line 258 to assert clk_gen.tick (internal effect visible via timing).",
+   "answers": {
+    "confidentiality": {
+     "answer": "no",
+     "line": 145,
+     "via": "bus_rsp_o",
+     "reason": "ctrl.cdiv is a configuration register written by the bus and explicitly returned on bus reads (bus_rsp_o.data at line 145), so the RTL does not hide it."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 138,
+     "via": "bus_req_i",
+     "reason": "bus_access writes ctrl.cdiv from bus_req_i.data at line 138 with no guarding against writes while clk_gen.cnt is used to produce clk_gen.tick, allowing external writes to change the divider during operation."
+    },
+    "availability": {
+     "answer": "no",
+     "line": 138,
+     "via": "bus_req_i",
+     "reason": "ctrl.cdiv is updated by the bus write at line 138 on the clock edge and there is no RTL stall that prevents updates, so availability is not blocked by the design."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 138,
+     "via": "bus_req_i",
+     "reason": "ctrl.cdiv has a single write source in the bus_access process (line 138) and no alternate/test assignment overrides it in the RTL."
+    }
+   },
+   "security objective": "Integrity"
+  },
+  {
+   "concept": "Clock-stretch enable (ctrl.clkstr) that allows SCL-based halting of the internal phase generator",
+   "kind": "configuration",
+   "writers": "Bus writes: bus_access writes ctrl.clkstr <= bus_req_i.data(ctrl_clkstr_en_c) at line 139 when (bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '0') on rising_edge(clk_i); no explicit reset assignment for ctrl.clkstr in the provided reset branch.",
+   "observers": "bus_rsp_o.data(ctrl_clkstr_en_c) <= ctrl.clkstr at line 146 (read-back); clk_gen.halt uses ctrl.clkstr in its condition at line 296 (internal), which affects phase progression and thus externally visible timing/lines (twi_scl_o at line 407).",
+   "answers": {
+    "confidentiality": {
+     "answer": "no",
+     "line": 146,
+     "via": "bus_rsp_o",
+     "reason": "ctrl.clkstr is written by bus_req_i and explicitly readable via bus_rsp_o.data at line 146, so the RTL does not treat it as secret."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 139,
+     "via": "bus_req_i",
+     "reason": "bus_access writes ctrl.clkstr from bus_req_i.data at line 139 without guarding against writes while the phase generator/engine are active, permitting external writes to change clock-stretch behavior during operation."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 296,
+     "via": "io_con.scl_in_ff",
+     "reason": "clk_gen.halt is asserted when (io_con.scl_out = '1') and (io_con.scl_in_ff(1) = '0') and (ctrl.clkstr = '1') at line 296, so with clkstr enabled an external SCL condition (sampled via io_con.scl_in_ff) can halt the phase generator and block progress."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 139,
+     "via": "bus_req_i",
+     "reason": "ctrl.clkstr is driven only by the bus_access write at line 139 and the RTL contains no alternate debug/test override that substitutes a different source."
+    }
+   },
+   "security objective": "Integrity"
+  },
+  {
+   "concept": "Transmit FIFO contents \u0014 TWI transmit commands/data queued by bus writes and consumed by the engine",
+   "kind": "data",
+   "writers": "Bus writes drive the FIFO: fifo.tx_we <= '1' at line 197 when (bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '1'); fifo.tx_wdata <= bus_req_i.data(dcmd_cmd_hi_c downto dcmd_lsb_c) at line 198; the tx FIFO instance consumes wdata_i (port mapping at line 188) and produces rdata_o at line 193 that is fed back into the engine; fifo.clear <= not ctrl.enable at line 168 can clear the FIFO.",
+   "observers": "Engine reads fifo.tx_rdata into engine.sreg at line 327; the FIFO fullness/status is reported via bus_rsp_o.data(ctrl_tx_full_c) <= not fifo.tx_free at line 152; the FIFO-backed transmit content is driven onto the TWI pins through io_con.sda_out/io_con.scl_out and observed externally at twi_sda_o (line 406) and twi_scl_o (line 407) when transmitted.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 406,
+     "via": "twi_sda_o",
+     "reason": "FIFO entries are written from bus_req_i.data (line 198) and later driven out on the TWI pins (final external observation at twi_sda_o <= io_con.sda_out at line 406), so their contents can be observed outside the module."
+    },
+    "integrity": {
+     "answer": "yes-assumed",
+     "line": 198,
+     "via": "bus_req_i",
+     "reason": "fifo.tx_wdata is sourced directly from bus_req_i.data at line 198 and the RTL provides no internal access-control on who may write the FIFO, so whether writes are trusted depends on the integration context."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 199,
+     "via": "fifo.tx_avail",
+     "reason": "fifo.tx_re (line 199) only pops data when fifo.tx_avail = '1' (and engine.busy = '0' and clk_gen.tick = '1'), so an external writer that withholds writes (making fifo.tx_avail = '0') can prevent the engine from receiving/transmitting data."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 198,
+     "via": "bus_req_i",
+     "reason": "the transmit FIFO's write interface is driven by bus_req_i.bus writes at line 198 and the RTL provides no alternate/test override source that bypasses the FIFO contents."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Received bytes captured from the TWI bus and placed into the RX FIFO for bus reads",
+   "kind": "data",
+   "writers": "Sampling/shifting: engine.sreg <= engine.sreg(7 downto 0) & io_con.sda_in_ff(1) when clk_gen.phase(2) = '1' at line 378 (shifting in sampled SDA); RX FIFO write data: fifo.rx_wdata <= engine.sreg(0) & engine.sreg(8 downto 1) at line 228; RX FIFO write enable: fifo.rx_we <= engine.done at line 229 which is asserted when a frame completes (engine.done set at line 386). Reset initializes engine.sreg/engine.done at lines 310-311.",
+   "observers": "bus reads return the RX word: bus_rsp_o.data(8 downto 0) <= fifo.rx_rdata at line 156; rx availability is reported via bus_rsp_o.data(ctrl_rx_avail_c) <= fifo.rx_avail at line 153.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 156,
+     "via": "bus_rsp_o",
+     "reason": "received bytes are captured from the external TWI pins (line 378->228) and explicitly returned to the bus master via bus_rsp_o.data at line 156, so they are observable externally and may be treated as sensitive by the integrator."
+    },
+    "integrity": {
+     "answer": "yes-assumed",
+     "line": 228,
+     "via": "engine.sreg",
+     "reason": "fifo.rx_wdata is derived from engine.sreg (line 228), which itself is shifted from sampled SDA (line 378); the RTL provides no authentication on the source of the sampled bits (twi_sda_i), so whether the writer is trusted depends on integration."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 296,
+     "via": "io_con.scl_in_ff",
+     "reason": "clk_gen.halt can be asserted (line 296) when ctrl.clkstr = '1' and an external SCL condition is observed via io_con.scl_in_ff, and halting phase progression prevents engine shifts/done and thus blocks RX FIFO writes."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 228,
+     "via": "fifo.rx_wdata",
+     "reason": "RX FIFO write data and write-enable come from the engine (lines 228-229) and there is no alternate/test mode in the RTL that substitutes a different source for received bytes."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Engine finite state (engine.state) that sequences TWI transactions and phases",
+   "kind": "state",
+   "writers": "Reset: engine.state <= (others => '0') at line 308 when rstn_i = '0'; twi_engine updates: engine.state(2) <= ctrl.enable at line 321; engine.state(1 downto 0) loaded from fifo.tx_rdata when in state \"100\" at line 329 (guarded by fifo.tx_avail and clk_gen.tick at line 328); other case branches assign engine.state(1 downto 0) in the case arms (assignments at lines 344, 353, 354, 387, 394 etc).",
+   "observers": "engine.busy (derived from engine.state) is reported via bus_rsp_o.data(ctrl_busy_c) at line 154 and used in irq at line 239; engine.state determines IO behavior that is visible on twi_sda_o/twi_scl_o (final outputs at lines 406-407).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 154,
+     "via": "bus_rsp_o",
+     "reason": "engine.state determines engine.busy which is reported on bus_rsp_o.data(ctrl_busy_c) at line 154 and affects externally visible behavior, so parts of the internal state are observable and may reveal activity to an external observer."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 321,
+     "via": "ctrl.enable",
+     "reason": "engine.state(2) is copied from ctrl.enable at line 321, and ctrl.enable is writable by bus_req_i (line 136) with no guard preventing updates while the engine is running, enabling external writes to alter engine.state."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 321,
+     "via": "ctrl.enable",
+     "reason": "engine.state(2) follows ctrl.enable (line 321) and clearing ctrl.enable (writable from bus_req_i) causes the engine to be disabled and prevents state progression, so external writes can stop the state machine."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 321,
+     "via": "twi_engine",
+     "reason": "engine.state is driven only by the twi_engine process (assignments such as line 321 and the case arms) and the RTL contains no separate debug/test override that bypasses the state updates."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Engine busy indicator (engine.busy) used to gate reads, FIFO pops and IRQ logic",
+   "kind": "decision",
+   "writers": "engine.busy is computed concurrently from engine.state at line 401: engine.busy <= '1' when (engine.state(2) = '1') and (engine.state(1 downto 0) /= \"00\") else '0'. engine.state itself is updated in twi_engine (see lines 308, 321, 329, 344, 353, 387, 394 etc).",
+   "observers": "bus_rsp_o.data(ctrl_busy_c) uses engine.busy at line 154 (read-back); irq_o logic consults engine.busy at line 239; many internal gates and FIFO controls depend on engine.busy (e.g., fifo.tx_re at line 199).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 154,
+     "via": "bus_rsp_o",
+     "reason": "engine.busy is reported via bus_rsp_o.data(ctrl_busy_c) at line 154 and via irq behavior, so its value (which reveals controller activity) is observable outside the module."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 321,
+     "via": "ctrl.enable",
+     "reason": "engine.busy follows engine.state (computed at line 401) and engine.state(2) is driven from ctrl.enable at line 321 (which is writable by the bus), so external writes to ctrl.enable can change engine.busy while it is being used."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 321,
+     "via": "ctrl.enable",
+     "reason": "clearing ctrl.enable (copied into engine.state(2) at line 321) forces engine.busy low and prevents the engine from being 'busy', so an external writer can stop the busy condition and thereby affect progress/handshakes."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 401,
+     "via": "engine.state",
+     "reason": "engine.busy is derived only from engine.state by the concurrent assignment at line 401 and the RTL offers no alternate/test override for busy."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "IRQ output (irq_o) that reports controller ready/idle condition to the host",
+   "kind": "event",
+   "writers": "Reset: irq_o <= '0' at line 237 when rstn_i = '0'; irq_generator process on rising_edge(clk_i) assigns irq_o <= ctrl.enable and (not fifo.tx_avail) and (not engine.busy) at line 239.",
+   "observers": "irq_o is an output port (external IRQ) driven at line 239 and observed by the host (port at entity declaration line 33).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 239,
+     "via": "irq_o",
+     "reason": "irq_o is an external interrupt output driven from internal status signals at line 239 and thus reveals controller readiness/activity to external observers, so the integrator may treat it as sensitive."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 239,
+     "via": "ctrl.enable",
+     "reason": "irq_o is computed from ctrl.enable, fifo.tx_avail and engine.busy at line 239 and those inputs (e.g. ctrl.enable) are writable/controllable from outside via bus_req_i, so external actions can change irq_o without internal protection."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 239,
+     "via": "ctrl.enable",
+     "reason": "the IRQ assignment at line 239 is gated by ctrl.enable and fifo.tx_avail/engine.busy, so clearing ctrl.enable (or manipulating FIFO availability) prevents the IRQ from asserting and thus denies that external event to the host."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 239,
+     "via": "irq_generator",
+     "reason": "irq_o is produced only by the irq_generator process (reset at 237 and assignment at 239) and there is no alternate/test-mode assignment present in the RTL."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "TWI bus output levels (SDA and SCL) that the core drives onto the external pins",
+   "kind": "data",
+   "writers": "Reset: io_con.sda_out <= '1' and io_con.scl_out <= '1' at lines 306-307 when rstn_i = '0'; twi_engine assigns io_con.sda_out and io_con.scl_out in the case arms (examples: io_con.sda_out <= '1' at line 335 and <= '0' at line 337; io_con.scl_out <= '1' at line 341 and <= '0' at line 343; other assignments at lines 350, 352, 356, 358, 366, 368, 372, 374, and defaults at lines 392-393); final mapping to pins: twi_sda_o <= io_con.sda_out at line 406 and twi_scl_o <= io_con.scl_out at line 407.",
+   "observers": "twi_sda_o (line 406) and twi_scl_o (line 407) are external outputs; their timing and values (driven from engine state and sreg) are observable on the external TWI bus and by any external device connected to those pins.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 406,
+     "via": "twi_sda_o",
+     "reason": "the module drives SDA/SCL on the external pins (twi_sda_o at line 406 / twi_scl_o at line 407) and those signals convey the transmitted data/timing, so their contents are observable outside and may be considered sensitive by the integrator."
+    },
+    "integrity": {
+     "answer": "no",
+     "line": 335,
+     "via": "twi_engine",
+     "reason": "io_con.sda_out/io_con.scl_out are driven only by the internal twi_engine process (e.g. assignments at line 335 and related case arms) and the RTL contains no alternate external driver that directly overwrites those signals."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 296,
+     "via": "io_con.scl_in_ff",
+     "reason": "clk_gen.halt is asserted when a sampled SCL condition and ctrl.clkstr are present (line 296), which stops phase progression and therefore can freeze or alter the externally visible SDA/SCL toggling."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 335,
+     "via": "twi_engine",
+     "reason": "the TWI outputs are driven by the twi_engine case logic (e.g. line 335) and the RTL provides no debug/test override that substitutes a different driver for the outputs."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Sampled TWI input registers (io_con.sda_in_ff, io_con.scl_in_ff) used for status reads and for halt/clock-stretch detection",
+   "kind": "data",
+   "writers": "Reset: io_con.sda_in_ff <= (others => '0') at line 304 and io_con.scl_in_ff <= (others => '0') at line 305 when rstn_i = '0'; sampling on clock: io_con.sda_in_ff <= io_con.sda_in_ff(0) & io_con.sda_in at line 314 and io_con.scl_in_ff <= io_con.scl_in_ff(0) & io_con.scl_in at line 315 (clocked by clk_i); io_con.sda_in/io_con.scl_in are driven from the pins: io_con.sda_in <= to_stdulogic(to_bit(twi_sda_i)) at line 408 and io_con.scl_in <= to_stdulogic(to_bit(twi_scl_i)) at line 409.",
+   "observers": "bus_rsp_o returns sampled values: bus_rsp_o.data(ctrl_sense_scl_c) <= io_con.scl_in_ff(1) at line 150 and bus_rsp_o.data(ctrl_sense_sda_c) <= io_con.sda_in_ff(1) at line 151; sampled values are also used in halt detection at line 296.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 150,
+     "via": "bus_rsp_o",
+     "reason": "the sampled SDA/SCL registers are reported back to the bus master via bus_rsp_o.data at line 150/151 and reflect external bus conditions, so they are observable externally and may be treated as sensitive."
+    },
+    "integrity": {
+     "answer": "yes-assumed",
+     "line": 314,
+     "via": "twi_sda_i",
+     "reason": "io_con.sda_in_ff/io_con.scl_in_ff are populated from the external pins (io_con.sda_in/io_con.scl driven from twi_sda_i/twi_scl_i at lines 408-409 and clocked into the flip-flops at line 314-315), and the RTL provides no mechanism to authenticate those external sources, so integrity depends on integration."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 296,
+     "via": "io_con.scl_in_ff",
+     "reason": "clk_gen.halt uses sampled SCL (io_con.scl_in_ff) and ctrl.clkstr at line 296, so external SCL conditions can cause the phase generator to halt and thereby block engine progress."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 314,
+     "via": "twi_engine",
+     "reason": "the sampled input flip-flops are driven only by the sampling assignments in the twi_engine process (line 314-315) and the RTL provides no alternate/test override for those registers."
+    }
+   },
+   "security objective": "Confidentiality"
+  }
+ ],
+ "_problems": [
+  "concept answered 0 times: Transmit FIFO contents \u2014 TWI transmit commands/data queued b"
+ ]
+}

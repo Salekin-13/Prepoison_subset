@@ -1,0 +1,400 @@
+{
+  "module name": "neorv32_spi",
+  "module purpose": "SPI controller: it maps bus transactions to internal control registers and TX/RX FIFOs, runs a transmit/receive engine that generates SPI clock, MOSI and chip-select outputs and samples MISO, and provides bus responses and an interrupt output.",
+  "use-case flows": [
+    {
+      "flow": "configure",
+      "value": "control registers (enable, cpha, cpol, prsc, cdiv, highspeed and IRQ mask bits) written from bus_req_i.data",
+      "lines": [
+        137,
+        138,
+        139,
+        140,
+        141,
+        142,
+        143,
+        144,
+        145,
+        146,
+        147,
+        148,
+        149
+      ]
+    },
+    {
+      "flow": "start",
+      "value": "enqueue transmit word into TX FIFO (tx_fifo.wdata) and assert write (tx_fifo.we) to begin a transfer; transceiver reads FIFO when in start state",
+      "lines": [
+        212,
+        213,
+        286,
+        288,
+        289,
+        290,
+        292,
+        293
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "rtx_engine state-machine sequences SPI bit transfers: toggling sck, shifting sreg, sampling spi_dat_i and driving spi_dat_o/spi_clk_o/spi_csn_o",
+      "lines": [
+        281,
+        286,
+        299,
+        301,
+        308,
+        310,
+        311,
+        317,
+        318,
+        321,
+        323,
+        324,
+        325,
+        326
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "interrupt output irq_o driven from ctrl.* IRQ enables and FIFO / engine status",
+      "lines": [
+        250,
+        253,
+        255,
+        256,
+        257,
+        258,
+        259
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "bus reads return control register fields, FIFO status or RX FIFO data via bus_rsp_o.data and ack via bus_rsp_o.ack",
+      "lines": [
+        132,
+        151,
+        152,
+        153,
+        160,
+        161,
+        162,
+        163,
+        164,
+        169,
+        171,
+        172,
+        174
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "control registers, FIFOs and transceiver state cleared when rstn_i = '0'",
+      "lines": [
+        118,
+        119,
+        120,
+        121,
+        122,
+        123,
+        124,
+        125,
+        126,
+        127,
+        128,
+        129,
+        268,
+        269,
+        270,
+        271,
+        272,
+        273,
+        274,
+        275,
+        276,
+        349,
+        350,
+        351,
+        364,
+        365,
+        366,
+        367
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "SPI enable configuration (ctrl.enable) that gates FIFO clears, clock generation and overall SPI activity",
+      "security objective": "Integrity",
+      "reasoning": "The enable bit is written from the bus (ctrl.enable <= bus_req_i.data(ctrl_en_c); line 140) and reset to '0' on rstn_i (line 120). The map shows the bus write reaching the ctrl field at the assignment (bus_req_i.data -> ctrl at line 140) and the register is clocked (ctrl.enable has a CLOCKED_BY record at occurrence 3 / line 140 to clk_i). The value is used to clear FIFOs (tx_fifo.clear <= not ctrl.enable line 211, rx_fifo.clear <= not ctrl.enable line 243), to gate clock generation (clock_generator checks ctrl.enable lines 369-377), and is copied to clkgen_en_o (line 383). Those dependent flows establish that the integrity of ctrl.enable matters to SPI availability and behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.enable",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "SPI phase and polarity configuration (ctrl.cpha, ctrl.cpol) that determine SCK transitions and sampling points",
+      "security objective": "Integrity",
+      "reasoning": "Phase and polarity are written from bus_req_i.data (lines 141-142) and reset on rstn_i (lines 121-122). The map shows these fields are clocked (each has a CLOCKED_BY record at their bus-write occurrence, e.g. ctrl.cpha occurrence 3 / line 141 CLOCKED_BY clk_i) and they directly influence rtx_engine.sck selection and gating (see uses at lines 301, 309, 320, 324). Corrupting these bits changes SPI timing and thus the correctness of transfers (integrity).",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.cpha",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl.cpol",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "SPI clock configuration (ctrl.prsc, ctrl.cdiv, ctrl.highspeed) that determine spi_clk_en and the generated SPI bit rate",
+      "security objective": "Integrity",
+      "reasoning": "Prescaler, divider and highspeed are written from the bus (lines 143-145) and are clocked registers (each has a CLOCKED_BY record at the write occurrence, e.g. ctrl.prsc occurrence 3 / line 143 CLOCKED_BY clk_i). The clock_generator process uses ctrl.prsc and ctrl.highspeed and compares cdiv_cnt to ctrl.cdiv to produce spi_clk_en and update cdiv_cnt (lines 371-377). The correctness of spi_clk_en (and thus bit timing) depends on these stored settings, so their integrity is established by the RTL and map records (SELECTS / CONSTRAINS relationships to cdiv_cnt and spi_clk_en).",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.prsc",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl.cdiv",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl.highspeed",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Transmitted frame entries enqueued to the TX FIFO (MSB = control/CS flag and lower 8-bit payload) that determine outgoing MOSI bytes and CS selection",
+      "security objective": "Integrity",
+      "reasoning": "TX words are formed from the bus (tx_fifo.wdata <= bus_req_i.data(31) & bus_req_i.data(7 downto 0); line 213) and the write-enable is driven by the bus condition (tx_fifo.we assigned at line 212). The map records bus_req_i.data -> tx_fifo.wdata (DERIVES_FROM at tx_fifo.wdata occurrence 3 / line 213) and the tx write strobe is gated by the bus condition (tx_fifo.we has a GATED_BY record at occurrence 3 / line 212 referencing bus_req_i fields). The FIFO output (tx_fifo.rdata) is produced by the fifo sub-unit (connection at tx_fifo.rdata occurrence 2 -> tx_fifo_inst.rdata_o) and is used by the transceiver: tx_fifo.rdata(8) decides whether the word is a CS word (rtx_engine.cs_ctrl) or data (rtx_engine.sreg) (lines 288-293, map GATES/SOURCES at those occurrences). The integrity of enqueued words (and the MSB CS flag) is therefore established by the RTL and map because they directly determine which chip is selected and which bytes are shifted out.",
+      "related structural assets": [
+        {
+          "asset rtl": "tx_fifo.wdata",
+          "entity": "neorv32_spi",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "bus_req_i.data"
+          }
+        },
+        {
+          "asset rtl": "tx_fifo.we",
+          "entity": "neorv32_spi",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "bus_req_i.stb"
+          }
+        },
+        {
+          "asset rtl": "tx_fifo.rdata",
+          "entity": "neorv32_spi",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "CONNECTS",
+            "partner": "tx_fifo_inst.rdata_o"
+          }
+        },
+        {
+          "asset rtl": "rtx_engine.sreg",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 5,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "spi_dat_o",
+          "entity": "neorv32_spi",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "rtx_engine.sreg"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Chip-select selection (rtx_engine.cs_ctrl) and the driven chip-select outputs (spi_csn_o)",
+      "security objective": "Integrity",
+      "reasoning": "CS selection is driven from FIFO words when the transceiver starts a frame (rtx_engine loads tx_fifo.rdata(3 downto 0) into cs_ctrl at lines 288-291) and cs_ctrl is a register clocked by clk_i (rtx_engine.cs_ctrl has a CLOCKED_BY record at occurrence 4 / line 290). The chip_select process drives spi_csn_o from rtx_engine.cs_ctrl (line 354) and the map records this as a SELECTED_BY relationship (spi_csn_o occurrence 4 SELECTED_BY -> rtx_engine.cs_ctrl). Thus integrity of the cs_ctrl field and resulting spi_csn_o is established: wrong values mis-select a peripheral.",
+      "related structural assets": [
+        {
+          "asset rtl": "rtx_engine.cs_ctrl",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "spi_csn_o",
+          "entity": "neorv32_spi",
+          "realization": "exit port",
+          "occurrence": 4,
+          "edge": {
+            "type": "SELECTED_BY",
+            "partner": "rtx_engine.cs_ctrl"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Received data queued in RX FIFO (rx_fifo.wdata / rx_fifo.we / rx_fifo.rdata) and its readback to the bus",
+      "security objective": "Integrity",
+      "reasoning": "RX words are formed from the transceiver shift register when a frame completes (rx_fifo.wdata <= '0' & rtx_engine.sreg at line 244; rx_fifo.we <= rtx_engine.done at line 245). The map records the assignment (rx_fifo.wdata DERIVES_FROM rtx_engine.sreg at rx_fifo.wdata occurrence 3 / line 244 and rx_fifo.we COPIES rtx_engine.done at occurrence 3 / line 245). The RX FIFO supplies rdata to bus reads (bus_rsp_o.data is driven from rx_fifo.rdata when addr selects the RX byte; see line 174). The bus response port has a DERIVES_FROM relationship to rx_fifo.rdata at the corresponding occurrence (bus_rsp_o occurrence 23 / line 174 DERIVES_FROM rx_fifo.rdata). These records show the RX payload is stored and reported, so its integrity is established by the RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "rx_fifo.wdata",
+          "entity": "neorv32_spi",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "rtx_engine.sreg"
+          }
+        },
+        {
+          "asset rtl": "rx_fifo.we",
+          "entity": "neorv32_spi",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "COPIES",
+            "partner": "rtx_engine.done"
+          }
+        },
+        {
+          "asset rtl": "rx_fifo.rdata",
+          "entity": "neorv32_spi",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "CONNECTS",
+            "partner": "rx_fifo_inst.rdata_o"
+          }
+        },
+        {
+          "asset rtl": "bus_rsp_o",
+          "entity": "neorv32_spi",
+          "realization": "exit port",
+          "occurrence": 23,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "rx_fifo.rdata"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Interrupt generation configuration and output (ctrl.irq_* masks and irq_o)",
+      "security objective": "Integrity",
+      "reasoning": "IRQ mask bits are written from the bus (lines 146-149) and are clocked registers (e.g. ctrl.irq_rx_avail has a CLOCKED_BY record at occurrence 3 / line 146). The irq_generator process computes irq_o from ctrl.enable and the enabled IRQ masks combined with FIFO and engine status (irq_o <= ctrl.enable and ((ctrl.irq_rx_avail and rx_fifo.avail) or ... ) at line 255). The map records irq_o as deriving from the ctrl.irq_* fields and FIFO/engine status (irq_o occurrence 3 DERIVES_FROM including ctrl.irq_rx_avail), so integrity of these mask bits and the irq_o output is established by the RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.irq_rx_avail",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "irq_o",
+          "entity": "neorv32_spi",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "ctrl.irq_rx_avail"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Transceiver run-time state (rtx_engine.state) that sequences transfers and controls bus/FIFO interactions",
+      "security objective": "Integrity",
+      "reasoning": "The rtx_engine.state register is explicitly reset (line 270) and updated on clk edges (map shows CLOCKED_BY at occurrence 4 / line 281 to clk_i). The state bits select behavior throughout the transceiver (the case labels and SELECTS records at lines 282 onward determine when the engine pulls from TX FIFO, when it samples MISO, when it asserts done, etc.). The RTL therefore establishes the state register as a decision point whose integrity is required for correct SPI sequencing and FIFO interactions.",
+      "related structural assets": [
+        {
+          "asset rtl": "rtx_engine.state",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Bus readback port (bus_rsp_o) carrying control register and status fields to the requester",
+      "security objective": "Integrity",
+      "reasoning": "bus_rsp_o.data is driven from internal control fields and FIFO/engine status in the bus-access read path (the process writes fields into bus_rsp_o.data when bus_req_i.stb and addr(2) = '0' or returns rx_fifo.rdata when addr(2) = '1'; see lines 153 and 174). The map records COPIES of ctrl.enable to bus_rsp_o at bus read (bus_rsp_o occurrence 6 / line 153 COPIES -> ctrl.enable) and other DERIVES_FROM records for status bits. Because the bus readout is the module's exported report of its internal settings and status, its integrity is established by the RTL and the map records.",
+      "related structural assets": [
+        {
+          "asset rtl": "bus_rsp_o",
+          "entity": "neorv32_spi",
+          "realization": "exit port",
+          "occurrence": 6,
+          "edge": {
+            "type": "COPIES",
+            "partner": "ctrl.enable"
+          }
+        }
+      ]
+    }
+  ]
+}

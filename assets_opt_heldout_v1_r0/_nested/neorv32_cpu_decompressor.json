@@ -1,0 +1,92 @@
+{
+ "module name": "neorv32_cpu_decompressor",
+ "module purpose": "neorv32_cpu_decompressor is purely combinational: it reads a 16-bit compressed instruction on instr_i, expands it in one process (lines 52-296) into a 32-bit instruction word held in decoded, and drives that word on instr_o, forcing bit 1 of instr_o to '0' when the process classifies the input as illegal (line 300).",
+ "use-case flows": [
+  {
+   "flow": "operate",
+   "value": "the 16-bit compressed instruction from instr_i expanded field by field into a 32-bit instruction word and delivered on instr_o",
+   "lines": [52, 57, 58, 62, 65, 68, 72, 73, 74, 75, 76, 83, 84, 85, 86, 87, 91, 92, 93, 94, 95, 96, 106, 110, 111, 113, 115, 116, 120, 121, 123, 125, 126, 127, 128, 129, 133, 134, 135, 136, 137, 141, 142, 143, 144, 145, 146, 147, 149, 150, 151, 159, 160, 161, 162, 163, 167, 168, 169, 170, 172, 173, 175, 177, 178, 179, 184, 185, 186, 188, 189, 191, 192, 194, 195, 197, 198, 200, 201, 211, 215, 216, 217, 218, 219, 220, 227, 228, 229, 230, 231, 239, 240, 241, 242, 243, 244, 251, 252, 253, 254, 255, 261, 262, 263, 264, 265, 271, 272, 273, 274, 276, 277, 278, 281, 282, 283, 284, 285, 299, 301]
+  },
+  {
+   "flow": "report",
+   "value": "the illegal-encoding decision on the compressed input, reported to the consumer by forcing instr_o bit 1 to '0'",
+   "lines": [61, 65, 68, 77, 78, 100, 106, 153, 154, 170, 180, 181, 203, 204, 211, 221, 222, 232, 233, 234, 245, 246, 256, 257, 258, 266, 267, 291, 300]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Decompressed instruction word -- the 32-bit instruction the module computes from the 16-bit compressed input and delivers to its consumer",
+   "security objective": "Integrity",
+   "reasoning": "The expansion flow picks the format with `case instr_i(ci_opcode_msb_c downto ci_opcode_lsb_c) is` (line 65) and the funct3 cases (lines 68, 106, 211), then places input fields at fixed positions of decoded, e.g. `decoded(instr_rd_msb_c downto instr_rd_lsb_c) <= \"01\" & instr_i(ci_rd_3_msb_c downto ci_rd_3_lsb_c);` (line 74) and the jump immediate built from the process variable imm20_v (lines 57, 116). `instr_o(31 downto 2) <= decoded(31 downto 2);` (line 299) and `instr_o(0) <= decoded(0);` (line 301) deliver it. The consumer of instr_o is not in the supplied RTL, so Integrity is Established from the delivering lines 299-301: the consumer must receive exactly the word the selected branch defines; a wrong field mapping changes the register, immediate or operation fields of the delivered word. Process order is part of the definition: the default `decoded <= x\"00000003\";` (line 62) is overwritten by later branch assignments, and line 146 overwrites the rd field written at line 144 in the same branch. Availability is also Established in a bounded sense: the process is sensitive to instr_i (line 52) and the default at line 62 drives every bit on every path, so instr_o is defined for every input; no timing beyond that is assumed. Confidentiality is not established: no line restricts who observes instr_i or instr_o. Roles: instr_i sets, read here to compute the word (SOURCES decoded, occurrence 18, line 74; it also SELECTS decoded at line 65); decoded computes the word (DERIVES_FROM instr_i, occurrence 5, line 74, plus SELECTED_BY instr_i records for each branch); instr_o is the exit port (DERIVES_FROM decoded, occurrence 2, line 299). decoded is combinational with no COPIES record, so the copy rule does not remove it. imm20_v and imm12_v are process variables, not candidates. instr_i is a plain 16-bit vector, not a transport record, and drives no SEQUENCES or RESETS.",
+   "related structural assets": [
+    {
+     "asset rtl": "instr_i",
+     "entity": "neorv32_cpu_decompressor",
+     "realization": "sets",
+     "occurrence": 18,
+     "edge": {
+      "type": "SOURCES",
+      "partner": "decoded"
+     }
+    },
+    {
+     "asset rtl": "decoded",
+     "entity": "neorv32_cpu_decompressor",
+     "realization": "computes",
+     "occurrence": 5,
+     "edge": {
+      "type": "DERIVES_FROM",
+      "partner": "instr_i"
+     }
+    },
+    {
+     "asset rtl": "instr_o",
+     "entity": "neorv32_cpu_decompressor",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {
+      "type": "DERIVES_FROM",
+      "partner": "decoded"
+     }
+    }
+   ]
+  },
+  {
+   "concept": "Illegal-encoding decision -- whether the compressed input is an encoding the decompressor rejects, reported by clearing bit 1 of the delivered word",
+   "security objective": "Integrity",
+   "reasoning": "illegal defaults to '0' (line 61) and is driven to '1' only under specific predicates on instr_i: `if (instr_i(12 downto 5) = \"00000000\") then` / `illegal <= '1';` (lines 77-78), the unmatched funct3 arms (lines 100, 291), and the field checks at lines 153-154, 180-181, 203-204, 221-222, 232-234, 245-246, 256-258 and 266-267. `instr_o(1) <= decoded(1) when (illegal = '0') else '0';` (line 300) reports the decision to the consumer. Integrity is Established: the decision must be '1' exactly for those predicates, and a wrong value either lets a rejected encoding leave with bit 1 taken from decoded (default '1' from line 62) or clears bit 1 of an accepted word; the consumer of instr_o is not supplied, so it must receive exactly the qualification line 300 defines. illegal is an error flag computed here, so it computes (GATED_BY instr_i, occurrence 3, line 78; also SELECTED_BY instr_i at the same occurrence); every driver is a literal, which is why the flow graph lists it as a CONTROL-ONLY constant-valued source gating instr_o, and the RTL agrees. instr_i sets, as the input this entity reads to decide (GATES illegal, occurrence 23, line 77). instr_o is the exit port (GATED_BY illegal, occurrence 3, line 300). decoded is not listed for this concept: it carries the data bit that the decision gates, not the decision. Availability: the default at line 61 defines the flag on every path for every input. Confidentiality is not established.",
+   "related structural assets": [
+    {
+     "asset rtl": "instr_i",
+     "entity": "neorv32_cpu_decompressor",
+     "realization": "sets",
+     "occurrence": 23,
+     "edge": {
+      "type": "GATES",
+      "partner": "illegal"
+     }
+    },
+    {
+     "asset rtl": "illegal",
+     "entity": "neorv32_cpu_decompressor",
+     "realization": "computes",
+     "occurrence": 3,
+     "edge": {
+      "type": "GATED_BY",
+      "partner": "instr_i"
+     }
+    },
+    {
+     "asset rtl": "instr_o",
+     "entity": "neorv32_cpu_decompressor",
+     "realization": "exit port",
+     "occurrence": 3,
+     "edge": {
+      "type": "GATED_BY",
+      "partner": "illegal"
+     }
+    }
+   ]
+  }
+ ]
+}

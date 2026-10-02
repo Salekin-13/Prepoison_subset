@@ -1,0 +1,335 @@
+{
+ "module name": "neorv32_cpu_control",
+ "module purpose": "neorv32_cpu_control is a CPU control unit: it takes instructions from frontend_i into its execute engine, decodes them into an immediate and a registered control word driven on ctrl_o, computes branch decisions and the next PC, holds the machine, debug and trigger CSRs (written from csr.wdata, read back on csr_rdata_o), buffers exceptions and interrupts and turns them into a prioritized trap cause, performs trap entry and return with privilege switching, checks instruction legality and CSR access rights, and manages debug mode, a hardware trigger, sleep and counter control.",
+ "use-case flows": [
+  {"flow": "operate", "value": "instruction dispatch: fetched instruction word, compressed flag and fetch fault taken from frontend_i, and the PC advanced", "lines": [276, 358, 359, 364, 365, 366, 367, 368, 369, 370]},
+  {"flow": "operate", "value": "decode and execute: immediate and registered datapath control word (ALU, LSU, write-back, CSR strobes) driven on ctrl_o", "lines": [215, 219, 220, 227, 229, 231, 233, 235, 239, 275, 281, 312, 317, 323, 331, 339, 351, 414, 420, 442, 445, 451, 457, 463, 467, 472, 475, 483, 488, 496, 498, 504, 506, 530, 540, 567, 577, 585, 591, 596, 601, 604, 606]},
+  {"flow": "operate", "value": "branch decision, next-PC target and link address", "lines": [250, 252, 254, 257, 410, 512, 514, 515, 516, 517, 518, 581, 582, 583]},
+  {"flow": "configure", "value": "CSR write: write data, address and write enable updating machine, debug and trigger CSRs", "lines": [608, 610, 611, 1051, 1059, 1062, 1063, 1064, 1065, 1105, 1110, 1117, 1118, 1121, 1128, 1132, 1136, 1137, 1141, 1151, 1152, 1156, 1157, 1164, 1165, 1173, 1175, 1179, 1188, 1189, 1198, 1199, 1206, 1207, 1215, 1217, 1222, 1224]},
+  {"flow": "read out", "value": "CSR value selected by csr.addr returned on csr_rdata_o", "lines": [1361, 1363, 1364, 1371, 1392, 1412, 1418, 1436, 1439, 1442, 1446, 1449, 1455, 1498, 1531, 1532, 1533, 1539, 1540, 1595]},
+  {"flow": "report", "value": "pending exceptions and interrupts and the prioritized trap cause", "lines": [849, 854, 867, 873, 877, 878, 888, 890, 895, 898, 899, 903, 911, 912, 924, 926, 927, 936, 941, 958, 997, 1000, 1007, 1012]},
+  {"flow": "operate", "value": "trap entry: trap target PC and state saved in mcause, mepc, mtval, mtinst, privilege and interrupt-enable stack", "lines": [358, 359, 375, 376, 378, 380, 381, 383, 387, 388, 621, 966, 978, 979, 980, 984, 1231, 1234, 1235, 1236, 1239, 1245, 1253, 1254, 1255, 1256, 1260, 1261, 1262, 1263]},
+  {"flow": "operate", "value": "trap return (mret/dret): return PC, restored privilege and interrupt enable", "lines": [392, 394, 395, 397, 399, 1269, 1272, 1274, 1276, 1282, 1283, 1285, 1288, 1289, 1639]},
+  {"flow": "lock", "value": "privilege check: CSR access permission and instruction legality raising the illegal-instruction exception, which blocks CSR writes and reads", "lines": [654, 659, 674, 721, 725, 733, 735, 736, 740, 741, 742, 744, 754, 806, 807, 808, 812, 813, 825, 826, 1105, 1350, 1361]},
+  {"flow": "operate", "value": "debug mode: entry requests, debug-mode state, dcsr and dpc", "lines": [1633, 1634, 1635, 1638, 1639, 1646, 1647, 1650, 1651, 1658, 1668, 1670, 1677, 1681, 1682]},
+  {"flow": "operate", "value": "hardware trigger match of tdata2 against the next PC", "lines": [360, 361, 362, 1693, 1694, 1695, 1704, 1705, 1706, 1707, 1730, 1741]},
+  {"flow": "operate", "value": "sleep entry and wake-up", "lines": [546, 547, 558, 620, 1025, 1026, 1027, 1028, 1030, 1036]},
+  {"flow": "report", "value": "counter inhibit and counter events delivered on ctrl_o", "lines": [612, 613, 1175, 1176, 1179, 1603, 1605, 1608, 1609, 1610, 1611, 1612, 1613, 1614, 1615, 1616]},
+  {"flow": "operate", "value": "multi-cycle wait watchdog that ends a co-processor wait with an illegal-instruction exception", "lines": [505, 636, 637, 639, 645, 826]},
+  {"flow": "reset", "value": "engine state, PC, control word, CSRs, trap and debug state forced to defaults while rstn_i is low", "lines": [217, 218, 266, 267, 268, 269, 271, 272, 273, 633, 634, 837, 838, 839, 840, 921, 922, 973, 974, 975, 1022, 1023, 1047, 1048, 1072, 1073, 1074, 1075, 1084, 1086, 1357, 1358, 1359, 1630, 1631, 1701, 1702]}
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Current and effective privilege mode of the hart",
+   "security objective": "Integrity",
+   "reasoning": "csr.prv_level is forced to machine mode on trap entry (line 1253), restored from csr.mstatus_mpp on mret (line 1282) or from csr.dcsr_prv on dret (line 1274), and pinned to machine mode when RISCV_ISA_U is false (line 1319). csr.prv_level_eff is machine mode in debug mode, else csr.prv_level (line 1350). The effective mode decides CSR access (lines 736, 741), mret and wfi legality (lines 806, 808), interrupt taking in user mode (line 1003) and the ecall cause (line 929), and it leaves on ctrl_o.cpu_priv (line 619) to consumers not supplied. A wrong mode grants or denies these checks, so Integrity is Established. csr.prv_level stores (CLOCKED_BY clk_i, line 1253); csr.prv_level_eff computes (DERIVES_FROM csr.prv_level, line 1350); ctrl_o is named whole and is the exit through its field cpu_priv (COPIES csr.prv_level_eff, line 619). ctrl_o is a control record without address, read data or acknowledge, so it is not a transport record.",
+   "related structural assets": [
+    {"asset rtl": "csr.prv_level", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 9, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "csr.prv_level_eff", "entity": "neorv32_cpu_control", "realization": "computes", "occurrence": 6, "edge": {"type": "DERIVES_FROM", "partner": "csr.prv_level"}},
+    {"asset rtl": "ctrl_o", "entity": "neorv32_cpu_control", "realization": "exit port", "occurrence": 37, "edge": {"type": "COPIES", "partner": "csr.prv_level_eff"}}
+   ]
+  },
+  {
+   "concept": "Global machine interrupt enable and its saved copy (mstatus MIE / MPIE)",
+   "security objective": "Integrity",
+   "reasoning": "csr.mstatus_mie is written from csr.wdata(3) (line 1118), cleared on trap entry (line 1254) and restored from csr.mstatus_mpie on mret (line 1288); csr.mstatus_mpie is written at line 1119, saves MIE on trap entry (line 1255) and is set on mret (line 1289). MIE is a term of the interrupt-take decision trap_ctrl.irq_fire(0) (line 1003). A corrupted bit takes or masks interrupts against these update rules, so Integrity is Established; both are read back (lines 1392-1393). Each register stores (CLOCKED_BY clk_i).",
+   "related structural assets": [
+    {"asset rtl": "csr.mstatus_mie", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "csr.mstatus_mpie", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Saved previous privilege and modify-privilege setting that set the load/store privilege (mstatus MPP / MPRV)",
+   "security objective": "Integrity",
+   "reasoning": "csr.mstatus_mpp records the privilege at trap entry (line 1256) and is software-written (line 1121); mret restores csr.prv_level from it (line 1282) and clears MPRV when it is not machine mode (lines 1284-1285). csr.mstatus_mprv (line 1122) selects the privilege sent with every memory access: lsu_priv is mstatus_mpp when mprv is 1, else prv_level_eff (line 606). The LSU that uses it is not supplied, so integrity of the delivered value is Established from line 606, and the restored privilege depends on MPP. Both exist as written values only when RISCV_ISA_U holds (lines 1120-1124); otherwise lines 1320-1321 force machine mode and 0. Registers store (CLOCKED_BY clk_i); ctrl_o is the exit through field lsu_priv (DERIVES_FROM csr.mstatus_mpp, line 606).",
+   "related structural assets": [
+    {"asset rtl": "csr.mstatus_mpp", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "csr.mstatus_mprv", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl_o", "entity": "neorv32_cpu_control", "realization": "exit port", "occurrence": 27, "edge": {"type": "DERIVES_FROM", "partner": "csr.mstatus_mpp"}}
+   ]
+  },
+  {
+   "concept": "User-mode wait-for-interrupt restriction (mstatus TW)",
+   "security objective": "Integrity",
+   "reasoning": "csr.mstatus_tw is written from csr.wdata(21) when RISCV_ISA_U holds (line 1123) and forced to 0 otherwise (line 1322). It decides wfi legality: illegal_cmd for wfi is (not csr.prv_level) and csr.mstatus_tw (line 808), feeding the illegal-instruction exception (lines 825, 899). A wrong value lets user code enter sleep or blocks a legal wfi, so Integrity is Established. Read back at line 1396. It stores the setting (CLOCKED_BY clk_i, line 1123).",
+   "related structural assets": [
+    {"asset rtl": "csr.mstatus_tw", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Per-source interrupt enable mask (mie)",
+   "security objective": "Integrity",
+   "reasoning": "csr.mie_msi, csr.mie_mti, csr.mie_mei and csr.mie_firq are written under csr.addr = csr_mie_c and csr.we (lines 1129-1132) and each qualifies its pending request into trap_ctrl.irq_buf (lines 867-869, 873). A corrupted mask takes a disabled interrupt or drops an enabled one, so Integrity is Established; availability of interrupt delivery also depends on it. Read back at lines 1412-1415. Each stores (CLOCKED_BY clk_i).",
+   "related structural assets": [
+    {"asset rtl": "csr.mie_msi", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "csr.mie_mti", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "csr.mie_mei", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "csr.mie_firq", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Pending interrupt requests and the interrupt-take decision",
+   "security objective": "Integrity",
+   "reasoning": "irq_machine_i and irq_fast_i are sampled into trap_ctrl.irq_pnd every clock (lines 849-854), qualified by the mie bits and held while a trap is pending in trap_ctrl.irq_buf (lines 867-878), and turned into trap_ctrl.irq_fire only in EX_EXECUTE, with MIE set or user mode, outside debug mode and single-step (lines 1000-1004; debug halt and step at lines 1007-1015). irq_fire sets trap_ctrl.env_pending (line 979) and irq_buf picks the cause (lines 936-960). Integrity is Established on this chain; availability holds under the conditions of lines 1001-1004. Pending bits are readable (lines 1449-1452). The inputs set (SOURCES trap_ctrl.irq_pnd), irq_pnd and irq_buf store (CLOCKED_BY clk_i), irq_fire computes (GATED_BY, line 1000).",
+   "related structural assets": [
+    {"asset rtl": "irq_machine_i", "entity": "neorv32_cpu_control", "realization": "sets", "occurrence": 2, "edge": {"type": "SOURCES", "partner": "trap_ctrl.irq_pnd"}},
+    {"asset rtl": "irq_fast_i", "entity": "neorv32_cpu_control", "realization": "sets", "occurrence": 2, "edge": {"type": "SOURCES", "partner": "trap_ctrl.irq_pnd"}},
+    {"asset rtl": "trap_ctrl.irq_pnd", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "trap_ctrl.irq_buf", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "trap_ctrl.irq_fire", "entity": "neorv32_cpu_control", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "trap_ctrl.irq_buf"}}
+   ]
+  },
+  {
+   "concept": "Pending synchronous exceptions and the exception-fire decision",
+   "security objective": "Integrity",
+   "reasoning": "trap_ctrl.exc_buf accumulates load/store faults from lsu_err_i (lines 888-894), the instruction fault from frontend_i.fault (line 366) or pmp_fault_i (line 411) through trap_ctrl.instr_be (line 895), the misaligned-target flag trap_ctrl.instr_ma (lines 514, 890), ecall and ebreak (lines 555-556, 898, 903-907) and debug triggers (lines 911-912), each cleared only by trap entry (and not env_enter). trap_ctrl.exc_fire is the OR of exc_buf (line 997): it starts trap entry (lines 358, 979) and suppresses register write-back (line 585). A lost or spurious exception changes control flow and write-back, so Integrity is Established. lsu_err_i, pmp_fault_i, frontend_i and alu_add_i are read by this entity to compute exception flags, so they set; trap_ctrl.instr_be only carries pmp_fault_i or the fetch fault and is not listed. frontend_i is named whole through field fault (CARRIES trap_ctrl.instr_be, line 366).",
+   "related structural assets": [
+    {"asset rtl": "trap_ctrl.exc_buf", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 12, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "trap_ctrl.exc_fire", "entity": "neorv32_cpu_control", "realization": "computes", "occurrence": 5, "edge": {"type": "GATED_BY", "partner": "trap_ctrl.exc_buf"}},
+    {"asset rtl": "lsu_err_i", "entity": "neorv32_cpu_control", "realization": "sets", "occurrence": 2, "edge": {"type": "SOURCES", "partner": "trap_ctrl.exc_buf"}},
+    {"asset rtl": "pmp_fault_i", "entity": "neorv32_cpu_control", "realization": "sets", "occurrence": 3, "edge": {"type": "CARRIES", "partner": "trap_ctrl.instr_be"}},
+    {"asset rtl": "frontend_i", "entity": "neorv32_cpu_control", "realization": "sets", "occurrence": 5, "edge": {"type": "CARRIES", "partner": "trap_ctrl.instr_be"}},
+    {"asset rtl": "trap_ctrl.instr_ma", "entity": "neorv32_cpu_control", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "alu_add_i"}},
+    {"asset rtl": "alu_add_i", "entity": "neorv32_cpu_control", "realization": "sets", "occurrence": 4, "edge": {"type": "GATES", "partner": "trap_ctrl.instr_ma"}},
+    {"asset rtl": "trap_ctrl.ecall", "entity": "neorv32_cpu_control", "realization": "computes", "occurrence": 3, "edge": {"type": "SELECTED_BY", "partner": "exe_engine.ir"}},
+    {"asset rtl": "trap_ctrl.ebreak", "entity": "neorv32_cpu_control", "realization": "computes", "occurrence": 3, "edge": {"type": "SELECTED_BY", "partner": "exe_engine.ir"}}
+   ]
+  },
+  {
+   "concept": "Instruction legality and CSR access permission decision",
+   "security objective": "Integrity",
+   "reasoning": "csr_valid is computed from the CSR address: existence per build (lines 659-716), no write to read-only CSRs (lines 721-727), debug CSRs only in debug mode (lines 733-735), user counter reads only with mcounteren (lines 736-740), and no non-user CSR from user mode (lines 741-742). illegal_cmd decides legality from opcode and funct fields, mret/dret/wfi privilege (lines 806-808) and csr_valid (line 812). trap_ctrl.instr_il raises the illegal-instruction exception in EX_EXECUTE or EX_ALU_WAIT (lines 825-826), which blocks the CSR write (line 1105) and the memory request (line 529) and masks write-back through exc_fire (line 585). This is the decision that enforces privilege on CSR access and privileged instructions, so Integrity is Established. Each computes (GATED_BY records at lines 740, 806, 825).",
+   "related structural assets": [
+    {"asset rtl": "csr_valid", "entity": "neorv32_cpu_control", "realization": "computes", "occurrence": 15, "edge": {"type": "GATED_BY", "partner": "csr.prv_level_eff"}},
+    {"asset rtl": "illegal_cmd", "entity": "neorv32_cpu_control", "realization": "computes", "occurrence": 18, "edge": {"type": "GATED_BY", "partner": "csr.prv_level"}},
+    {"asset rtl": "trap_ctrl.instr_il", "entity": "neorv32_cpu_control", "realization": "computes", "occurrence": 2, "edge": {"type": "GATED_BY", "partner": "illegal_cmd"}}
+   ]
+  },
+  {
+   "concept": "Multi-cycle wait timeout (watchdog on co-processor operations)",
+   "security objective": "Integrity",
+   "reasoning": "monitor_cnt counts clock cycles while the engine is in EX_ALU_WAIT and clears otherwise (lines 636-639); its top bit monitor_exc (line 645) raises trap_ctrl.instr_il (line 826), and the resulting illegal-instruction exception ends EX_ALU_WAIT (line 505). Integrity is Established because a corrupted count raises a spurious exception or suppresses the timeout; availability is also Established, since the engine leaves a wait whose co-processor never signals completion. monitor_cnt stores (CLOCKED_BY clk_i, line 637; self-updating), monitor_exc computes (DERIVES_FROM monitor_cnt, line 645).",
+   "related structural assets": [
+    {"asset rtl": "monitor_cnt", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "monitor_exc", "entity": "neorv32_cpu_control", "realization": "computes", "occurrence": 2, "edge": {"type": "DERIVES_FROM", "partner": "monitor_cnt"}}
+   ]
+  },
+  {
+   "concept": "Trap cause",
+   "security objective": "Integrity",
+   "reasoning": "trap_ctrl.cause is registered each clock from exc_buf and irq_buf in fixed priority (lines 924-960). It selects the vectored trap target (line 381), debug versus normal trap entry (lines 375, 1234, 1260, 1634), mtval and mtinst capture (lines 1238, 1244) and the saved PC (line 966). It is saved in csr.mcause on trap entry (line 1235), which software can also write (line 1165) and read (lines 1442-1443). A wrong cause sends a trap to the wrong handler or state, so Integrity is Established. Both store (CLOCKED_BY clk_i).",
+   "related structural assets": [
+    {"asset rtl": "trap_ctrl.cause", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 7, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "csr.mcause", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Trap vector base address (mtvec)",
+   "security objective": "Integrity",
+   "reasoning": "csr.mtvec is written under csr.addr = csr_mtvec_c (line 1137) and forms the trap-entry PC in EX_TRAP_ENTER: the base with the cause bits for vectored interrupts (line 381) or the base alone (line 383). A corrupted base redirects every trap handler entry, so Integrity is Established. Read back at line 1418. It stores (CLOCKED_BY clk_i, line 1137).",
+   "related structural assets": [
+    {"asset rtl": "csr.mtvec", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 6, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Exception return address (mepc)",
+   "security objective": "Integrity",
+   "reasoning": "trap_ctrl.epc selects exe_engine.pc2 for interrupts and exe_engine.pc for exceptions (line 966); csr.mepc captures it on trap entry (line 1236) or a software write (line 1157), and mret returns to it (line 397). This is the return target of every trap, so Integrity is Established. Read back at line 1439. csr.mepc stores (CLOCKED_BY clk_i, line 1236); trap_ctrl.epc computes (DERIVES_FROM exe_engine.pc, line 966).",
+   "related structural assets": [
+    {"asset rtl": "csr.mepc", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 6, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "trap_ctrl.epc", "entity": "neorv32_cpu_control", "realization": "computes", "occurrence": 2, "edge": {"type": "DERIVES_FROM", "partner": "exe_engine.pc"}}
+   ]
+  },
+  {
+   "concept": "Trap value: faulting memory address (mtval)",
+   "security objective": "Integrity",
+   "reasoning": "On trap entry with an exception cause whose bit 2 is set, csr.mtval captures lsu_mar_i (line 1239), otherwise zero (line 1241); it is read back at line 1446. The reported faulting address must be the one presented, so Integrity is Established. lsu_mar_i sets (CARRIES csr.mtval, line 1239), csr.mtval stores (CLOCKED_BY clk_i).",
+   "related structural assets": [
+    {"asset rtl": "csr.mtval", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "lsu_mar_i", "entity": "neorv32_cpu_control", "realization": "sets", "occurrence": 2, "edge": {"type": "CARRIES", "partner": "csr.mtval"}}
+   ]
+  },
+  {
+   "concept": "Trapping instruction (mtinst)",
+   "security objective": "Integrity",
+   "reasoning": "On exception entry csr.mtinst captures exe_engine.ir (line 1245) with bit 1 cleared for a compressed instruction (lines 1246-1247), and zero for interrupts (line 1250); it is read back at line 1455. The reported instruction must be the trapping one, so Integrity is Established. It stores (CLOCKED_BY clk_i, line 1245).",
+   "related structural assets": [
+    {"asset rtl": "csr.mtinst", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Trap entry and exit sequencing",
+   "security objective": "Integrity",
+   "reasoning": "trap_ctrl.env_pending is set when exc_fire or any irq_fire bit is set and cleared by env_enter (lines 978-985); in EX_DISPATCH it sends the engine to EX_TRAP_ENTER (lines 358-359), where trap_ctrl.env_enter is raised (line 388). env_enter commits the trap CSR updates (lines 1231-1264), clears exc_buf (lines 888-912), enters debug mode for debug causes (line 1634) and leaves on ctrl_o.cpu_trap (line 621). trap_ctrl.env_exit (line 399) commits mret/dret (lines 1269-1290, 1638). trap_ctrl.env_entered (lines 988-991) qualifies single-step (line 1014). Integrity and availability of trap handling are Established. env_pending and env_entered store (CLOCKED_BY clk_i); env_enter and env_exit compute (GATED_BY / SELECTED_BY at lines 388, 399); ctrl_o exits through field cpu_trap (COPIES trap_ctrl.env_enter, line 621).",
+   "related structural assets": [
+    {"asset rtl": "trap_ctrl.env_pending", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 12, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "trap_ctrl.env_enter", "entity": "neorv32_cpu_control", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "trap_ctrl.env_pending"}},
+    {"asset rtl": "trap_ctrl.env_exit", "entity": "neorv32_cpu_control", "realization": "computes", "occurrence": 3, "edge": {"type": "SELECTED_BY", "partner": "exe_engine.state"}},
+    {"asset rtl": "trap_ctrl.env_entered", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl_o", "entity": "neorv32_cpu_control", "realization": "exit port", "occurrence": 39, "edge": {"type": "COPIES", "partner": "trap_ctrl.env_enter"}}
+   ]
+  },
+  {
+   "concept": "Program counter, next-PC target and link address",
+   "security objective": "Integrity",
+   "reasoning": "exe_engine.pc (current) and exe_engine.pc2 (next) reset to BOOT_ADDR (lines 271-272) and are registered from exe_engine_nxt each clock (line 276): pc takes pc2 at dispatch (line 369); pc2 takes alu_add_i in EX_EXECUTE (line 410), the branch target when branch_taken (line 517), the trap vector (lines 376-383) or mepc/dpc on return (lines 395-397). branch_taken compares alu_cmp_i with the funct3 bits (lines 250-257). exe_engine.ra holds the link address (line 512). They leave on ctrl_o.pc_cur, pc_nxt and pc_ret (lines 581-583). Integrity of the control flow is Established. Map limitation: the field registers are stored only by the whole-record assignment exe_engine <= exe_engine_nxt (line 276), which the map records as CLOCKED_BY on exe_engine (occurrence 29), not on the fields, so these stores entries cite the reset-arm occurrence of the same clocked process with edge null. The map also has no record for lines 252 and 254, where branch_taken is computed from alu_cmp_i (it lists alu_cmp_i under no local use); the RTL wins, so those entries have edge null. alu_add_i sets (SOURCES exe_engine_nxt.pc2, line 410); ctrl_o exits through field pc_nxt (DERIVES_FROM exe_engine.pc2, line 582).",
+   "related structural assets": [
+    {"asset rtl": "exe_engine.pc", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 2, "edge": null},
+    {"asset rtl": "exe_engine.pc2", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 2, "edge": null},
+    {"asset rtl": "exe_engine.ra", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 2, "edge": null},
+    {"asset rtl": "branch_taken", "entity": "neorv32_cpu_control", "realization": "computes", "occurrence": 2, "edge": null},
+    {"asset rtl": "alu_cmp_i", "entity": "neorv32_cpu_control", "realization": "sets", "occurrence": 3, "edge": null},
+    {"asset rtl": "alu_add_i", "entity": "neorv32_cpu_control", "realization": "sets", "occurrence": 3, "edge": {"type": "SOURCES", "partner": "exe_engine_nxt.pc2"}},
+    {"asset rtl": "ctrl_o", "entity": "neorv32_cpu_control", "realization": "exit port", "occurrence": 6, "edge": {"type": "DERIVES_FROM", "partner": "exe_engine.pc2"}}
+   ]
+  },
+  {
+   "concept": "Executing instruction word and its decoded operands",
+   "security objective": "Integrity",
+   "reasoning": "In EX_DISPATCH, with frontend_i.valid set and no pending trap, exe_engine_nxt.ir takes frontend_i.instr (line 368) and exe_engine.ir holds it (line 276). The stored word drives decode (lines 281, 292-293), the registered immediate (lines 227-239), legality (lines 755-817), the CSR address (line 1051), mtinst (line 1245) and the register addresses and fields leaving on ctrl_o (lines 586-588, 596, 615-616), whose datapath consumer is not supplied. Integrity is Established. frontend_i is named whole; it carries no address, write data or acknowledge, so it is not a transport record, and this entity stores its instr field (CARRIES exe_engine_nxt.ir, line 368). exe_engine.ir stores through line 276; as for exe_engine.pc, the map has no CLOCKED_BY on the field, so the entry cites its reset-arm occurrence (line 269) with edge null. immediate stores (CLOCKED_BY clk_i, line 229). ctrl_o exits through field rf_rs1 (DERIVES_FROM exe_engine.ir, line 586).",
+   "related structural assets": [
+    {"asset rtl": "frontend_i", "entity": "neorv32_cpu_control", "realization": "sets", "occurrence": 7, "edge": {"type": "CARRIES", "partner": "exe_engine_nxt.ir"}},
+    {"asset rtl": "exe_engine.ir", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 22, "edge": null},
+    {"asset rtl": "immediate", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl_o", "entity": "neorv32_cpu_control", "realization": "exit port", "occurrence": 9, "edge": {"type": "DERIVES_FROM", "partner": "exe_engine.ir"}}
+   ]
+  },
+  {
+   "concept": "Execute-engine state",
+   "security objective": "Integrity",
+   "reasoning": "The engine state machine (lines 351-569) moves through dispatch, execute, wait, branch, memory, system, trap entry/exit, restart and sleep. The state selects which controls are produced, gates illegal-instruction detection (line 825), interrupt taking (lines 1001, 1008, 1013), sleep (line 1025), the memory strobe (line 604) and the counter events (lines 1605-1615); reset sets EX_RESTART (line 268). A corrupted state skips trap entry or checks, so Integrity is Established. Map limitation: the field is stored only by the whole-record assignment at line 276, so the entry cites its reset-arm occurrence (line 268) with edge null.",
+   "related structural assets": [
+    {"asset rtl": "exe_engine.state", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 3, "edge": null}
+   ]
+  },
+  {
+   "concept": "Datapath control word: ALU/LSU control, memory request and register write-back enable",
+   "security objective": "Integrity",
+   "reasoning": "ctrl_nxt is decoded from opcode, funct fields and engine state (lines 312-567) and registered as ctrl (line 275); its fields leave on ctrl_o (lines 577-605). The write-back enable is masked by the exception decision: ctrl_o.rf_wb_en is ctrl.rf_wb_en and not trap_ctrl.exc_fire (line 585); a memory request is issued only without an illegal-instruction exception (lines 529-530). lsu_wait_i and alu_cp_done_i decide when a memory or co-processor operation completes and write-back is enabled (lines 505-506, 536-540). The datapath consumer is not supplied, so integrity of the delivered control word is Established. ctrl is the whole record stored at line 275 (CLOCKED_BY clk_i); its fields carry no storage record because the map writes that assignment on the whole record. ctrl_nxt.lsu_req computes (GATED_BY trap_ctrl.exc_buf, line 530); the two inputs set (GATES ctrl_nxt.rf_wb_en); ctrl_o exits through field rf_wb_en (GATED_BY trap_ctrl.exc_fire, line 585).",
+   "related structural assets": [
+    {"asset rtl": "ctrl", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl_nxt.lsu_req", "entity": "neorv32_cpu_control", "realization": "computes", "occurrence": 2, "edge": {"type": "GATED_BY", "partner": "trap_ctrl.exc_buf"}},
+    {"asset rtl": "lsu_wait_i", "entity": "neorv32_cpu_control", "realization": "sets", "occurrence": 3, "edge": {"type": "GATES", "partner": "ctrl_nxt.rf_wb_en"}},
+    {"asset rtl": "alu_cp_done_i", "entity": "neorv32_cpu_control", "realization": "sets", "occurrence": 3, "edge": {"type": "GATES", "partner": "ctrl_nxt.rf_wb_en"}},
+    {"asset rtl": "ctrl_o", "entity": "neorv32_cpu_control", "realization": "exit port", "occurrence": 8, "edge": {"type": "GATED_BY", "partner": "trap_ctrl.exc_fire"}}
+   ]
+  },
+  {
+   "concept": "CSR write access: write enable, CSR address and write data",
+   "security objective": "Integrity",
+   "reasoning": "A CSR write is requested in the system state for csrrw/csrrwi or a non-zero rs1 field (lines 563-564), and csr.we is registered only without an illegal-instruction exception (line 1105). csr.addr holds the CSR address taken from the instruction (line 1051); csr.wdata computes the written value from csr.operand (rf_rs1_i or the immediate field, line 1059) and the old csr.rdata for the set and clear forms (lines 1062-1065). Every CSR update at lines 1110-1226 depends on these three, and they leave on ctrl_o.csr_we, csr_addr and csr_wdata (lines 608-611) to CSR units not supplied. Integrity is Established. csr.we and csr.addr store (CLOCKED_BY clk_i); csr.we_nxt computes the request (GATED_BY exe_engine.ir, line 564); csr.wdata computes (DERIVES_FROM csr.operand, line 1062); rf_rs1_i sets (SOURCES csr.operand, line 1059); ctrl_o exits through field csr_we (COPIES csr.we, line 608).",
+   "related structural assets": [
+    {"asset rtl": "csr.we", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "csr.we_nxt", "entity": "neorv32_cpu_control", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "exe_engine.ir"}},
+    {"asset rtl": "csr.addr", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "csr.wdata", "entity": "neorv32_cpu_control", "realization": "computes", "occurrence": 3, "edge": {"type": "DERIVES_FROM", "partner": "csr.operand"}},
+    {"asset rtl": "rf_rs1_i", "entity": "neorv32_cpu_control", "realization": "sets", "occurrence": 2, "edge": {"type": "SOURCES", "partner": "csr.operand"}},
+    {"asset rtl": "ctrl_o", "entity": "neorv32_cpu_control", "realization": "exit port", "occurrence": 28, "edge": {"type": "COPIES", "partner": "csr.we"}}
+   ]
+  },
+  {
+   "concept": "CSR read access and read data",
+   "security objective": "Integrity",
+   "reasoning": "csr.re is registered from csr.re_nxt (lines 494-496), masked by the illegal-instruction exception (line 1361); while it is set, csr.rdata is loaded with the CSR selected by csr.addr (lines 1363-1589), including data from external CSR units on xcsr_rdata_i (lines 1371-1516), and csr_rdata_o returns it (line 1595) to a consumer not supplied. Integrity of the returned value is Established. Access is restricted by privilege through csr_valid and illegal_cmd (lines 733-742, 812), but whether a given CSR value is secret depends on software, so confidentiality is not claimed here. csr.re and csr.rdata store (CLOCKED_BY clk_i); csr.re_nxt computes (GATED_BY exe_engine.ir, line 496); xcsr_rdata_i sets (CARRIES csr.rdata, line 1371); csr_rdata_o is the exit (COPIES csr.rdata, line 1595).",
+   "related structural assets": [
+    {"asset rtl": "csr.re", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "csr.re_nxt", "entity": "neorv32_cpu_control", "realization": "computes", "occurrence": 4, "edge": {"type": "GATED_BY", "partner": "exe_engine.ir"}},
+    {"asset rtl": "csr.rdata", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "xcsr_rdata_i", "entity": "neorv32_cpu_control", "realization": "sets", "occurrence": 2, "edge": {"type": "CARRIES", "partner": "csr.rdata"}},
+    {"asset rtl": "csr_rdata_o", "entity": "neorv32_cpu_control", "realization": "exit port", "occurrence": 2, "edge": {"type": "COPIES", "partner": "csr.rdata"}}
+   ]
+  },
+  {
+   "concept": "Privileged scratch storage (mscratch, dscratch0)",
+   "security objective": "Confidentiality",
+   "reasoning": "csr.mscratch (line 1152) and csr.dscratch0 (line 1207; RISCV_ISA_Sdext builds, zero otherwise at line 1337) hold software-written words that are returned only on CSR reads (lines 1436, 1533). The RTL confines access: a CSR address with bits 9:8 non-zero is invalid in user mode (lines 741-742) and the debug CSR group is invalid outside debug mode (lines 733-735), which makes the access an illegal instruction (lines 812, 825) that blocks the write (line 1105) and masks write-back of the result (line 585). Confidentiality against lower-privilege code is therefore Established from these lines; integrity is Established as well, since only the permitted writes at lines 1152 and 1207 may change the words. Both store (CLOCKED_BY clk_i).",
+   "related structural assets": [
+    {"asset rtl": "csr.mscratch", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "csr.dscratch0", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Debug-mode state",
+   "security objective": "Integrity",
+   "reasoning": "debug_ctrl.run is set on trap entry with a debug cause (lines 1633-1635) and cleared on dret exit (line 1639); without RISCV_ISA_Sdext it is tied to 0 (line 1658). In debug mode the effective privilege is machine (line 1350), debug CSRs and dret become legal (lines 734, 807), the trigger CSRs become writable (lines 1216, 1223), trap entry and exit use the debug addresses (lines 377-378, 394-395), interrupts are blocked (line 1004), and the state leaves on ctrl_o.cpu_debug (line 622). A corrupted state grants machine privilege or debug access, so Integrity is Established. debug_ctrl.run stores (CLOCKED_BY clk_i, line 1635); ctrl_o exits through field cpu_debug (COPIES debug_ctrl.run, line 622).",
+   "related structural assets": [
+    {"asset rtl": "debug_ctrl.run", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 21, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl_o", "entity": "neorv32_cpu_control", "realization": "exit port", "occurrence": 40, "edge": {"type": "COPIES", "partner": "debug_ctrl.run"}}
+   ]
+  },
+  {
+   "concept": "Debug-entry requests (halt, ebreak-to-debug, single-step, hardware trigger)",
+   "security objective": "Integrity",
+   "reasoning": "In RISCV_ISA_Sdext builds the requests are computed only outside debug mode: halt from irq_dbg_i (line 1650), ebreak into debug mode per dcsr_ebreakm/ebreaku and privilege (lines 1647-1649), single-step from dcsr_step (line 1651), and the hardware trigger from hwtrig_start (line 1646); otherwise they are tied to 0 (lines 1659-1662). They feed irq_buf and exc_buf (lines 877-878, 911-912) and the debug causes (lines 936-939). A spurious or lost request enters or skips debug mode, so Integrity is Established. irq_dbg_i sets (GATES debug_ctrl.trig_halt, line 1650); each trig field computes (GATED_BY at lines 1646-1651).",
+   "related structural assets": [
+    {"asset rtl": "irq_dbg_i", "entity": "neorv32_cpu_control", "realization": "sets", "occurrence": 2, "edge": {"type": "GATES", "partner": "debug_ctrl.trig_halt"}},
+    {"asset rtl": "debug_ctrl.trig_halt", "entity": "neorv32_cpu_control", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "irq_dbg_i"}},
+    {"asset rtl": "debug_ctrl.trig_break", "entity": "neorv32_cpu_control", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "trap_ctrl.ebreak"}},
+    {"asset rtl": "debug_ctrl.trig_step", "entity": "neorv32_cpu_control", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "csr.dcsr_step"}},
+    {"asset rtl": "debug_ctrl.trig_hw", "entity": "neorv32_cpu_control", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "hwtrig_start"}}
+   ]
+  },
+  {
+   "concept": "Debug control and status settings (dcsr)",
+   "security objective": "Integrity",
+   "reasoning": "csr.dcsr_ebreakm and csr.dcsr_ebreaku (lines 1189, 1192) route ebreak into debug mode (lines 904-905, 1648-1649); csr.dcsr_step enables single-step (lines 1190, 1004, 1036, 1651); csr.dcsr_prv holds the privilege restored on dret (lines 1193, 1262, 1274-1276); csr.dcsr_cause records the debug-entry cause (line 1261). They are read back through csr.dcsr_rd (lines 1668-1682, 1531). Writes happen only in RISCV_ISA_Sdext builds (line 1188); otherwise lines 1330-1335 clear them. A corrupted setting changes debug entry or the restored privilege, so Integrity is Established. Each stores (CLOCKED_BY clk_i).",
+   "related structural assets": [
+    {"asset rtl": "csr.dcsr_ebreakm", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "csr.dcsr_ebreaku", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "csr.dcsr_step", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "csr.dcsr_prv", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "csr.dcsr_cause", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Debug return address (dpc)",
+   "security objective": "Integrity",
+   "reasoning": "csr.dpc captures trap_ctrl.epc on debug entry (line 1263) or a debug-mode write (line 1199), and dret returns to it (line 395); it is read back at line 1532 and cleared in builds without RISCV_ISA_Sdext (line 1336). It is the return target out of debug mode, so Integrity is Established. It stores (CLOCKED_BY clk_i, line 1199).",
+   "related structural assets": [
+    {"asset rtl": "csr.dpc", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Hardware execution trigger: configuration, match and fired flag",
+   "security objective": "Integrity",
+   "reasoning": "In RISCV_ISA_Sdtrig builds csr.tdata1_execute and csr.tdata2 are writable only in debug mode (lines 1215-1225). hwtrig_match compares tdata2 with exe_engine.pc2 when enabled and not yet fired (lines 1693-1695); a match at dispatch raises hwtrig_start (line 362) and holds the PC (line 361), and hwtrig_start becomes the debug request trig_hw (line 1646). hwtrig_fired latches a fired trigger (line 1705) until a tdata1 write clears it (lines 1706-1707) and is reported in tdata1_rd (line 1730). Without Sdtrig they are tied to 0 (lines 1717-1718, 1342-1343). A corrupted trigger enters debug mode at the wrong PC or never, so Integrity is Established. The CSRs and hwtrig_fired store (CLOCKED_BY clk_i); hwtrig_match computes (CONSTRAINED_BY csr.tdata2, line 1693); hwtrig_start computes (GATED_BY hwtrig_match, line 362).",
+   "related structural assets": [
+    {"asset rtl": "csr.tdata1_execute", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "csr.tdata2", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "hwtrig_match", "entity": "neorv32_cpu_control", "realization": "computes", "occurrence": 4, "edge": {"type": "CONSTRAINED_BY", "partner": "csr.tdata2"}},
+    {"asset rtl": "hwtrig_fired", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "hwtrig_start", "entity": "neorv32_cpu_control", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "hwtrig_match"}}
+   ]
+  },
+  {
+   "concept": "CPU sleep state and wake-up condition",
+   "security objective": "Integrity",
+   "reasoning": "sleep_mode is set only when the engine is in EX_SLEEP, frontend_i.halted is set and trap_ctrl.wakeup is clear (lines 1025-1028); trap_ctrl.wakeup (any buffered interrupt, debug mode or single-step, line 1036) ends EX_SLEEP (line 546). sleep_mode leaves on ctrl_o.cpu_sleep (line 620) and stops the cycle event (line 1603). Integrity is Established; availability is also Established, since a buffered interrupt always ends the sleep state. sleep_mode stores (CLOCKED_BY clk_i); trap_ctrl.wakeup computes (GATED_BY debug_ctrl.run, line 1036); frontend_i sets through field halted (GATES sleep_mode, line 1026); ctrl_o exits through field cpu_sleep (COPIES sleep_mode, line 620).",
+   "related structural assets": [
+    {"asset rtl": "sleep_mode", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "trap_ctrl.wakeup", "entity": "neorv32_cpu_control", "realization": "computes", "occurrence": 4, "edge": {"type": "GATED_BY", "partner": "debug_ctrl.run"}},
+    {"asset rtl": "frontend_i", "entity": "neorv32_cpu_control", "realization": "sets", "occurrence": 8, "edge": {"type": "GATES", "partner": "sleep_mode"}},
+    {"asset rtl": "ctrl_o", "entity": "neorv32_cpu_control", "realization": "exit port", "occurrence": 38, "edge": {"type": "COPIES", "partner": "sleep_mode"}}
+   ]
+  },
+  {
+   "concept": "Counter inhibit setting and counter events delivered to the counter unit",
+   "security objective": "Integrity",
+   "reasoning": "csr.mcountinhibit is written per build (lines 1173-1181), with bit 1 forced to 0 and unbuilt counter groups zeroed (lines 1299-1309), and leaves as ctrl_o.cnt_halt (line 612). cnt_event computes the per-cycle increments from engine state, sleep, LSU requests and trap entry (lines 1603-1616) and leaves as ctrl_o.cnt_event (line 613). The counter unit is not supplied, so integrity of the delivered inhibit and event values is Established from lines 612-613. csr.mcountinhibit stores (CLOCKED_BY clk_i); cnt_event computes (GATED_BY exe_engine.state, line 1605); ctrl_o exits through field cnt_halt (COPIES csr.mcountinhibit, line 612).",
+   "related structural assets": [
+    {"asset rtl": "csr.mcountinhibit", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "cnt_event", "entity": "neorv32_cpu_control", "realization": "computes", "occurrence": 5, "edge": {"type": "GATED_BY", "partner": "exe_engine.state"}},
+    {"asset rtl": "ctrl_o", "entity": "neorv32_cpu_control", "realization": "exit port", "occurrence": 32, "edge": {"type": "COPIES", "partner": "csr.mcountinhibit"}}
+   ]
+  },
+  {
+   "concept": "User-mode counter access permission (mcounteren)",
+   "security objective": "Integrity",
+   "reasoning": "csr.mcounteren_cy and csr.mcounteren_ir are written in RISCV_ISA_U and RISCV_ISA_Zicntr builds (lines 1141-1143) and forced to 0 otherwise (lines 1313-1314, 1325-1326). They decide whether user mode may read the cycle and instret counters: csr_valid(0) is cleared when the bit is 0 (lines 736-740), which makes the access illegal (line 812). A wrong value grants or denies user counter reads, so Integrity is Established. Read back at lines 1422-1423. Both store (CLOCKED_BY clk_i).",
+   "related structural assets": [
+    {"asset rtl": "csr.mcounteren_cy", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "csr.mcounteren_ir", "entity": "neorv32_cpu_control", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  }
+ ]
+}

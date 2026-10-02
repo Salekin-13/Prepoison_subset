@@ -1,0 +1,73 @@
+{
+ "module name": "neorv32_dmem",
+ "module purpose": "neorv32_dmem is a data memory of DMEM_SIZE bytes held in four byte-lane arrays: on a strobed write it stores the enabled bytes of bus_req_i.data at the word index taken from bus_req_i.addr (lines 61-73, 113), at every rising edge of clk_i it registers the addressed word into rdata (lines 75-78), and it answers each strobed access with an acknowledge one clock later and with the read word on bus_rsp_o.data only after a read (lines 124-130).",
+ "use-case flows": [
+  {
+   "flow": "start",
+   "value": "access request: bus_req_i.stb with bus_req_i.rw selecting a write (line 61) or a read (line 124)",
+   "lines": [61, 124, 125]
+  },
+  {
+   "flow": "operate",
+   "value": "byte-lane write of bus_req_i.data into the memory word indexed by addr",
+   "lines": [61, 62, 63, 65, 66, 68, 69, 71, 72, 113]
+  },
+  {
+   "flow": "read out",
+   "value": "addressed memory word registered into rdata and returned on bus_rsp_o.data one clock after a read",
+   "lines": [75, 76, 77, 78, 113, 124, 129]
+  },
+  {
+   "flow": "report",
+   "value": "access acknowledge: bus_rsp_o.ack follows bus_req_i.stb one clock later; the error flag is tied to '0'",
+   "lines": [125, 130]
+  },
+  {
+   "flow": "reset",
+   "value": "rden and bus_rsp_o.ack cleared to '0' while rstn_i = '0'",
+   "lines": [120, 121, 122]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Data memory contents -- the bytes held in the memory and returned as the read word of a read access",
+   "security objective": "Integrity",
+   "reasoning": "The write flow stores enabled byte lanes, e.g. `mem_ram_b0(to_integer(addr)) <= bus_req_i.data(7 downto 0);` (line 63; lanes 1-3 at lines 66, 69, 72), and the read-out flow registers the addressed word, `rdata(7  downto 0)  <= mem_ram_b0(to_integer(addr));` (line 75; lines 76-78), which `bus_rsp_o.data <= rdata when (rden = '1') else (others => '0');` (line 129) returns to the requester. Integrity is Established under the boundary assumption: the read word delivered through bus_rsp_o.data must equal the bytes last written at that index (lines 63-78, 129). Availability is also Established under the implemented conditions: rdata is reloaded at every rising edge of clk_i (line 60) and driven out when rden = '1' (line 129). Confidentiality is not established: no line restricts which requester reads; bus_req_i.priv and bus_req_i.src have no local use (line 28 only). rdata stores the read word (CLOCKED_BY clk_i, occurrence 2, line 75) and its use is SOURCES bus_rsp_o.data (occurrence 10, line 129); it derives from four arrays under a run-time index, so it is not a copy of one element. mem_ram_b0 to mem_ram_b3 hold the bytes (CLOCKED_BY clk_i, lines 63-72), but their only driving record is SOURCES rdata (lines 75-78), an internal element, with no GATES/SELECTS/CONSTRAINS record, no record into an output port or field, and no sub-unit connection; under the storing-element rule of section 6 they are secondary and rdata carries their value on. addr only forwards a slice of the transport address (`addr <= unsigned(bus_req_i.addr(addr_hi_c downto 2));`, line 113) and selects the word (SELECTS mem_ram_b0 at line 63, SELECTS rdata at line 75): an influence, not a realization. bus_req_i and bus_rsp_o are transport records (address, write data, byte enables, strobe, read/write, acknowledge, read data, error) and are excluded whole and by field. The map labels the condition '[generic] alt_style_c', but line 36 declares alt_style_c the constant false, so the alternative generate (lines 86-109) is not elaborated: addr_ff is then only the constant zero of line 81 with no use, and rdata is the clocked register of lines 75-78.",
+   "related structural assets": [
+    {
+     "asset rtl": "rdata",
+     "entity": "neorv32_dmem",
+     "realization": "stores",
+     "occurrence": 2,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Read-response qualification -- the registered decision that the previous access was a read, which lets the read word onto the response",
+   "security objective": "Integrity",
+   "reasoning": "`rden <= bus_req_i.stb and (not bus_req_i.rw);` (line 124) records at each rising edge whether the access is a read, and `bus_rsp_o.data <= rdata when (rden = '1') else (others => '0');` (line 129) returns the read word only then. Integrity is Established: the response data must be the addressed word one clock after a read and zero after a write or an idle cycle (lines 124, 129); a wrong decision returns zeros for a read or places the stored word on a non-read response. Availability is Established under the implemented conditions: with rstn_i high, a strobed read sets rden at the next rising edge (lines 123-124); reset clears it (line 121). rden stores the decision (CLOCKED_BY clk_i, occurrence 3, line 124) and the entity uses it through GATES bus_rsp_o.data (occurrence 4, line 129); 'stores' is preferred over 'computes' for its GATED_BY record at the same line. Its operands bus_req_i.stb and bus_req_i.rw are fields of the transport port and are not reported. The flow graph lists rden as a CONTROL-ONLY constant-valued source, but line 124 shows it is also driven from bus_req_i.stb and bus_req_i.rw (its GATED_BY record); the RTL wins.",
+   "related structural assets": [
+    {
+     "asset rtl": "rden",
+     "entity": "neorv32_dmem",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Byte-write eligibility -- whether a bus access may change a given byte lane of the addressed memory word",
+   "security objective": "Integrity",
+   "reasoning": "`if (bus_req_i.stb = '1') and (bus_req_i.rw = '1') then` (line 61) and `if (bus_req_i.ben(0) = '1') then` (line 62; lanes 1-3 at lines 65, 68, 71) decide whether a lane is written. Integrity is Established: a byte of the memory changes only when the strobe, the write flag and its lane enable are '1' (lines 61-72). The decision is evaluated inline in these conditions and is held in no declared element; its operands are fields of the transport port bus_req_i, excluded whole and by field, and mem_ram_b0 to mem_ram_b3 are only GATED_BY it (lines 63-72). No eligible element survives the closed-set and transport rules, so the list is empty.",
+   "related structural assets": []
+  },
+  {
+   "concept": "Access acknowledgement -- the one-clock response to every strobed access",
+   "security objective": "Integrity",
+   "reasoning": "`bus_rsp_o.ack <= bus_req_i.stb;` (line 125), cleared by `bus_rsp_o.ack <= '0';` (line 122) while rstn_i = '0' (line 120). Integrity is Established under the boundary assumption: the requester must receive the acknowledge exactly one clock after its strobe (line 125). Availability is Established while reset is inactive: every strobed access is acknowledged at the next rising edge of clk_i (lines 123-125). bus_rsp_o.ack is a field of the transport port bus_rsp_o (acknowledge, read data, error), excluded whole and by field, and no internal element holds the value, so the list is empty. bus_rsp_o.err is tied to '0' (line 130) and realizes no concept.",
+   "related structural assets": []
+  }
+ ]
+}

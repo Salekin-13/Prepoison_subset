@@ -1,0 +1,199 @@
+{
+ "module name": "neorv32_cpu_cp_cfu",
+ "module purpose": "CFU (custom function unit) that holds a 4-word key (key_mem) via CSR writes/reads, accepts a start request with operand inputs (rs1_i, rs2_i) and rtype/funct3 controls to run an XTEA-like operation, computes an internal sum/result and delivers a result and validity flag on result_o / valid_o.",
+ "use-case flows": [
+   {
+     "flow": "configure",
+     "value": "a 32-bit key word written into the key_mem array via CSR write",
+     "lines": [173, 176, 178, 179]
+   },
+   {
+     "flow": "read out",
+     "value": "a stored key_mem word returned on the CSR read output csr_rdata_o",
+     "lines": [185]
+   },
+   {
+     "flow": "start",
+     "value": "start request that captures operands into the XTEA registers and asserts the operation-start flag",
+     "lines": [204, 205, 206, 207]
+   },
+   {
+     "flow": "operate",
+     "value": "XTEA internal computation: update of xtea.sum (accumulator), selection of key word (tmp_z) and computation of tmp_r and xtea.res",
+     "lines": [211, 213, 216, 218, 221, 222, 223, 224, 225, 232, 236, 238]
+   },
+   {
+     "flow": "report",
+     "value": "selection and export of the computed result and its validity (result_o, valid_o)",
+     "lines": [243, 249, 250, 252, 253, 255, 256]
+   },
+   {
+     "flow": "reset",
+     "value": "what is cleared by the reset path: key_mem and the xtea record fields (done, opa, opb, sum, res)",
+     "lines": [175, 176, 193, 194, 195, 196, 197]
+   }
+ ],
+ "conceptual assets": [
+   {
+     "concept": "Key memory contents (key_mem): the four 32-bit words that realize the CFU key material stored inside the block",
+     "security objective": "Integrity",
+     "reasoning": "The RTL implements a CSR-write process that stores CSR write-data into key_mem on the clock edge (process csr_write_access; reset to zero at line 176, guarded write at line 178 and assignment at line 179), and the same register is read back on csr_rdata_o (line 185). The stored words are read by the operation (tmp_z reads key_mem indexed by bits of xtea.sum at lines 236-237), so corrupting key_mem changes operation outputs. Map evidence: key_mem occurrence 3 is CLOCKED_BY clk_i at line 179; csr_wdata_i occurrence 2 CARRIES into key_mem at line 179; csr_rdata_o occurrence 2 DERIVES_FROM key_mem at line 185. These records and RTL lines show key_mem is a held setting the CFU uses, so its integrity is Established.",
+     "related structural assets": [
+       {
+         "asset rtl": "key_mem",
+         "entity": "neorv32_cpu_cp_cfu",
+         "realization": "stores",
+         "occurrence": 3,
+         "edge": {"type":"CLOCKED_BY", "partner":"clk_i"}
+       },
+       {
+         "asset rtl": "csr_wdata_i",
+         "entity": "neorv32_cpu_cp_cfu",
+         "realization": "sets",
+         "occurrence": 2,
+         "edge": {"type":"CARRIES", "partner":"key_mem"}
+       },
+       {
+         "asset rtl": "csr_rdata_o",
+         "entity": "neorv32_cpu_cp_cfu",
+         "realization": "exit port",
+         "occurrence": 2,
+         "edge": {"type":"DERIVES_FROM", "partner":"key_mem"}
+       }
+     ]
+   },
+   {
+     "concept": "CSR write decision (whether a CSR write updates key_mem): the enable/address decoding that gates a write into key_mem",
+     "security objective": "Integrity",
+     "reasoning": "The CSR write process uses csr_we_i and csr_addr_i to decide which key_mem element is updated: the always process checks csr_we_i (line 178) and then assigns key_mem(to_integer(unsigned(csr_addr_i))) <= csr_wdata_i (line 179). If these gating/selection inputs are wrong the stored key word at the selected index will be incorrect. Map evidence: csr_we_i occurrence 2 has a GATES record targeting key_mem at line 178; csr_addr_i occurrence 2 has a SELECTS record targeting key_mem at line 179. These RTL lines and map records establish that the write-eligibility decision is a distinct, integrity-sensitive concept.",
+     "related structural assets": [
+       {
+         "asset rtl": "csr_we_i",
+         "entity": "neorv32_cpu_cp_cfu",
+         "realization": "sets",
+         "occurrence": 2,
+         "edge": {"type":"GATES", "partner":"key_mem"}
+       },
+       {
+         "asset rtl": "csr_addr_i",
+         "entity": "neorv32_cpu_cp_cfu",
+         "realization": "sets",
+         "occurrence": 2,
+         "edge": {"type":"SELECTS", "partner":"key_mem"}
+       }
+     ]
+   },
+   {
+     "concept": "XTEA operation-in-flight / done flags (xtea.done): the pipeline bits that indicate an operation has been started and when a result is ready",
+     "security objective": "Integrity",
+     "reasoning": "The RTL resets xtea.done on rstn_i (lines 193-194), shifts/clears the pipeline each clock (lines 200-201) and sets xtea.done(0) when a start request with the correct rtype is seen (lines 204-207). The result-select logic uses xtea.done(1) to drive valid_o (line 250). Thus xtea.done is the operation-state decision whose correctness is required for correct result validity and sequencing. Map evidence: xtea.done occurrence 3 is CLOCKED_BY clk_i (map record at line 200); start_i occurrence 2 has a GATES record that targets xtea.done (map at line 204); rtype_i occurrence 2 likewise gates the start (map at line 204); valid_o occurrence 2 DERIVES_FROM xtea.done (map at line 250). These RTL lines and the cited map records establish xtea.done as a primary integrity asset.",
+     "related structural assets": [
+       {
+         "asset rtl": "xtea.done",
+         "entity": "neorv32_cpu_cp_cfu",
+         "realization": "stores",
+         "occurrence": 3,
+         "edge": {"type":"CLOCKED_BY", "partner":"clk_i"}
+       },
+       {
+         "asset rtl": "start_i",
+         "entity": "neorv32_cpu_cp_cfu",
+         "realization": "sets",
+         "occurrence": 2,
+         "edge": {"type":"GATES", "partner":"xtea.done"}
+       },
+       {
+         "asset rtl": "valid_o",
+         "entity": "neorv32_cpu_cp_cfu",
+         "realization": "exit port",
+         "occurrence": 2,
+         "edge": {"type":"DERIVES_FROM", "partner":"xtea.done"}
+       }
+     ]
+   },
+   {
+     "concept": "Operation operands captured for the XTEA operation (xtea.opa, xtea.opb loaded from rs1_i, rs2_i)",
+     "security objective": "Integrity",
+     "reasoning": "When a start is asserted for the r3-type operation the RTL copies rs1_i/rs2_i into the XTEA operand registers and clocks them (lines 204-207; assignments at lines 205-206). These stored operands are used in the internal combinational steps (tmp_* signals) that produce the result. Map evidence: xtea.opa occurrence 3 is CLOCKED_BY clk_i (map at line 205) and COPIES rs1_i (map record at line 205); rs1_i occurrence 2 CARRIES to xtea.opa (map at line 205). Similarly xtea.opb occurrence 3 is CLOCKED_BY clk_i (map at line 206) and rs2_i occurrence 2 CARRIES to xtea.opb (map at line 206). The RTL lines and map records show these registers store the operands the CFU computes from, so their integrity is Established.",
+     "related structural assets": [
+       {
+         "asset rtl": "xtea.opa",
+         "entity": "neorv32_cpu_cp_cfu",
+         "realization": "stores",
+         "occurrence": 3,
+         "edge": {"type":"CLOCKED_BY", "partner":"clk_i"}
+       },
+       {
+         "asset rtl": "rs1_i",
+         "entity": "neorv32_cpu_cp_cfu",
+         "realization": "sets",
+         "occurrence": 2,
+         "edge": {"type":"CARRIES", "partner":"xtea.opa"}
+       },
+       {
+         "asset rtl": "xtea.opb",
+         "entity": "neorv32_cpu_cp_cfu",
+         "realization": "stores",
+         "occurrence": 3,
+         "edge": {"type":"CLOCKED_BY", "partner":"clk_i"}
+       },
+       {
+         "asset rtl": "rs2_i",
+         "entity": "neorv32_cpu_cp_cfu",
+         "realization": "sets",
+         "occurrence": 2,
+         "edge": {"type":"CARRIES", "partner":"xtea.opb"}
+       }
+     ]
+   },
+   {
+     "concept": "XTEA accumulator state (xtea.sum): the internal sum/round accumulator that indexes key words and controls round steps",
+     "security objective": "Integrity",
+     "reasoning": "xtea.sum is explicitly updated inside the core under funct3-dependent branches (lines 213-218: assignments that set or add/subtract xtea_delta_c) and the current sum bits are used to select a key word from key_mem in tmp_z (lines 236-237). Corrupting xtea.sum changes which key word and which round arithmetic is used, breaking the computed result. Map evidence: xtea.sum occurrence 3 is CLOCKED_BY clk_i (map at line 214) and there are GATES records on funct3_i occurrence 2 that target xtea.sum (map at line 213). The RTL lines and cited map records establish xtea.sum as an integrity-sensitive internal state.",
+     "related structural assets": [
+       {
+         "asset rtl": "xtea.sum",
+         "entity": "neorv32_cpu_cp_cfu",
+         "realization": "stores",
+         "occurrence": 3,
+         "edge": {"type":"CLOCKED_BY", "partner":"clk_i"}
+       },
+       {
+         "asset rtl": "funct3_i",
+         "entity": "neorv32_cpu_cp_cfu",
+         "realization": "sets",
+         "occurrence": 2,
+         "edge": {"type":"GATES", "partner":"xtea.sum"}
+       }
+     ]
+   },
+   {
+     "concept": "Computed CFU result (xtea.res) and its export (result_o) with validity (valid_o)",
+     "security objective": "Integrity",
+     "reasoning": "The RTL computes xtea.res from tmp_b and tmp_r under the done/func conditions (lines 221-225 and the assigned expressions) and clocks it (lines 222,224). The result is forwarded to the module output: result_o is assigned from xtea.res in the result_select process (line 249) and valid_o is driven from xtea.done(1) (line 250). Map evidence: xtea.res occurrence 3 is CLOCKED_BY clk_i (map at line 222) and DERIVES_FROM tmp_b/tmp_r (map records at lines 222/224); result_o occurrence 2 COPIES xtea.res at line 249; valid_o occurrence 2 DERIVES_FROM xtea.done at line 250. These RTL lines and map records show the stored computed result and its exit ports are primary integrity-relevant assets: the consumer expects the value on result_o when valid_o is asserted.",
+     "related structural assets": [
+       {
+         "asset rtl": "xtea.res",
+         "entity": "neorv32_cpu_cp_cfu",
+         "realization": "stores",
+         "occurrence": 3,
+         "edge": {"type":"CLOCKED_BY", "partner":"clk_i"}
+       },
+       {
+         "asset rtl": "result_o",
+         "entity": "neorv32_cpu_cp_cfu",
+         "realization": "exit port",
+         "occurrence": 2,
+         "edge": {"type":"COPIES", "partner":"xtea.res"}
+       },
+       {
+         "asset rtl": "valid_o",
+         "entity": "neorv32_cpu_cp_cfu",
+         "realization": "exit port",
+         "occurrence": 2,
+         "edge": {"type":"DERIVES_FROM", "partner":"xtea.done"}
+       }
+     ]
+   }
+ ]
+}

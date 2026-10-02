@@ -1,0 +1,137 @@
+{
+  "module name": "neorv32_cache",
+  "concepts": [
+    {
+      "concept": "Control FSM and buffered request state (the controller record that holds the current state, buffered request flags and address decomposition: state, buf_req, buf_sync, buf_err, buf_dir, tag, idx, ofs)",
+      "kind": "state",
+      "writers": "Reset writes: ctrl.state, ctrl.buf_req, ctrl.buf_sync, ctrl.buf_err, ctrl.buf_dir, ctrl.tag, ctrl.idx, ctrl.ofs are set on reset when rstn_i='0' (lines 116-124). Synchronous write: the entire ctrl register is updated from ctrl_nxt on the rising clock via 'ctrl <= ctrl_nxt' (line 126). Combinational writers into ctrl_nxt (default and per-state): default assignments in the comb process (ctrl_nxt.* defaults, lines 136-143); S_IDLE sets ctrl_nxt.buf_dir and ctrl_nxt.state (lines 169, 173, 175); S_LOOKUP sets ctrl_nxt.tag/idx/ofs/buf_err/buf_req from host_req_i (lines 180-184); S_DOWNLOAD_REQ/ S_DOWNLOAD_RSP update ctrl-related fields including ofs and buf_err (lines 225-231, 235-244); S_DOWNLOAD_DONE and S_CLEAR also assign ctrl_nxt fields (lines 254-221). Writers originate from host_req_i (e.g. lines 137, 180-182), bus_rsp_i (line 242, 243), and the synchronous capture at line 126.",
+      "observers": "ctrl fields influence externally observable outputs: bus_req_o.addr is driven from ctrl.tag/ctrl.idx/ctrl.ofs (S_DOWNLOAD_REQ/S_DOWNLOAD_RSP assignments at lines 225-227 and 235-239); host_rsp_o.ack/err are selected by ctrl.state and buf_err (lines 191, 256-257); bus_req_o.stb/rw/lock are selected by ctrl.state (lines 187, 229-230, 238-240). These outputs are external ports (bus_req_o declared line 39, host_rsp_o declared line 38).",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 227,
+          "via": "bus_req_o.addr",
+          "reason": "ctrl holds address decomposition derived from host_req_i.addr which is emitted on the external bus as bus_req_o.addr in S_DOWNLOAD_REQ (line 227), so an external observer could learn the controller's address fields."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 137,
+          "via": "host_req_i",
+          "reason": "ctrl fields are driven from external inputs (e.g. ctrl_nxt.buf_req <= ctrl.buf_req or host_req_i.stb at line 137) and the register is captured unconditionally on the clock (ctrl <= ctrl_nxt at line 126) while the FSM uses these fields (e.g. decision at line 170), so external inputs can change controller state/flags while they are in use."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 243,
+          "via": "bus_rsp_i.ack",
+          "reason": "progress of the download sequence and ctrl.ofs advancement is gated on bus_rsp_i.ack (the branch and increment at line 243-244), so an external bus not asserting ack can stall the controller and freeze its state progression."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 126,
+          "via": null,
+          "reason": "The ctrl record has a single synchronous driver 'ctrl <= ctrl_nxt' on the rising clock (line 126) and there is no separate debug/test override that replaces ctrl's assignment in the RTL."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Cached contents (the data bytes and the address/tags that determine where a line is stored and read)",
+      "kind": "data",
+      "writers": "Data bytes written in the memory process (data_memory): conditional byte writes guarded by we_i(0..3) at lines 413-423 (e.g. data_mem_b0 <= wdata_i(7 downto 0) at line 414 when we_i(0) = '1'); tag entries written when new_i='1' in tag_memory at line 398; valid bits updated in status_memory: clear all on clr_i (line 381), invalidate single index on inv_i (line 383), set valid on new_i (line 385). At top level these memory inputs are driven from cache controller outputs (cache_o.cmd_new/cmd_inv/cmd_clr, cache_o.addr, cache_o.data, cache_o.we) via the port map (connections at lines 283-291) and the controller sets those signals in S_DOWNLOAD_REQ / S_DOWNLOAD_RSP / S_CLEAR / S_LOOKUP (lines 225-237, 219, 194).",
+      "observers": "Cached data is read back to the host via the memory rdata path: memory rdata_o (lines 425-428) -> cache_i.data -> forwarded to host_rsp_o.data (line 156); the controller also emits bus_req_o.addr when refilling (lines 227, 238) which exposes which line is being accessed; hit/status manifests in host_rsp_o.ack (line 191) that reveals cache servicing.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 156,
+          "via": "host_rsp_o.data",
+          "reason": "cached read data flows out of the memory to host_rsp_o.data (memory rdata_o -> cache_i.data -> host_rsp_o.data at line 156), so external observers can read cached contents and thus confidentiality depends on integration."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 414,
+          "via": "cache_o.we / we_i",
+          "reason": "data memory bytes are written in the data_memory process when we_i bits are asserted (write at line 414, guarded by we_i(0) at line 413) and we_i is driven by cache_o.we coming from host_req_i writes (line 194) or by the refill path (cache_o.we = (others => '1') at line 237), so external host or bus inputs can change cached contents without an internal protective guard."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 243,
+          "via": "bus_rsp_i.ack",
+          "reason": "the refill/download sequence advances and writes cache lines conditioned on bus_rsp_i.ack (line 243-244), so an external bus not asserting ack can prevent cache fills and thereby block cache availability."
+        },
+        "undermined behavior": {
+          "answer": "yes-RTL",
+          "line": 209,
+          "via": "ctrl.buf_dir (via host_req_i.addr/amo/debug)",
+          "reason": "when ctrl.buf_dir is set (by host_req_i.addr/amo/debug at lines 171-173) the controller takes the direct-forward path and forwards bus responses directly to the host (host_rsp_o <= bus_rsp_i at line 209), which bypasses the normal cache refill/write behavior and thus provides an alternate mode that changes whether cached contents are updated or used."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Cache hit indicator (the hit/miss decision produced by the tag/valid tests)",
+      "kind": "decision",
+      "writers": "The hit output is produced in the memory by the compare: 'hit_o <= '1' when (valid_mem_rd = '1') and (tag_mem_rd = acc_tag) else '0'' (line 405); tag_mem_rd and valid_mem_rd are read registers updated in tag_memory and status_memory (tag_mem_rd update at line 400, valid_mem_rd update at line 387) and those memories are written by new_i/inv_i/clr_i (lines 381-386, 397-399). The hit signal exits the memory instance and is connected to top-level cache_i.sta_hit via the port map (line 286).",
+      "observers": "The hit result affects external outputs: host_rsp_o.ack is asserted in S_LOOKUP when cache_i.sta_hit = '1' (line 191), and the presence/absence of bus transactions (bus_req_o.stb) is gated by cache_i.sta_hit (lines 195, 202); these effects are observable on external ports host_rsp_o and bus_req_o.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 191,
+          "via": "host_rsp_o.ack",
+          "reason": "cache hit is used to drive host_rsp_o.ack on a cache-hit path (line 191), exposing hit/miss information to the host and thus potentially revealing internal cache state."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 383,
+          "via": "inv_i / cache_o.cmd_inv",
+          "reason": "the valid bits and tags that determine the hit are modified by clr/inv/new inputs in status_memory/tag_memory (e.g. invalidate of a single index on inv_i at line 383, tag write at line 398) and those inputs are driven by cache commands generated by the controller (cache_o.cmd_inv/cmd_new), so external events (e.g. bus or host requests that set those commands) can change the hit result while it is used."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 242,
+          "via": "bus_rsp_i.err",
+          "reason": "bus_rsp_i.err is captured into ctrl.buf_err (line 242) which can lead the controller to issue a cache-invalidate command (cache_o.cmd_inv at line 255) that drives inv_i and clears valid bits in the memory (line 383), so an external agent can force invalidation and prevent hits."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 405,
+          "via": null,
+          "reason": "the hit signal is computed only by the tag/valid compare in the memory (single assignment at line 405) and there is no alternate debug/test assignment that replaces this computation in the RTL."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Bus-side requests placed by the cache controller (the bus_req_o transaction driven to the external bus: address, rw, stb, lock)",
+      "kind": "event",
+      "writers": "bus_req_o is initially copied from the host request (bus_req_o <= host_req_i at line 159) with defaults bus_req_o.stb <= '0' and bus_req_o.fence <= '0' (lines 160-161); state-driven writers in the FSM override fields: S_DOWNLOAD_REQ composes and drives bus_req_o.addr/rw/stb/lock (lines 227-231), S_DOWNLOAD_RSP drives bus_req_o.addr/rw/lock (lines 238-240), S_LOOKUP and miss handling set bus_req_o.stb in lines 187, 195, 202, and S_CLEAR may set bus_req_o.fence (line 217). Writers originate from host_req_i (line 159) and from controller-composed addresses/controls (lines 227-240) under ctrl.state guards.",
+      "observers": "bus_req_o is an external driven output port (declaration at line 39) and its fields are observable externally when driven: the initial passthrough copy of host_req_i to bus_req_o (line 159) and the controller-driven addr/rw/stb/lock assignments during download or lookup (lines 227-231, 238-240, 187) are visible to the external bus.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 159,
+          "via": "bus_req_o",
+          "reason": "the controller forwards or composes bus transactions onto the external bus (bus_req_o <= host_req_i at line 159 and composed addr/rw at lines 227/238), so addresses and control fields are exposed externally and confidentiality depends on integration."
+        },
+        "integrity": {
+          "answer": "yes-assumed",
+          "line": 159,
+          "via": "host_req_i",
+          "reason": "bus_req_o is initially a direct copy of host_req_i (line 159) and is also composed from controller state (lines 227/238) which itself is influenced by external inputs, so external parties can influence or change bus_req_o contents and integrity depends on trust in those inputs."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 243,
+          "via": "bus_rsp_i.ack",
+          "reason": "the download/forward sequence that issues successive bus_req_o transactions advances only when bus_rsp_i.ack is asserted (the ack-controlled state/offset update at line 243-244), so an external bus that withholds ack can block further bus-side requests and stall progress."
+        },
+        "undermined behavior": {
+          "answer": "yes-RTL",
+          "line": 173,
+          "via": "ctrl.buf_dir (via host_req_i.addr/amo/debug)",
+          "reason": "setting ctrl.buf_dir (by host_req_i.addr/amo/debug at lines 171-173) selects a direct-forward path in S_LOOKUP that drives bus_req_o differently (direct passthrough and S_DIRECT_RSP handling), providing an alternate mode that bypasses the normal cached request behavior."
+        }
+      },
+      "security objective": "Confidentiality"
+    }
+  ]
+}

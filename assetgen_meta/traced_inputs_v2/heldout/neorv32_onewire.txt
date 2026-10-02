@@ -1,0 +1,730 @@
+TARGET IP MODULE: neorv32_onewire
+
+=== RTL (comments removed, blank lines left out; each line starts with its line number in the source file) ===
+   18 | entity neorv32_onewire is
+   19 |   generic (
+   20 |     ONEWIRE_FIFO : natural range 1 to 2**15
+   21 |   );
+   22 |   port (
+   23 |     clk_i       : in  std_ulogic;
+   24 |     rstn_i      : in  std_ulogic;
+   25 |     bus_req_i   : in  bus_req_t;
+   26 |     bus_rsp_o   : out bus_rsp_t;
+   27 |     clkgen_en_o : out std_ulogic;
+   28 |     clkgen_i    : in  std_ulogic_vector(7 downto 0);
+   29 |     onewire_i   : in  std_ulogic;
+   30 |     onewire_o   : out std_ulogic;
+   31 |     irq_o       : out std_ulogic
+   32 |   );
+   33 | end neorv32_onewire;
+
+   35 | architecture neorv32_onewire_rtl of neorv32_onewire is
+   39 |   constant t_write_one_c       : unsigned(6 downto 0) := to_unsigned( 1, 7);
+   40 |   constant t_read_sample_c     : unsigned(6 downto 0) := to_unsigned( 2, 7);
+   41 |   constant t_slot_end_c        : unsigned(6 downto 0) := to_unsigned( 7, 7);
+   42 |   constant t_pause_end_c       : unsigned(6 downto 0) := to_unsigned( 9, 7);
+   43 |   constant t_reset_end_c       : unsigned(6 downto 0) := to_unsigned(48, 7);
+   44 |   constant t_presence_sample_c : unsigned(6 downto 0) := to_unsigned(55, 7);
+   45 |   constant t_presence_end_c    : unsigned(6 downto 0) := to_unsigned(96, 7);
+   48 |   constant ctrl_en_c         : natural :=  0;
+   49 |   constant ctrl_clear_c      : natural :=  1;
+   50 |   constant ctrl_prsc0_c      : natural :=  2;
+   51 |   constant ctrl_prsc1_c      : natural :=  3;
+   52 |   constant ctrl_clkdiv0_c    : natural :=  4;
+   53 |   constant ctrl_clkdiv7_c    : natural := 11;
+   55 |   constant ctrl_fifo_size0_c : natural := 15;
+   56 |   constant ctrl_fifo_size3_c : natural := 18;
+   58 |   constant ctrl_tx_full_c    : natural := 28;
+   59 |   constant ctrl_rx_avail_c   : natural := 29;
+   60 |   constant ctrl_sense_c      : natural := 30;
+   61 |   constant ctrl_busy_c       : natural := 31;
+   64 |   constant dcmd_lsb_c    : natural :=  0;
+   65 |   constant dcmd_msb_c    : natural :=  7;
+   66 |   constant dcmd_cmd_lo_c : natural :=  8;
+   67 |   constant dcmd_cmd_hi_c : natural :=  9;
+   68 |   constant dcmd_pres_c   : natural := 10;
+   71 |   constant cmd_nop_c : std_ulogic_vector(1 downto 0) := "00";
+   72 |   constant cmd_bit_c : std_ulogic_vector(1 downto 0) := "01";
+   73 |   constant cmd_byt_c : std_ulogic_vector(1 downto 0) := "10";
+   74 |   constant cmd_rst_c : std_ulogic_vector(1 downto 0) := "11";
+   77 |   constant log2_fifo_size_c : natural := index_size_f(ONEWIRE_FIFO);
+   80 |   type ctrl_t is record
+   81 |     enable    : std_ulogic;
+   82 |     clear     : std_ulogic;
+   83 |     clk_prsc  : std_ulogic_vector(1 downto 0);
+   84 |     clk_div   : std_ulogic_vector(7 downto 0);
+   85 |   end record;
+   86 |   signal ctrl : ctrl_t;
+   89 |   type fifo_t is record
+   90 |     rx_clr,   tx_clr   : std_ulogic;
+   91 |     rx_we,    tx_we    : std_ulogic;
+   92 |     rx_re,    tx_re    : std_ulogic;
+   93 |     rx_rdata, rx_wdata : std_ulogic_vector(8 downto 0);
+   94 |     tx_rdata, tx_wdata : std_ulogic_vector(9 downto 0);
+   95 |     rx_avail, tx_avail : std_ulogic;
+   96 |     rx_free,  tx_free  : std_ulogic;
+   97 |   end record;
+   98 |   signal fifo : fifo_t;
+  101 |   signal clk_src   : std_ulogic_vector(3 downto 0);
+  102 |   signal clk_cnt   : unsigned(7 downto 0);
+  103 |   signal clk_tick  : std_ulogic;
+  104 |   signal clk_tick2 : std_ulogic;
+  107 |   type serial_t is record
+  108 |     state    : std_ulogic_vector(2 downto 0);
+  109 |     busy     : std_ulogic;
+  110 |     bit_cnt  : unsigned(2 downto 0);
+  111 |     tick_cnt : unsigned(6 downto 0);
+  112 |     sreg     : std_ulogic_vector(7 downto 0);
+  113 |     wire_in  : std_ulogic_vector(1 downto 0);
+  114 |     wire_lo  : std_ulogic;
+  115 |     wire_hi  : std_ulogic;
+  116 |     sample   : std_ulogic;
+  117 |     presence : std_ulogic;
+  118 |     done     : std_ulogic;
+  119 |   end record;
+  120 |   signal serial : serial_t;
+  122 | begin
+  126 |   bus_access: process(rstn_i, clk_i)
+  127 |   begin
+  128 |     if (rstn_i = '0') then
+  129 |       bus_rsp_o     <= rsp_terminate_c;
+  130 |       ctrl.enable   <= '0';
+  131 |       ctrl.clk_prsc <= (others => '0');
+  132 |       ctrl.clk_div  <= (others => '0');
+  133 |       ctrl.clear    <= '0';
+  134 |     elsif rising_edge(clk_i) then
+  136 |       bus_rsp_o.ack  <= bus_req_i.stb;
+  137 |       bus_rsp_o.err  <= '0';
+  138 |       bus_rsp_o.data <= (others => '0');
+  140 |       ctrl.clear <= '0';
+  141 |       if (bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '0') then
+  142 |         ctrl.enable   <= bus_req_i.data(ctrl_en_c);
+  143 |         ctrl.clear    <= bus_req_i.data(ctrl_clear_c);
+  144 |         ctrl.clk_prsc <= bus_req_i.data(ctrl_prsc1_c downto ctrl_prsc0_c);
+  145 |         ctrl.clk_div  <= bus_req_i.data(ctrl_clkdiv7_c downto ctrl_clkdiv0_c);
+  146 |       end if;
+  148 |       if (bus_req_i.stb = '1') and (bus_req_i.rw = '0') then
+  149 |         if (bus_req_i.addr(2) = '0') then
+  150 |           bus_rsp_o.data(ctrl_en_c)                            <= ctrl.enable;
+  151 |           bus_rsp_o.data(ctrl_prsc1_c downto ctrl_prsc0_c)     <= ctrl.clk_prsc;
+  152 |           bus_rsp_o.data(ctrl_clkdiv7_c downto ctrl_clkdiv0_c) <= ctrl.clk_div;
+  154 |           bus_rsp_o.data(ctrl_fifo_size3_c downto ctrl_fifo_size0_c) <= std_ulogic_vector(to_unsigned(log2_fifo_size_c, 4));
+  156 |           bus_rsp_o.data(ctrl_tx_full_c)  <= not fifo.tx_free;
+  157 |           bus_rsp_o.data(ctrl_rx_avail_c) <= fifo.rx_avail;
+  158 |           bus_rsp_o.data(ctrl_sense_c)    <= serial.wire_in(1);
+  159 |           bus_rsp_o.data(ctrl_busy_c)     <= fifo.tx_avail or serial.busy;
+  160 |         else
+  161 |           bus_rsp_o.data(dcmd_msb_c downto dcmd_lsb_c) <= fifo.rx_rdata(7 downto 0);
+  162 |           bus_rsp_o.data(dcmd_pres_c)                  <= fifo.rx_rdata(8);
+  163 |         end if;
+  164 |       end if;
+  166 |     end if;
+  167 |   end process bus_access;
+  174 |   tx_fifo_inst: entity neorv32.neorv32_fifo
+  175 |   generic map (
+  176 |     FIFO_DEPTH => ONEWIRE_FIFO,
+  177 |     FIFO_WIDTH => 10,
+  178 |     FIFO_RSYNC => true,
+  179 |     FIFO_SAFE  => true,
+  180 |     FULL_RESET => false
+  181 |   )
+  182 |   port map (
+  184 |     clk_i   => clk_i,
+  185 |     rstn_i  => rstn_i,
+  186 |     clear_i => fifo.tx_clr,
+  187 |     half_o  => open,
+  188 |     level_o => open,
+  190 |     wdata_i => fifo.tx_wdata,
+  191 |     we_i    => fifo.tx_we,
+  192 |     free_o  => fifo.tx_free,
+  194 |     re_i    => fifo.tx_re,
+  195 |     rdata_o => fifo.tx_rdata,
+  196 |     avail_o => fifo.tx_avail
+  197 |   );
+  199 |   fifo.tx_clr   <= '1' when (ctrl.enable = '0') or (ctrl.clear = '1') else '0';
+  200 |   fifo.tx_we    <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '1') else '0';
+  201 |   fifo.tx_wdata <= bus_req_i.data(dcmd_cmd_hi_c downto dcmd_cmd_lo_c) & bus_req_i.data(dcmd_msb_c downto dcmd_lsb_c);
+  202 |   fifo.tx_re    <= '1' when (serial.state = "101") and (clk_tick = '1') else '0';
+  206 |   rx_fifo_inst: entity neorv32.neorv32_fifo
+  207 |   generic map (
+  208 |     FIFO_DEPTH => ONEWIRE_FIFO,
+  209 |     FIFO_WIDTH => 9,
+  210 |     FIFO_RSYNC => true,
+  211 |     FIFO_SAFE  => true,
+  212 |     FULL_RESET => false
+  213 |   )
+  214 |   port map (
+  216 |     clk_i   => clk_i,
+  217 |     rstn_i  => rstn_i,
+  218 |     clear_i => fifo.rx_clr,
+  219 |     half_o  => open,
+  220 |     level_o => open,
+  222 |     wdata_i => fifo.rx_wdata,
+  223 |     we_i    => fifo.rx_we,
+  224 |     free_o  => fifo.rx_free,
+  226 |     re_i    => fifo.rx_re,
+  227 |     rdata_o => fifo.rx_rdata,
+  228 |     avail_o => fifo.rx_avail
+  229 |   );
+  231 |   fifo.rx_clr   <= '1' when (ctrl.enable = '0') or (ctrl.clear = '1') else '0';
+  232 |   fifo.rx_wdata <= serial.presence & serial.sreg;
+  233 |   fifo.rx_we    <= serial.done;
+  234 |   fifo.rx_re    <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(2) = '1') else '0';
+  238 |   irq_generator: process(rstn_i, clk_i)
+  239 |   begin
+  240 |     if (rstn_i = '0') then
+  241 |       irq_o <= '0';
+  242 |     elsif rising_edge(clk_i) then
+  243 |       irq_o <= ctrl.enable and (not fifo.tx_avail) and (not serial.busy);
+  244 |     end if;
+  245 |   end process irq_generator;
+  250 |   clock_generator: process(rstn_i, clk_i)
+  251 |   begin
+  252 |     if (rstn_i = '0') then
+  253 |       clk_cnt   <= (others => '0');
+  254 |       clk_tick  <= '0';
+  255 |       clk_tick2 <= '0';
+  256 |     elsif rising_edge(clk_i) then
+  257 |       clk_tick <= '0';
+  258 |       if (ctrl.enable = '0') then
+  259 |         clk_cnt <= (others => '0');
+  260 |       elsif (clk_src(to_integer(unsigned(ctrl.clk_prsc))) = '1') then
+  261 |         if (clk_cnt = unsigned(ctrl.clk_div)) then
+  262 |           clk_cnt  <= (others => '0');
+  263 |           clk_tick <= '1';
+  264 |         else
+  265 |           clk_cnt <= clk_cnt + 1;
+  266 |         end if;
+  267 |       end if;
+  268 |       clk_tick2 <= clk_tick;
+  269 |     end if;
+  270 |   end process clock_generator;
+  273 |   clkgen_en_o <= ctrl.enable;
+  276 |   clk_src <= clkgen_i(3 downto 0);
+  281 |   serial_engine: process(rstn_i, clk_i)
+  282 |   begin
+  283 |     if (rstn_i = '0') then
+  284 |       serial.wire_in  <= (others => '0');
+  285 |       serial.wire_lo  <= '0';
+  286 |       serial.wire_hi  <= '0';
+  287 |       serial.state    <= (others => '0');
+  288 |       serial.tick_cnt <= (others => '0');
+  289 |       serial.bit_cnt  <= (others => '0');
+  290 |       serial.sreg     <= (others => '0');
+  291 |       serial.sample   <= '0';
+  292 |       serial.done     <= '0';
+  293 |       onewire_o       <= '0';
+  294 |     elsif rising_edge(clk_i) then
+  296 |       serial.wire_in <= serial.wire_in(0) & to_stdulogic(to_bit(onewire_i));
+  299 |       if (serial.busy = '0') or (serial.wire_hi = '1') then
+  300 |         onewire_o <= '1';
+  301 |       elsif (serial.wire_lo = '1') then
+  302 |         onewire_o <= '0';
+  303 |       end if;
+  306 |       serial.wire_lo <= '0';
+  307 |       serial.wire_hi <= '0';
+  308 |       serial.done    <= '0';
+  311 |       serial.state(2) <= ctrl.enable;
+  312 |       case serial.state is
+  314 |         when "100" =>
+  316 |           serial.tick_cnt <= (others => '0');
+  317 |           if (fifo.tx_avail = '1') then
+  318 |             serial.state(1 downto 0) <= "01";
+  319 |           end if;
+  321 |         when "101" =>
+  323 |           if (fifo.tx_rdata(dcmd_cmd_hi_c downto dcmd_cmd_lo_c) = cmd_bit_c) then
+  324 |             serial.bit_cnt <= "000";
+  325 |           else
+  326 |             serial.bit_cnt <= "111";
+  327 |           end if;
+  328 |           serial.sreg <= fifo.tx_rdata(dcmd_msb_c downto dcmd_lsb_c);
+  329 |           if (clk_tick = '1') then
+  330 |             serial.wire_lo <= '1';
+  331 |             case fifo.tx_rdata(dcmd_cmd_hi_c downto dcmd_cmd_lo_c) is
+  332 |               when cmd_bit_c => serial.state(1 downto 0) <= "10";
+  333 |               when cmd_byt_c => serial.state(1 downto 0) <= "10";
+  334 |               when cmd_rst_c => serial.state(1 downto 0) <= "11";
+  335 |               when others    => serial.state(1 downto 0) <= "00";
+  336 |             end case;
+  337 |           end if;
+  339 |         when "110" =>
+  342 |           if ((serial.tick_cnt = t_write_one_c) and (serial.sreg(0) = '1')) or (serial.tick_cnt = t_slot_end_c) then
+  343 |             serial.wire_hi <= '1';
+  344 |           end if;
+  346 |           if (serial.tick_cnt = t_read_sample_c) and (clk_tick2 = '1') then
+  347 |             serial.sample <= serial.wire_in(1);
+  348 |           end if;
+  350 |           if (serial.tick_cnt = t_pause_end_c) then
+  351 |             serial.tick_cnt <= (others => '0');
+  352 |             serial.sreg     <= serial.sample & serial.sreg(7 downto 1);
+  353 |             serial.bit_cnt  <= serial.bit_cnt - 1;
+  354 |             if (serial.bit_cnt = "000") then
+  355 |               serial.done              <= '1';
+  356 |               serial.state(1 downto 0) <= "00";
+  357 |             else
+  358 |               serial.wire_lo <= '1';
+  359 |             end if;
+  360 |           elsif (clk_tick = '1') then
+  361 |             serial.tick_cnt <= serial.tick_cnt + 1;
+  362 |           end if;
+  364 |         when "111" =>
+  366 |           if (clk_tick = '1') then
+  367 |             serial.tick_cnt <= serial.tick_cnt + 1;
+  368 |           end if;
+  370 |           if (serial.tick_cnt = t_reset_end_c) then
+  371 |             serial.wire_hi <= '1';
+  372 |           end if;
+  374 |           if (serial.tick_cnt = t_presence_sample_c) and (clk_tick2 = '1') then
+  375 |             serial.presence <= not serial.wire_in(1);
+  376 |           end if;
+  378 |           if (serial.tick_cnt = t_presence_end_c) then
+  379 |             serial.done              <= '1';
+  380 |             serial.state(1 downto 0) <= "00";
+  381 |           end if;
+  383 |         when others =>
+  385 |           serial.sreg              <= (others => '0');
+  386 |           serial.presence          <= '0';
+  387 |           serial.state(1 downto 0) <= "00";
+  389 |       end case;
+  390 |     end if;
+  391 |   end process serial_engine;
+  394 |   serial.busy <= '0' when (serial.state(1 downto 0) = "00") else '1';
+  397 | end neorv32_onewire_rtl;
+
+=== RELATIONSHIP MAP: ELEMENTS AND RECORDS ===
+PORT {"name":"clk_i","entity":"neorv32_onewire","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":23},{"id":2,"line":126},{"id":3,"line":134},{"id":4,"line":184},{"id":5,"line":216},{"id":6,"line":238},{"id":7,"line":242},{"id":8,"line":250},{"id":9,"line":256},{"id":10,"line":281},{"id":11,"line":294}]}
+    {"connections":[{"at":4,"instance":"tx_fifo_inst","formal":"clk_i","mode":"in","lines":[184]},{"at":5,"instance":"rx_fifo_inst","formal":"clk_i","mode":"in","lines":[216]}]}
+    {"type":"SEQUENCES","at":[3],"lines":[134],"targets":["bus_rsp_o.ack","bus_rsp_o.data","bus_rsp_o.err","ctrl.clear","ctrl.clk_div","ctrl.clk_prsc","ctrl.enable"]}
+    {"type":"SEQUENCES","at":[7],"lines":[242],"targets":["irq_o"]}
+    {"type":"SEQUENCES","at":[9],"lines":[256],"targets":["clk_cnt","clk_tick","clk_tick2"]}
+    {"type":"SEQUENCES","at":[11],"lines":[294],"targets":["onewire_o","serial.bit_cnt","serial.done","serial.presence","serial.sample","serial.sreg","serial.state","serial.tick_cnt","serial.wire_hi","serial.wire_in","serial.wire_lo"]}
+PORT {"name":"rstn_i","entity":"neorv32_onewire","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":24},{"id":2,"line":126},{"id":3,"line":128},{"id":4,"line":185},{"id":5,"line":217},{"id":6,"line":238},{"id":7,"line":240},{"id":8,"line":250},{"id":9,"line":252},{"id":10,"line":281},{"id":11,"line":283}]}
+    {"connections":[{"at":4,"instance":"tx_fifo_inst","formal":"rstn_i","mode":"in","lines":[185]},{"at":5,"instance":"rx_fifo_inst","formal":"rstn_i","mode":"in","lines":[217]}]}
+    {"type":"RESETS","at":[3],"lines":[128],"targets":["bus_rsp_o","ctrl.clear","ctrl.clk_div","ctrl.clk_prsc","ctrl.enable"]}
+    {"type":"RESETS","at":[7],"lines":[240],"targets":["irq_o"]}
+    {"type":"RESETS","at":[9],"lines":[252],"targets":["clk_cnt","clk_tick","clk_tick2"]}
+    {"type":"RESETS","at":[11],"lines":[283],"targets":["onewire_o","serial.bit_cnt","serial.done","serial.sample","serial.sreg","serial.state","serial.tick_cnt","serial.wire_hi","serial.wire_in","serial.wire_lo"]}
+PORT {"name":"bus_req_i","entity":"neorv32_onewire","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25},{"id":2,"line":136},{"id":3,"line":141},{"id":4,"line":141},{"id":5,"line":141},{"id":6,"line":142},{"id":7,"line":143},{"id":8,"line":144},{"id":9,"line":145},{"id":10,"line":148},{"id":11,"line":148},{"id":12,"line":149},{"id":13,"line":200},{"id":14,"line":200},{"id":15,"line":200},{"id":16,"line":201},{"id":17,"line":201},{"id":18,"line":234},{"id":19,"line":234},{"id":20,"line":234}]}
+PORT {"name":"bus_req_i.addr","entity":"neorv32_onewire","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25},{"id":2,"line":141},{"id":3,"line":149},{"id":4,"line":200},{"id":5,"line":234}]}
+    {"type":"GATES","at":[2],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '0')","lines":[141],"targets":["ctrl.clear","ctrl.clk_div","ctrl.clk_prsc","ctrl.enable"]}
+    {"type":"GATES","at":[3],"guard":"bus_req_i.addr(2) = '0' | not (bus_req_i.addr(2) = '0')","lines":[149],"targets":["bus_rsp_o.data"]}
+    {"type":"GATES","at":[4],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '1')","lines":[200],"targets":["fifo.tx_we"]}
+    {"type":"GATES","at":[5],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(2) = '1')","lines":[234],"targets":["fifo.rx_re"]}
+PORT {"name":"bus_req_i.data","entity":"neorv32_onewire","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25},{"id":2,"line":142},{"id":3,"line":143},{"id":4,"line":144},{"id":5,"line":145},{"id":6,"line":201},{"id":7,"line":201}]}
+    {"type":"SOURCES","at":[2],"lines":[142],"targets":["ctrl.enable"]}
+    {"type":"SOURCES","at":[3],"lines":[143],"targets":["ctrl.clear"]}
+    {"type":"SOURCES","at":[4],"lines":[144],"targets":["ctrl.clk_prsc"]}
+    {"type":"SOURCES","at":[5],"lines":[145],"targets":["ctrl.clk_div"]}
+    {"type":"SOURCES","at":[6,7],"lines":[201],"targets":["fifo.tx_wdata"]}
+PORT {"name":"bus_req_i.ben","entity":"neorv32_onewire","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25}]}
+PORT {"name":"bus_req_i.stb","entity":"neorv32_onewire","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25},{"id":2,"line":136},{"id":3,"line":141},{"id":4,"line":148},{"id":5,"line":200},{"id":6,"line":234}]}
+    {"type":"GATES","at":[3],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '0')","lines":[141],"targets":["ctrl.clear","ctrl.clk_div","ctrl.clk_prsc","ctrl.enable"]}
+    {"type":"GATES","at":[4],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '0')","lines":[148],"targets":["bus_rsp_o.data"]}
+    {"type":"GATES","at":[5],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '1')","lines":[200],"targets":["fifo.tx_we"]}
+    {"type":"GATES","at":[6],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(2) = '1')","lines":[234],"targets":["fifo.rx_re"]}
+    {"type":"CARRIES","at":[2],"lines":[136],"targets":["bus_rsp_o.ack"]}
+PORT {"name":"bus_req_i.rw","entity":"neorv32_onewire","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25},{"id":2,"line":141},{"id":3,"line":148},{"id":4,"line":200},{"id":5,"line":234}]}
+    {"type":"GATES","at":[2],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '0')","lines":[141],"targets":["ctrl.clear","ctrl.clk_div","ctrl.clk_prsc","ctrl.enable"]}
+    {"type":"GATES","at":[3],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '0')","lines":[148],"targets":["bus_rsp_o.data"]}
+    {"type":"GATES","at":[4],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '1')","lines":[200],"targets":["fifo.tx_we"]}
+    {"type":"GATES","at":[5],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(2) = '1')","lines":[234],"targets":["fifo.rx_re"]}
+PORT {"name":"bus_req_i.src","entity":"neorv32_onewire","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25}]}
+PORT {"name":"bus_req_i.priv","entity":"neorv32_onewire","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25}]}
+PORT {"name":"bus_req_i.debug","entity":"neorv32_onewire","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25}]}
+PORT {"name":"bus_req_i.amo","entity":"neorv32_onewire","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25}]}
+PORT {"name":"bus_req_i.amoop","entity":"neorv32_onewire","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25}]}
+PORT {"name":"bus_req_i.lock","entity":"neorv32_onewire","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25}]}
+PORT {"name":"bus_req_i.fence","entity":"neorv32_onewire","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25}]}
+PORT {"name":"bus_rsp_o","entity":"neorv32_onewire","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":26},{"id":2,"line":129},{"id":3,"line":136},{"id":4,"line":137},{"id":5,"line":138},{"id":6,"line":150},{"id":7,"line":151},{"id":8,"line":152},{"id":9,"line":154},{"id":10,"line":156},{"id":11,"line":157},{"id":12,"line":158},{"id":13,"line":159},{"id":14,"line":161},{"id":15,"line":162}]}
+    {"constant_drivers":[{"at":2,"value":"rsp_terminate_c","lines":[129]}]}
+    {"type":"RESET_BY","at":[2],"lines":[129],"targets":["rstn_i"]}
+PORT {"name":"bus_rsp_o.ack","entity":"neorv32_onewire","handling":["ORIGINATES"],"boundary":{"mode":"out","drive":"driven"},"storage":"edge"}
+    {"occurrences":[{"id":1,"line":26},{"id":2,"line":136}]}
+    {"type":"CLOCKED_BY","at":[2],"lines":[136],"targets":["clk_i"]}
+    {"type":"COPIES","at":[2],"lines":[136],"targets":["bus_req_i.stb"]}
+PORT {"name":"bus_rsp_o.err","entity":"neorv32_onewire","handling":["ORIGINATES"],"boundary":{"mode":"out","drive":"driven"},"storage":"edge"}
+    {"occurrences":[{"id":1,"line":26},{"id":2,"line":137}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[137]}]}
+    {"type":"CLOCKED_BY","at":[2],"lines":[137],"targets":["clk_i"]}
+PORT {"name":"bus_rsp_o.data","entity":"neorv32_onewire","handling":["ORIGINATES"],"boundary":{"mode":"out","drive":"driven"},"storage":"edge"}
+    {"occurrences":[{"id":1,"line":26},{"id":2,"line":138},{"id":3,"line":150},{"id":4,"line":151},{"id":5,"line":152},{"id":6,"line":154},{"id":7,"line":156},{"id":8,"line":157},{"id":9,"line":158},{"id":10,"line":159},{"id":11,"line":161},{"id":12,"line":162}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[138]},{"at":6,"value":"std_ulogic_vector(to_unsigned(log2_fifo_size_c, 4))","lines":[154]}]}
+    {"type":"CLOCKED_BY","at":[2,3,4,5,6,7,8,9,10,11,12],"lines":[138,150,151,152,154,156,157,158,159,161,162],"targets":["clk_i"]}
+    {"type":"GATED_BY","at":[3,4,5,6,7,8,9,10],"guard":"bus_req_i.addr(2) = '0'","lines":[150,151,152,154,156,157,158,159],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[3,4,5,6,7,8,9,10,11,12],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '0')","lines":[150,151,152,154,156,157,158,159,161,162],"targets":["bus_req_i.rw","bus_req_i.stb"]}
+    {"type":"GATED_BY","at":[10],"guard":"fifo.tx_avail or serial.busy","lines":[159],"targets":["fifo.tx_avail","serial.busy"]}
+    {"type":"GATED_BY","at":[11,12],"guard":"not (bus_req_i.addr(2) = '0')","lines":[161,162],"targets":["bus_req_i.addr"]}
+    {"type":"COPIES","at":[3],"lines":[150],"targets":["ctrl.enable"]}
+    {"type":"COPIES","at":[4],"lines":[151],"targets":["ctrl.clk_prsc"]}
+    {"type":"COPIES","at":[5],"lines":[152],"targets":["ctrl.clk_div"]}
+    {"type":"COPIES","at":[8],"lines":[157],"targets":["fifo.rx_avail"]}
+    {"type":"DERIVES_FROM","at":[7],"lines":[156],"targets":["fifo.tx_free"]}
+    {"type":"DERIVES_FROM","at":[9],"lines":[158],"targets":["serial.wire_in"]}
+    {"type":"DERIVES_FROM","at":[11,12],"lines":[161,162],"targets":["fifo.rx_rdata"]}
+PORT {"name":"clkgen_en_o","entity":"neorv32_onewire","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":27},{"id":2,"line":273}]}
+    {"type":"COPIES","at":[2],"lines":[273],"targets":["ctrl.enable"]}
+PORT {"name":"clkgen_i","entity":"neorv32_onewire","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":28},{"id":2,"line":276}]}
+    {"type":"SOURCES","at":[2],"lines":[276],"targets":["clk_src"]}
+PORT {"name":"onewire_i","entity":"neorv32_onewire","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29},{"id":2,"line":296}]}
+    {"type":"SOURCES","at":[2],"lines":[296],"targets":["serial.wire_in"]}
+PORT {"name":"onewire_o","entity":"neorv32_onewire","boundary":{"mode":"out","drive":"driven"},"storage":"edge"}
+    {"occurrences":[{"id":1,"line":30},{"id":2,"line":293},{"id":3,"line":300},{"id":4,"line":302}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[293]},{"at":3,"value":"'1'","lines":[300]},{"at":4,"value":"'0'","lines":[302]}]}
+    {"type":"CLOCKED_BY","at":[3,4],"lines":[300,302],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[293],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"(serial.busy = '0') or (serial.wire_hi = '1')","lines":[300],"targets":["serial.busy","serial.wire_hi"]}
+    {"type":"GATED_BY","at":[4],"guard":"not ((serial.busy = '0') or (serial.wire_hi = '1'))","lines":[302],"targets":["serial.busy","serial.wire_hi"]}
+    {"type":"GATED_BY","at":[4],"guard":"serial.wire_lo = '1'","lines":[302],"targets":["serial.wire_lo"]}
+PORT {"name":"irq_o","entity":"neorv32_onewire","boundary":{"mode":"out","drive":"driven"},"storage":"edge"}
+    {"occurrences":[{"id":1,"line":31},{"id":2,"line":241},{"id":3,"line":243}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[241]}]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[243],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[241],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"ctrl.enable and (not fifo.tx_avail) and (not serial.busy)","lines":[243],"targets":["ctrl.enable","fifo.tx_avail","serial.busy"]}
+SIGNAL {"name":"ctrl","entity":"neorv32_onewire","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":86},{"id":2,"line":130},{"id":3,"line":131},{"id":4,"line":132},{"id":5,"line":133},{"id":6,"line":140},{"id":7,"line":142},{"id":8,"line":143},{"id":9,"line":144},{"id":10,"line":145},{"id":11,"line":150},{"id":12,"line":151},{"id":13,"line":152},{"id":14,"line":199},{"id":15,"line":199},{"id":16,"line":231},{"id":17,"line":231},{"id":18,"line":243},{"id":19,"line":258},{"id":20,"line":260},{"id":21,"line":261},{"id":22,"line":273},{"id":23,"line":311}]}
+SIGNAL {"name":"ctrl.enable","entity":"neorv32_onewire","kind":"register","handling":["ORIGINATES","CONSUMES","FORWARDS"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":86},{"id":2,"line":130},{"id":3,"line":142},{"id":4,"line":150},{"id":5,"line":199},{"id":6,"line":231},{"id":7,"line":243},{"id":8,"line":258},{"id":9,"line":273},{"id":10,"line":311}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[130]}]}
+    {"type":"GATES","at":[5],"guard":"(ctrl.enable = '0') or (ctrl.clear = '1')","lines":[199],"targets":["fifo.tx_clr"]}
+    {"type":"GATES","at":[6],"guard":"(ctrl.enable = '0') or (ctrl.clear = '1')","lines":[231],"targets":["fifo.rx_clr"]}
+    {"type":"GATES","at":[7],"guard":"ctrl.enable and (not fifo.tx_avail) and (not serial.busy)","lines":[243],"targets":["irq_o"]}
+    {"type":"GATES","at":[8],"guard":"ctrl.enable = '0' | not (ctrl.enable = '0')","lines":[258],"targets":["clk_cnt"]}
+    {"type":"GATES","at":[8],"guard":"not (ctrl.enable = '0')","lines":[258],"targets":["clk_tick"]}
+    {"type":"CARRIES","at":[4],"lines":[150],"targets":["bus_rsp_o.data"]}
+    {"type":"CARRIES","at":[9],"lines":[273],"targets":["clkgen_en_o"]}
+    {"type":"CARRIES","at":[10],"lines":[311],"targets":["serial.state"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[142],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[130],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '0')","lines":[142],"targets":["bus_req_i.addr","bus_req_i.rw","bus_req_i.stb"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[142],"targets":["bus_req_i.data"]}
+SIGNAL {"name":"ctrl.clear","entity":"neorv32_onewire","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":86},{"id":2,"line":133},{"id":3,"line":140},{"id":4,"line":143},{"id":5,"line":199},{"id":6,"line":231}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[133]},{"at":3,"value":"'0'","lines":[140]}]}
+    {"type":"GATES","at":[5],"guard":"(ctrl.enable = '0') or (ctrl.clear = '1')","lines":[199],"targets":["fifo.tx_clr"]}
+    {"type":"GATES","at":[6],"guard":"(ctrl.enable = '0') or (ctrl.clear = '1')","lines":[231],"targets":["fifo.rx_clr"]}
+    {"type":"CLOCKED_BY","at":[3,4],"lines":[140,143],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[133],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[4],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '0')","lines":[143],"targets":["bus_req_i.addr","bus_req_i.rw","bus_req_i.stb"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[143],"targets":["bus_req_i.data"]}
+SIGNAL {"name":"ctrl.clk_prsc","entity":"neorv32_onewire","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":86},{"id":2,"line":131},{"id":3,"line":144},{"id":4,"line":151},{"id":5,"line":260}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[131]}]}
+    {"type":"SELECTS","at":[5],"guard":"clk_src(to_integer(unsigned(ctrl.clk_prsc))) = '1'","lines":[260],"targets":["clk_cnt","clk_tick"]}
+    {"type":"CARRIES","at":[4],"lines":[151],"targets":["bus_rsp_o.data"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[144],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[131],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '0')","lines":[144],"targets":["bus_req_i.addr","bus_req_i.rw","bus_req_i.stb"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[144],"targets":["bus_req_i.data"]}
+SIGNAL {"name":"ctrl.clk_div","entity":"neorv32_onewire","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":86},{"id":2,"line":132},{"id":3,"line":145},{"id":4,"line":152},{"id":5,"line":261}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[132]}]}
+    {"type":"CONSTRAINS","at":[5],"guard":"clk_cnt = unsigned(ctrl.clk_div) | not (clk_cnt = unsigned(ctrl.clk_div))","lines":[261],"targets":["clk_cnt"]}
+    {"type":"CONSTRAINS","at":[5],"guard":"clk_cnt = unsigned(ctrl.clk_div)","lines":[261],"targets":["clk_tick"]}
+    {"type":"CARRIES","at":[4],"lines":[152],"targets":["bus_rsp_o.data"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[145],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[132],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '0')","lines":[145],"targets":["bus_req_i.addr","bus_req_i.rw","bus_req_i.stb"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[145],"targets":["bus_req_i.data"]}
+SIGNAL {"name":"fifo","entity":"neorv32_onewire","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":98},{"id":2,"line":156},{"id":3,"line":157},{"id":4,"line":159},{"id":5,"line":161},{"id":6,"line":162},{"id":7,"line":186},{"id":8,"line":190},{"id":9,"line":191},{"id":10,"line":192},{"id":11,"line":194},{"id":12,"line":195},{"id":13,"line":196},{"id":14,"line":199},{"id":15,"line":200},{"id":16,"line":201},{"id":17,"line":202},{"id":18,"line":218},{"id":19,"line":222},{"id":20,"line":223},{"id":21,"line":224},{"id":22,"line":226},{"id":23,"line":227},{"id":24,"line":228},{"id":25,"line":231},{"id":26,"line":232},{"id":27,"line":233},{"id":28,"line":234},{"id":29,"line":243},{"id":30,"line":317},{"id":31,"line":323},{"id":32,"line":328},{"id":33,"line":331}]}
+SIGNAL {"name":"fifo.rx_clr","entity":"neorv32_onewire","kind":"signal","handling":["ORIGINATES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":98},{"id":2,"line":218},{"id":3,"line":231}]}
+    {"connections":[{"at":2,"instance":"rx_fifo_inst","formal":"clear_i","mode":"in","lines":[218]}]}
+    {"type":"GATED_BY","at":[3],"guard":"(ctrl.enable = '0') or (ctrl.clear = '1')","lines":[231],"targets":["ctrl.clear","ctrl.enable"]}
+SIGNAL {"name":"fifo.tx_clr","entity":"neorv32_onewire","kind":"signal","handling":["ORIGINATES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":98},{"id":2,"line":186},{"id":3,"line":199}]}
+    {"connections":[{"at":2,"instance":"tx_fifo_inst","formal":"clear_i","mode":"in","lines":[186]}]}
+    {"type":"GATED_BY","at":[3],"guard":"(ctrl.enable = '0') or (ctrl.clear = '1')","lines":[199],"targets":["ctrl.clear","ctrl.enable"]}
+SIGNAL {"name":"fifo.rx_we","entity":"neorv32_onewire","kind":"signal","handling":["ORIGINATES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":98},{"id":2,"line":223},{"id":3,"line":233}]}
+    {"connections":[{"at":2,"instance":"rx_fifo_inst","formal":"we_i","mode":"in","lines":[223]}]}
+    {"type":"COPIES","at":[3],"lines":[233],"targets":["serial.done"]}
+SIGNAL {"name":"fifo.tx_we","entity":"neorv32_onewire","kind":"signal","handling":["ORIGINATES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":98},{"id":2,"line":191},{"id":3,"line":200}]}
+    {"connections":[{"at":2,"instance":"tx_fifo_inst","formal":"we_i","mode":"in","lines":[191]}]}
+    {"type":"GATED_BY","at":[3],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '1')","lines":[200],"targets":["bus_req_i.addr","bus_req_i.rw","bus_req_i.stb"]}
+SIGNAL {"name":"fifo.rx_re","entity":"neorv32_onewire","kind":"signal","handling":["ORIGINATES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":98},{"id":2,"line":226},{"id":3,"line":234}]}
+    {"connections":[{"at":2,"instance":"rx_fifo_inst","formal":"re_i","mode":"in","lines":[226]}]}
+    {"type":"GATED_BY","at":[3],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(2) = '1')","lines":[234],"targets":["bus_req_i.addr","bus_req_i.rw","bus_req_i.stb"]}
+SIGNAL {"name":"fifo.tx_re","entity":"neorv32_onewire","kind":"signal","handling":["ORIGINATES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":98},{"id":2,"line":194},{"id":3,"line":202}]}
+    {"connections":[{"at":2,"instance":"tx_fifo_inst","formal":"re_i","mode":"in","lines":[194]}]}
+    {"type":"GATED_BY","at":[3],"guard":"(serial.state = \"101\") and (clk_tick = '1')","lines":[202],"targets":["clk_tick","serial.state"]}
+SIGNAL {"name":"fifo.rx_rdata","entity":"neorv32_onewire","kind":"signal","handling":["CONSUMES"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":98},{"id":2,"line":161},{"id":3,"line":162},{"id":4,"line":227}]}
+    {"connections":[{"at":4,"instance":"rx_fifo_inst","formal":"rdata_o","mode":"out","lines":[227]}]}
+    {"type":"SOURCES","at":[2,3],"lines":[161,162],"targets":["bus_rsp_o.data"]}
+SIGNAL {"name":"fifo.rx_wdata","entity":"neorv32_onewire","kind":"signal","handling":["ORIGINATES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":98},{"id":2,"line":222},{"id":3,"line":232}]}
+    {"connections":[{"at":2,"instance":"rx_fifo_inst","formal":"wdata_i","mode":"in","lines":[222]}]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[232],"targets":["serial.presence","serial.sreg"]}
+SIGNAL {"name":"fifo.tx_rdata","entity":"neorv32_onewire","kind":"signal","handling":["CONSUMES"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":98},{"id":2,"line":195},{"id":3,"line":323},{"id":4,"line":328},{"id":5,"line":331}]}
+    {"connections":[{"at":2,"instance":"tx_fifo_inst","formal":"rdata_o","mode":"out","lines":[195]}]}
+    {"type":"SELECTS","at":[5],"guard":"fifo.tx_rdata(dcmd_cmd_hi_c downto dcmd_cmd_lo_c) = cmd_bit_c | fifo.tx_rdata(dcmd_cmd_hi_c downto dcmd_cmd_lo_c) = cmd_byt_c | fifo.tx_rdata(dcmd_cmd_hi_c downto dcmd_cmd_lo_c) = cmd_rst_c | not (fifo.tx_rdata(dcmd_cmd_hi_c downto dcmd_cmd_lo_c) in {cmd_bit_c, cmd_byt_c, cmd_rst_c})","lines":[331],"targets":["serial.state"]}
+    {"type":"GATES","at":[3],"guard":"fifo.tx_rdata(dcmd_cmd_hi_c downto dcmd_cmd_lo_c) = cmd_bit_c | not (fifo.tx_rdata(dcmd_cmd_hi_c downto dcmd_cmd_lo_c) = cmd_bit_c)","lines":[323],"targets":["serial.bit_cnt"]}
+    {"type":"SOURCES","at":[4],"lines":[328],"targets":["serial.sreg"]}
+SIGNAL {"name":"fifo.tx_wdata","entity":"neorv32_onewire","kind":"signal","handling":["ORIGINATES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":98},{"id":2,"line":190},{"id":3,"line":201}]}
+    {"connections":[{"at":2,"instance":"tx_fifo_inst","formal":"wdata_i","mode":"in","lines":[190]}]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[201],"targets":["bus_req_i.data"]}
+SIGNAL {"name":"fifo.rx_avail","entity":"neorv32_onewire","kind":"signal","handling":["CONSUMES"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":98},{"id":2,"line":157},{"id":3,"line":228}]}
+    {"connections":[{"at":3,"instance":"rx_fifo_inst","formal":"avail_o","mode":"out","lines":[228]}]}
+    {"type":"CARRIES","at":[2],"lines":[157],"targets":["bus_rsp_o.data"]}
+SIGNAL {"name":"fifo.tx_avail","entity":"neorv32_onewire","kind":"signal","handling":["CONSUMES"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":98},{"id":2,"line":159},{"id":3,"line":196},{"id":4,"line":243},{"id":5,"line":317}]}
+    {"connections":[{"at":3,"instance":"tx_fifo_inst","formal":"avail_o","mode":"out","lines":[196]}]}
+    {"type":"GATES","at":[2],"guard":"fifo.tx_avail or serial.busy","lines":[159],"targets":["bus_rsp_o.data"]}
+    {"type":"GATES","at":[4],"guard":"ctrl.enable and (not fifo.tx_avail) and (not serial.busy)","lines":[243],"targets":["irq_o"]}
+    {"type":"GATES","at":[5],"guard":"fifo.tx_avail = '1'","lines":[317],"targets":["serial.state"]}
+SIGNAL {"name":"fifo.rx_free","entity":"neorv32_onewire","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":98},{"id":2,"line":224}]}
+    {"connections":[{"at":2,"instance":"rx_fifo_inst","formal":"free_o","mode":"out","lines":[224]}]}
+SIGNAL {"name":"fifo.tx_free","entity":"neorv32_onewire","kind":"signal","handling":["CONSUMES"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":98},{"id":2,"line":156},{"id":3,"line":192}]}
+    {"connections":[{"at":3,"instance":"tx_fifo_inst","formal":"free_o","mode":"out","lines":[192]}]}
+    {"type":"SOURCES","at":[2],"lines":[156],"targets":["bus_rsp_o.data"]}
+SIGNAL {"name":"clk_src","entity":"neorv32_onewire","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":101},{"id":2,"line":260},{"id":3,"line":276}]}
+    {"type":"GATES","at":[2],"guard":"clk_src(to_integer(unsigned(ctrl.clk_prsc))) = '1'","lines":[260],"targets":["clk_cnt","clk_tick"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[276],"targets":["clkgen_i"]}
+SIGNAL {"name":"clk_cnt","entity":"neorv32_onewire","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":102},{"id":2,"line":253},{"id":3,"line":259},{"id":4,"line":261},{"id":5,"line":262},{"id":6,"line":265},{"id":7,"line":265}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[253]},{"at":3,"value":"(others => '0')","lines":[259]},{"at":5,"value":"(others => '0')","lines":[262]}]}
+    {"type":"CONSTRAINS","at":[4],"guard":"clk_cnt = unsigned(ctrl.clk_div) | not (clk_cnt = unsigned(ctrl.clk_div))","lines":[261],"targets":["clk_cnt"]}
+    {"type":"CONSTRAINS","at":[4],"guard":"clk_cnt = unsigned(ctrl.clk_div)","lines":[261],"targets":["clk_tick"]}
+    {"type":"SOURCES","at":[7],"lines":[265],"targets":["clk_cnt"]}
+    {"type":"CLOCKED_BY","at":[3,5,6],"lines":[259,262,265],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[253],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[5,6],"guard":"clk_src(to_integer(unsigned(ctrl.clk_prsc))) = '1'","lines":[262,265],"targets":["ctrl.clk_prsc"]}
+    {"type":"CONSTRAINED_BY","at":[5],"guard":"clk_cnt = unsigned(ctrl.clk_div)","lines":[262],"targets":["clk_cnt","ctrl.clk_div"]}
+    {"type":"CONSTRAINED_BY","at":[6],"guard":"not (clk_cnt = unsigned(ctrl.clk_div))","lines":[265],"targets":["clk_cnt","ctrl.clk_div"]}
+    {"type":"GATED_BY","at":[3],"guard":"ctrl.enable = '0'","lines":[259],"targets":["ctrl.enable"]}
+    {"type":"GATED_BY","at":[5,6],"guard":"clk_src(to_integer(unsigned(ctrl.clk_prsc))) = '1'","lines":[262,265],"targets":["clk_src"]}
+    {"type":"GATED_BY","at":[5,6],"guard":"not (ctrl.enable = '0')","lines":[262,265],"targets":["ctrl.enable"]}
+    {"type":"DERIVES_FROM","at":[6],"lines":[265],"targets":["clk_cnt"]}
+SIGNAL {"name":"clk_tick","entity":"neorv32_onewire","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":103},{"id":2,"line":202},{"id":3,"line":254},{"id":4,"line":257},{"id":5,"line":263},{"id":6,"line":268},{"id":7,"line":329},{"id":8,"line":360},{"id":9,"line":366}]}
+    {"constant_drivers":[{"at":3,"value":"'0'","lines":[254]},{"at":4,"value":"'0'","lines":[257]},{"at":5,"value":"'1'","lines":[263]}]}
+    {"type":"GATES","at":[2],"guard":"(serial.state = \"101\") and (clk_tick = '1')","lines":[202],"targets":["fifo.tx_re"]}
+    {"type":"GATES","at":[7],"guard":"clk_tick = '1'","lines":[329],"targets":["serial.state","serial.wire_lo"]}
+    {"type":"GATES","at":[8,9],"guard":"clk_tick = '1'","lines":[360,366],"targets":["serial.tick_cnt"]}
+    {"type":"CARRIES","at":[6],"lines":[268],"targets":["clk_tick2"]}
+    {"type":"CLOCKED_BY","at":[4,5],"lines":[257,263],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[3],"lines":[254],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[5],"guard":"clk_src(to_integer(unsigned(ctrl.clk_prsc))) = '1'","lines":[263],"targets":["ctrl.clk_prsc"]}
+    {"type":"CONSTRAINED_BY","at":[5],"guard":"clk_cnt = unsigned(ctrl.clk_div)","lines":[263],"targets":["clk_cnt","ctrl.clk_div"]}
+    {"type":"GATED_BY","at":[5],"guard":"clk_src(to_integer(unsigned(ctrl.clk_prsc))) = '1'","lines":[263],"targets":["clk_src"]}
+    {"type":"GATED_BY","at":[5],"guard":"not (ctrl.enable = '0')","lines":[263],"targets":["ctrl.enable"]}
+SIGNAL {"name":"clk_tick2","entity":"neorv32_onewire","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":104},{"id":2,"line":255},{"id":3,"line":268},{"id":4,"line":346},{"id":5,"line":374}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[255]}]}
+    {"type":"GATES","at":[4],"guard":"(serial.tick_cnt = t_read_sample_c) and (clk_tick2 = '1')","lines":[346],"targets":["serial.sample"]}
+    {"type":"GATES","at":[5],"guard":"(serial.tick_cnt = t_presence_sample_c) and (clk_tick2 = '1')","lines":[374],"targets":["serial.presence"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[268],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[255],"targets":["rstn_i"]}
+    {"type":"COPIES","at":[3],"lines":[268],"targets":["clk_tick"]}
+SIGNAL {"name":"serial","entity":"neorv32_onewire","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":120},{"id":2,"line":158},{"id":3,"line":159},{"id":4,"line":202},{"id":5,"line":232},{"id":6,"line":232},{"id":7,"line":233},{"id":8,"line":243},{"id":9,"line":284},{"id":10,"line":285},{"id":11,"line":286},{"id":12,"line":287},{"id":13,"line":288},{"id":14,"line":289},{"id":15,"line":290},{"id":16,"line":291},{"id":17,"line":292},{"id":18,"line":296},{"id":19,"line":296},{"id":20,"line":299},{"id":21,"line":299},{"id":22,"line":301},{"id":23,"line":306},{"id":24,"line":307},{"id":25,"line":308},{"id":26,"line":311},{"id":27,"line":312},{"id":28,"line":316},{"id":29,"line":318},{"id":30,"line":324},{"id":31,"line":326},{"id":32,"line":328},{"id":33,"line":330},{"id":34,"line":332},{"id":35,"line":333},{"id":36,"line":334},{"id":37,"line":335},{"id":38,"line":342},{"id":39,"line":342},{"id":40,"line":342},{"id":41,"line":343},{"id":42,"line":346},{"id":43,"line":347},{"id":44,"line":347},{"id":45,"line":350},{"id":46,"line":351},{"id":47,"line":352},{"id":48,"line":352},{"id":49,"line":352},{"id":50,"line":353},{"id":51,"line":353},{"id":52,"line":354},{"id":53,"line":355},{"id":54,"line":356},{"id":55,"line":358},{"id":56,"line":361},{"id":57,"line":361},{"id":58,"line":367},{"id":59,"line":367},{"id":60,"line":370},{"id":61,"line":371},{"id":62,"line":374},{"id":63,"line":375},{"id":64,"line":375},{"id":65,"line":378},{"id":66,"line":379},{"id":67,"line":380},{"id":68,"line":385},{"id":69,"line":386},{"id":70,"line":387}]}
+    {"occurrences":[{"id":71,"line":394},{"id":72,"line":394}]}
+SIGNAL {"name":"serial.state","entity":"neorv32_onewire","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":120},{"id":2,"line":202},{"id":3,"line":287},{"id":4,"line":311},{"id":5,"line":312},{"id":6,"line":318},{"id":7,"line":332},{"id":8,"line":333},{"id":9,"line":334},{"id":10,"line":335},{"id":11,"line":356},{"id":12,"line":380},{"id":13,"line":387},{"id":14,"line":394}]}
+    {"constant_drivers":[{"at":3,"value":"(others => '0')","lines":[287]},{"at":6,"value":"\"01\"","lines":[318]},{"at":7,"value":"\"10\"","lines":[332]},{"at":8,"value":"\"10\"","lines":[333]},{"at":9,"value":"\"11\"","lines":[334]},{"at":10,"value":"\"00\"","lines":[335]},{"at":11,"value":"\"00\"","lines":[356]},{"at":12,"value":"\"00\"","lines":[380]},{"at":13,"value":"\"00\"","lines":[387]}]}
+    {"type":"SELECTS","at":[5],"guard":"serial.state = \"101\" | serial.state = \"110\"","lines":[312],"targets":["serial.bit_cnt","serial.wire_lo"]}
+    {"type":"SELECTS","at":[5],"guard":"serial.state = \"110\" | serial.state = \"111\"","lines":[312],"targets":["serial.done","serial.wire_hi"]}
+    {"type":"SELECTS","at":[5],"guard":"not (serial.state in {\"100\", \"101\", \"110\", \"111\"}) | serial.state = \"111\"","lines":[312],"targets":["serial.presence"]}
+    {"type":"SELECTS","at":[5],"guard":"serial.state = \"110\"","lines":[312],"targets":["serial.sample"]}
+    {"type":"SELECTS","at":[5],"guard":"not (serial.state in {\"100\", \"101\", \"110\", \"111\"}) | serial.state = \"101\" | serial.state = \"110\"","lines":[312],"targets":["serial.sreg"]}
+    {"type":"SELECTS","at":[5],"guard":"not (serial.state in {\"100\", \"101\", \"110\", \"111\"}) | serial.state = \"100\" | serial.state = \"101\" | serial.state = \"110\" | serial.state = \"111\"","lines":[312],"targets":["serial.state"]}
+    {"type":"SELECTS","at":[5],"guard":"serial.state = \"100\" | serial.state = \"110\" | serial.state = \"111\"","lines":[312],"targets":["serial.tick_cnt"]}
+    {"type":"GATES","at":[14],"guard":"(serial.state(1 downto 0) = \"00\")","lines":[394],"targets":["serial.busy"]}
+    {"type":"GATES","at":[2],"guard":"(serial.state = \"101\") and (clk_tick = '1')","lines":[202],"targets":["fifo.tx_re"]}
+    {"type":"CLOCKED_BY","at":[4,6,7,8,9,10,11,12,13],"lines":[311,318,332,333,334,335,356,380,387],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[3],"lines":[287],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[10],"guard":"not (fifo.tx_rdata(dcmd_cmd_hi_c downto dcmd_cmd_lo_c) in {cmd_bit_c, cmd_byt_c, cmd_rst_c})","lines":[335],"targets":["fifo.tx_rdata"]}
+    {"type":"SELECTED_BY","at":[7,8,9,10],"guard":"serial.state = \"101\"","lines":[332,333,334,335],"targets":["serial.state"]}
+    {"type":"SELECTED_BY","at":[11],"guard":"serial.state = \"110\"","lines":[356],"targets":["serial.state"]}
+    {"type":"SELECTED_BY","at":[12],"guard":"serial.state = \"111\"","lines":[380],"targets":["serial.state"]}
+    {"type":"SELECTED_BY","at":[13],"guard":"not (serial.state in {\"100\", \"101\", \"110\", \"111\"})","lines":[387],"targets":["serial.state"]}
+    {"type":"SELECTED_BY","at":[6],"guard":"serial.state = \"100\"","lines":[318],"targets":["serial.state"]}
+    {"type":"SELECTED_BY","at":[7],"guard":"fifo.tx_rdata(dcmd_cmd_hi_c downto dcmd_cmd_lo_c) = cmd_bit_c","lines":[332],"targets":["fifo.tx_rdata"]}
+    {"type":"SELECTED_BY","at":[8],"guard":"fifo.tx_rdata(dcmd_cmd_hi_c downto dcmd_cmd_lo_c) = cmd_byt_c","lines":[333],"targets":["fifo.tx_rdata"]}
+    {"type":"SELECTED_BY","at":[9],"guard":"fifo.tx_rdata(dcmd_cmd_hi_c downto dcmd_cmd_lo_c) = cmd_rst_c","lines":[334],"targets":["fifo.tx_rdata"]}
+    {"type":"GATED_BY","at":[7,8,9,10],"guard":"clk_tick = '1'","lines":[332,333,334,335],"targets":["clk_tick"]}
+    {"type":"GATED_BY","at":[11],"guard":"serial.bit_cnt = \"000\"","lines":[356],"targets":["serial.bit_cnt"]}
+    {"type":"GATED_BY","at":[11],"guard":"serial.tick_cnt = t_pause_end_c","lines":[356],"targets":["serial.tick_cnt"]}
+    {"type":"GATED_BY","at":[12],"guard":"serial.tick_cnt = t_presence_end_c","lines":[380],"targets":["serial.tick_cnt"]}
+    {"type":"GATED_BY","at":[6],"guard":"fifo.tx_avail = '1'","lines":[318],"targets":["fifo.tx_avail"]}
+    {"type":"COPIES","at":[4],"lines":[311],"targets":["ctrl.enable"]}
+SIGNAL {"name":"serial.busy","entity":"neorv32_onewire","kind":"signal","handling":["ORIGINATES","CONSUMES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":120},{"id":2,"line":159},{"id":3,"line":243},{"id":4,"line":299},{"id":5,"line":394}]}
+    {"type":"GATES","at":[2],"guard":"fifo.tx_avail or serial.busy","lines":[159],"targets":["bus_rsp_o.data"]}
+    {"type":"GATES","at":[3],"guard":"ctrl.enable and (not fifo.tx_avail) and (not serial.busy)","lines":[243],"targets":["irq_o"]}
+    {"type":"GATES","at":[4],"guard":"(serial.busy = '0') or (serial.wire_hi = '1') | not ((serial.busy = '0') or (serial.wire_hi = '1'))","lines":[299],"targets":["onewire_o"]}
+    {"type":"GATED_BY","at":[5],"guard":"(serial.state(1 downto 0) = \"00\")","lines":[394],"targets":["serial.state"]}
+SIGNAL {"name":"serial.bit_cnt","entity":"neorv32_onewire","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":120},{"id":2,"line":289},{"id":3,"line":324},{"id":4,"line":326},{"id":5,"line":353},{"id":6,"line":353},{"id":7,"line":354}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[289]},{"at":3,"value":"\"000\"","lines":[324]},{"at":4,"value":"\"111\"","lines":[326]}]}
+    {"type":"GATES","at":[7],"guard":"serial.bit_cnt = \"000\"","lines":[354],"targets":["serial.done","serial.state"]}
+    {"type":"GATES","at":[7],"guard":"not (serial.bit_cnt = \"000\")","lines":[354],"targets":["serial.wire_lo"]}
+    {"type":"SOURCES","at":[6],"lines":[353],"targets":["serial.bit_cnt"]}
+    {"type":"CLOCKED_BY","at":[3,4,5],"lines":[324,326,353],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[289],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[3,4],"guard":"serial.state = \"101\"","lines":[324,326],"targets":["serial.state"]}
+    {"type":"SELECTED_BY","at":[5],"guard":"serial.state = \"110\"","lines":[353],"targets":["serial.state"]}
+    {"type":"GATED_BY","at":[3],"guard":"fifo.tx_rdata(dcmd_cmd_hi_c downto dcmd_cmd_lo_c) = cmd_bit_c","lines":[324],"targets":["fifo.tx_rdata"]}
+    {"type":"GATED_BY","at":[4],"guard":"not (fifo.tx_rdata(dcmd_cmd_hi_c downto dcmd_cmd_lo_c) = cmd_bit_c)","lines":[326],"targets":["fifo.tx_rdata"]}
+    {"type":"GATED_BY","at":[5],"guard":"serial.tick_cnt = t_pause_end_c","lines":[353],"targets":["serial.tick_cnt"]}
+    {"type":"DERIVES_FROM","at":[5],"lines":[353],"targets":["serial.bit_cnt"]}
+SIGNAL {"name":"serial.tick_cnt","entity":"neorv32_onewire","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":120},{"id":2,"line":288},{"id":3,"line":316},{"id":4,"line":342},{"id":5,"line":342},{"id":6,"line":346},{"id":7,"line":350},{"id":8,"line":351},{"id":9,"line":361},{"id":10,"line":361},{"id":11,"line":367},{"id":12,"line":367},{"id":13,"line":370},{"id":14,"line":374},{"id":15,"line":378}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[288]},{"at":3,"value":"(others => '0')","lines":[316]},{"at":8,"value":"(others => '0')","lines":[351]}]}
+    {"type":"GATES","at":[13],"guard":"serial.tick_cnt = t_reset_end_c","lines":[370],"targets":["serial.wire_hi"]}
+    {"type":"GATES","at":[14],"guard":"(serial.tick_cnt = t_presence_sample_c) and (clk_tick2 = '1')","lines":[374],"targets":["serial.presence"]}
+    {"type":"GATES","at":[15],"guard":"serial.tick_cnt = t_presence_end_c","lines":[378],"targets":["serial.done","serial.state"]}
+    {"type":"GATES","at":[4,5],"guard":"((serial.tick_cnt = t_write_one_c) and (serial.sreg(0) = '1')) or (serial.tick_cnt = t_slot_end_c)","lines":[342],"targets":["serial.wire_hi"]}
+    {"type":"GATES","at":[6],"guard":"(serial.tick_cnt = t_read_sample_c) and (clk_tick2 = '1')","lines":[346],"targets":["serial.sample"]}
+    {"type":"GATES","at":[7],"guard":"serial.tick_cnt = t_pause_end_c","lines":[350],"targets":["serial.bit_cnt","serial.done","serial.sreg","serial.state","serial.wire_lo"]}
+    {"type":"GATES","at":[7],"guard":"not (serial.tick_cnt = t_pause_end_c) | serial.tick_cnt = t_pause_end_c","lines":[350],"targets":["serial.tick_cnt"]}
+    {"type":"SOURCES","at":[10,12],"lines":[361,367],"targets":["serial.tick_cnt"]}
+    {"type":"CLOCKED_BY","at":[3,8,9,11],"lines":[316,351,361,367],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[288],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[11],"guard":"serial.state = \"111\"","lines":[367],"targets":["serial.state"]}
+    {"type":"SELECTED_BY","at":[3],"guard":"serial.state = \"100\"","lines":[316],"targets":["serial.state"]}
+    {"type":"SELECTED_BY","at":[8,9],"guard":"serial.state = \"110\"","lines":[351,361],"targets":["serial.state"]}
+    {"type":"GATED_BY","at":[9,11],"guard":"clk_tick = '1'","lines":[361,367],"targets":["clk_tick"]}
+    {"type":"GATED_BY","at":[8],"guard":"serial.tick_cnt = t_pause_end_c","lines":[351],"targets":["serial.tick_cnt"]}
+    {"type":"GATED_BY","at":[9],"guard":"not (serial.tick_cnt = t_pause_end_c)","lines":[361],"targets":["serial.tick_cnt"]}
+    {"type":"DERIVES_FROM","at":[9,11],"lines":[361,367],"targets":["serial.tick_cnt"]}
+SIGNAL {"name":"serial.sreg","entity":"neorv32_onewire","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":120},{"id":2,"line":232},{"id":3,"line":290},{"id":4,"line":328},{"id":5,"line":342},{"id":6,"line":352},{"id":7,"line":352},{"id":8,"line":385}]}
+    {"constant_drivers":[{"at":3,"value":"(others => '0')","lines":[290]},{"at":8,"value":"(others => '0')","lines":[385]}]}
+    {"type":"GATES","at":[5],"guard":"((serial.tick_cnt = t_write_one_c) and (serial.sreg(0) = '1')) or (serial.tick_cnt = t_slot_end_c)","lines":[342],"targets":["serial.wire_hi"]}
+    {"type":"SOURCES","at":[2],"lines":[232],"targets":["fifo.rx_wdata"]}
+    {"type":"SOURCES","at":[7],"lines":[352],"targets":["serial.sreg"]}
+    {"type":"CLOCKED_BY","at":[4,6,8],"lines":[328,352,385],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[3],"lines":[290],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[4],"guard":"serial.state = \"101\"","lines":[328],"targets":["serial.state"]}
+    {"type":"SELECTED_BY","at":[6],"guard":"serial.state = \"110\"","lines":[352],"targets":["serial.state"]}
+    {"type":"SELECTED_BY","at":[8],"guard":"not (serial.state in {\"100\", \"101\", \"110\", \"111\"})","lines":[385],"targets":["serial.state"]}
+    {"type":"GATED_BY","at":[6],"guard":"serial.tick_cnt = t_pause_end_c","lines":[352],"targets":["serial.tick_cnt"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[328],"targets":["fifo.tx_rdata"]}
+    {"type":"DERIVES_FROM","at":[6],"lines":[352],"targets":["serial.sample","serial.sreg"]}
+SIGNAL {"name":"serial.wire_in","entity":"neorv32_onewire","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":120},{"id":2,"line":158},{"id":3,"line":284},{"id":4,"line":296},{"id":5,"line":296},{"id":6,"line":347},{"id":7,"line":375}]}
+    {"constant_drivers":[{"at":3,"value":"(others => '0')","lines":[284]}]}
+    {"type":"SOURCES","at":[2],"lines":[158],"targets":["bus_rsp_o.data"]}
+    {"type":"SOURCES","at":[5],"lines":[296],"targets":["serial.wire_in"]}
+    {"type":"SOURCES","at":[6],"lines":[347],"targets":["serial.sample"]}
+    {"type":"SOURCES","at":[7],"lines":[375],"targets":["serial.presence"]}
+    {"type":"CLOCKED_BY","at":[4],"lines":[296],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[3],"lines":[284],"targets":["rstn_i"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[296],"targets":["onewire_i","serial.wire_in"]}
+SIGNAL {"name":"serial.wire_lo","entity":"neorv32_onewire","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":120},{"id":2,"line":285},{"id":3,"line":301},{"id":4,"line":306},{"id":5,"line":330},{"id":6,"line":358}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[285]},{"at":4,"value":"'0'","lines":[306]},{"at":5,"value":"'1'","lines":[330]},{"at":6,"value":"'1'","lines":[358]}]}
+    {"type":"GATES","at":[3],"guard":"serial.wire_lo = '1'","lines":[301],"targets":["onewire_o"]}
+    {"type":"CLOCKED_BY","at":[4,5,6],"lines":[306,330,358],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[285],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[5],"guard":"serial.state = \"101\"","lines":[330],"targets":["serial.state"]}
+    {"type":"SELECTED_BY","at":[6],"guard":"serial.state = \"110\"","lines":[358],"targets":["serial.state"]}
+    {"type":"GATED_BY","at":[5],"guard":"clk_tick = '1'","lines":[330],"targets":["clk_tick"]}
+    {"type":"GATED_BY","at":[6],"guard":"not (serial.bit_cnt = \"000\")","lines":[358],"targets":["serial.bit_cnt"]}
+    {"type":"GATED_BY","at":[6],"guard":"serial.tick_cnt = t_pause_end_c","lines":[358],"targets":["serial.tick_cnt"]}
+SIGNAL {"name":"serial.wire_hi","entity":"neorv32_onewire","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":120},{"id":2,"line":286},{"id":3,"line":299},{"id":4,"line":307},{"id":5,"line":343},{"id":6,"line":371}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[286]},{"at":4,"value":"'0'","lines":[307]},{"at":5,"value":"'1'","lines":[343]},{"at":6,"value":"'1'","lines":[371]}]}
+    {"type":"GATES","at":[3],"guard":"(serial.busy = '0') or (serial.wire_hi = '1') | not ((serial.busy = '0') or (serial.wire_hi = '1'))","lines":[299],"targets":["onewire_o"]}
+    {"type":"CLOCKED_BY","at":[4,5,6],"lines":[307,343,371],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[286],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[5],"guard":"serial.state = \"110\"","lines":[343],"targets":["serial.state"]}
+    {"type":"SELECTED_BY","at":[6],"guard":"serial.state = \"111\"","lines":[371],"targets":["serial.state"]}
+    {"type":"GATED_BY","at":[5],"guard":"((serial.tick_cnt = t_write_one_c) and (serial.sreg(0) = '1')) or (serial.tick_cnt = t_slot_end_c)","lines":[343],"targets":["serial.sreg","serial.tick_cnt"]}
+    {"type":"GATED_BY","at":[6],"guard":"serial.tick_cnt = t_reset_end_c","lines":[371],"targets":["serial.tick_cnt"]}
+SIGNAL {"name":"serial.sample","entity":"neorv32_onewire","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":120},{"id":2,"line":291},{"id":3,"line":347},{"id":4,"line":352}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[291]}]}
+    {"type":"SOURCES","at":[4],"lines":[352],"targets":["serial.sreg"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[347],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[291],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[3],"guard":"serial.state = \"110\"","lines":[347],"targets":["serial.state"]}
+    {"type":"GATED_BY","at":[3],"guard":"(serial.tick_cnt = t_read_sample_c) and (clk_tick2 = '1')","lines":[347],"targets":["clk_tick2","serial.tick_cnt"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[347],"targets":["serial.wire_in"]}
+SIGNAL {"name":"serial.presence","entity":"neorv32_onewire","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":120},{"id":2,"line":232},{"id":3,"line":375},{"id":4,"line":386}]}
+    {"constant_drivers":[{"at":4,"value":"'0'","lines":[386]}]}
+    {"type":"SOURCES","at":[2],"lines":[232],"targets":["fifo.rx_wdata"]}
+    {"type":"CLOCKED_BY","at":[3,4],"lines":[375,386],"targets":["clk_i"]}
+    {"type":"SELECTED_BY","at":[3],"guard":"serial.state = \"111\"","lines":[375],"targets":["serial.state"]}
+    {"type":"SELECTED_BY","at":[4],"guard":"not (serial.state in {\"100\", \"101\", \"110\", \"111\"})","lines":[386],"targets":["serial.state"]}
+    {"type":"GATED_BY","at":[3],"guard":"(serial.tick_cnt = t_presence_sample_c) and (clk_tick2 = '1')","lines":[375],"targets":["clk_tick2","serial.tick_cnt"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[375],"targets":["serial.wire_in"]}
+SIGNAL {"name":"serial.done","entity":"neorv32_onewire","kind":"register","handling":["ORIGINATES","FORWARDS"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":120},{"id":2,"line":233},{"id":3,"line":292},{"id":4,"line":308},{"id":5,"line":355},{"id":6,"line":379}]}
+    {"constant_drivers":[{"at":3,"value":"'0'","lines":[292]},{"at":4,"value":"'0'","lines":[308]},{"at":5,"value":"'1'","lines":[355]},{"at":6,"value":"'1'","lines":[379]}]}
+    {"type":"CARRIES","at":[2],"lines":[233],"targets":["fifo.rx_we"]}
+    {"type":"CLOCKED_BY","at":[4,5,6],"lines":[308,355,379],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[3],"lines":[292],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[5],"guard":"serial.state = \"110\"","lines":[355],"targets":["serial.state"]}
+    {"type":"SELECTED_BY","at":[6],"guard":"serial.state = \"111\"","lines":[379],"targets":["serial.state"]}
+    {"type":"GATED_BY","at":[5],"guard":"serial.bit_cnt = \"000\"","lines":[355],"targets":["serial.bit_cnt"]}
+    {"type":"GATED_BY","at":[5],"guard":"serial.tick_cnt = t_pause_end_c","lines":[355],"targets":["serial.tick_cnt"]}
+    {"type":"GATED_BY","at":[6],"guard":"serial.tick_cnt = t_presence_end_c","lines":[379],"targets":["serial.tick_cnt"]}
+
+=== RELATIONSHIP MAP: FLOW GRAPH (computed by a program from the records above) ===
+MAP CHECK {"elements":60,"driving records":147,"receiving records":147,"driving without receiving":0,"receiving without driving":0}
+    {"clock or reset (drive SEQUENCES / RESETS)":["clk_i","rstn_i"]}
+    {"whole records (their fields carry the records)":["bus_req_i","bus_rsp_o","ctrl","fifo","serial"]}
+    {"self-updating (X is computed from X: counters, state registers)":["clk_cnt","serial.bit_cnt","serial.sreg","serial.tick_cnt","serial.wire_in"]}
+PATH {"from":"bus_req_i.data","source":"input"}
+    {"stores":["bus_rsp_o.data","ctrl.clear","ctrl.clk_div","ctrl.clk_prsc","ctrl.enable","serial.state"]}
+    {"exits":["bus_rsp_o.data","clkgen_en_o"]}
+    {"sub-block":["tx_fifo_inst.wdata_i"]}
+    {"influence":["bus_req_i.addr","bus_req_i.rw","bus_req_i.stb","clk_tick","fifo.tx_avail","fifo.tx_rdata","serial.bit_cnt","serial.busy","serial.state","serial.tick_cnt"]}
+PATH {"from":"bus_req_i.stb","source":"input"}
+    {"stores":["bus_rsp_o.ack"]}
+    {"exits":["bus_rsp_o.ack"]}
+PATH {"from":"clk_tick","source":"constant-valued"}
+    {"stores":["clk_tick2"]}
+    {"influence":["clk_cnt","clk_src","ctrl.clk_div","ctrl.clk_prsc","ctrl.enable"]}
+PATH {"from":"onewire_i","source":"input"}
+    {"stores":["bus_rsp_o.data","serial.presence","serial.sample","serial.sreg","serial.wire_in"]}
+    {"exits":["bus_rsp_o.data"]}
+    {"sub-block":["rx_fifo_inst.wdata_i"]}
+    {"influence":["bus_req_i.addr","bus_req_i.rw","bus_req_i.stb","clk_tick2","fifo.tx_avail","serial.busy","serial.state","serial.tick_cnt"]}
+PATH {"from":"serial.done","source":"constant-valued"}
+    {"sub-block":["rx_fifo_inst.we_i"]}
+    {"influence":["serial.bit_cnt","serial.state","serial.tick_cnt"]}
+CONTROL-ONLY {"from":"bus_req_i.addr","source":"input","gates or selects":["bus_rsp_o.data","ctrl.clear","ctrl.clk_div","ctrl.clk_prsc","ctrl.enable","fifo.rx_re","fifo.tx_we"]}
+CONTROL-ONLY {"from":"bus_req_i.rw","source":"input","gates or selects":["bus_rsp_o.data","ctrl.clear","ctrl.clk_div","ctrl.clk_prsc","ctrl.enable","fifo.rx_re","fifo.tx_we"]}
+CONTROL-ONLY {"from":"clk_cnt","source":"constant-valued","gates or selects":["clk_cnt","clk_tick"]}
+CONTROL-ONLY {"from":"serial.bit_cnt","source":"constant-valued","gates or selects":["serial.done","serial.state","serial.wire_lo"]}
+CONTROL-ONLY {"from":"serial.tick_cnt","source":"constant-valued","gates or selects":["serial.bit_cnt","serial.done","serial.presence","serial.sample","serial.sreg","serial.state","serial.tick_cnt","serial.wire_hi","serial.wire_lo"]}
+CONTROL-ONLY {"from":"serial.wire_hi","source":"constant-valued","gates or selects":["onewire_o"]}
+CONTROL-ONLY {"from":"serial.wire_lo","source":"constant-valued","gates or selects":["onewire_o"]}
+    {"no local use (no relationship, connection or constant driver)":["bus_req_i.amo","bus_req_i.amoop","bus_req_i.ben","bus_req_i.debug","bus_req_i.fence","bus_req_i.lock","bus_req_i.priv","bus_req_i.src"]}
+    {"not reached from an input or constant-valued element":["fifo.rx_avail","fifo.rx_clr","fifo.rx_free","fifo.rx_rdata","fifo.rx_re","fifo.tx_avail","fifo.tx_clr","fifo.tx_free","fifo.tx_rdata","fifo.tx_re","fifo.tx_we","serial.busy"]}
+
+Identify the primary security assets for 'neorv32_onewire' and return the JSON object per the contract.

@@ -1,0 +1,236 @@
+{
+  "module name": "neorv32_bus",
+  "concepts": [
+    {
+      "concept": "Arbitration/grant decision (which master is granted and when a request is driven)",
+      "kind": "decision",
+      "writers": "sel and stb are computed in the combinational arbiter_fsm process (default sel <= '0' and stb <= '0' at line 79-80, then assigned in state branches: sel <= '0' at line 87 (S_BUSY_A), sel <= '1' at line 99 (S_BUSY_B), sel <= '0' at line 114 / sel <= '1' at line 118 / sel <= '1' at line 124 / sel <= '0' at line 128 in the idle branch; stb <= a_req_i.stb at line 89, stb <= b_req_i.stb at line 101, stb <= '1' at lines 115/119/125/129 when a/b requests are granted); sel_q is clocked from sel at line 56 (sel_q <= sel); state is clocked from state_nxt at line 55 (state <= state_nxt) and state_nxt is set throughout arbiter_fsm (state_nxt <= state at line 77 and explicit assignments at lines 91,94,103,106,116,120,126,130).",
+      "observers": "The arbitration result is observable on the outgoing request bus and response routing: x_req_o fields gated by sel at lines 140-148 and x_req_o.data/ben selected at 150/154; the strobe is copied to the external bus at line 158 (x_req_o.stb <= stb); responses are returned conditionally to a_rsp_o / b_rsp_o via sel at lines 163-169 (a_rsp_o.data <= x_rsp_i.data at 163 and gated ack/err at 164-165; b_rsp_o.data <= x_rsp_i.data at 167 and gated ack/err at 168-169).",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 158,
+          "via": "x_req_o.stb",
+          "reason": "The selection and strobe (sel/stb) are presented on the external request bus (x_req_o.*, e.g. x_req_o.stb at line 158), so an external observer can learn which master is granted and when."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 114,
+          "via": "a_req_i.stb / b_req_i.stb (inputs)",
+          "reason": "sel and stb are assigned directly by the FSM from the masters' request inputs (e.g. the idle branch assigns sel/stb when (a_req_i.stb='1') or (b_req_i.stb='1') at line 114 and 118) with no protection preventing those inputs from changing the selection while a transfer is presented (x_req_o.stb at line 158)."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 90,
+          "via": "a_req_i.lock / b_req_i.lock (inputs)",
+          "reason": "The FSM observes and uses the masters' lock bits (e.g. in S_BUSY_A S_BUSY_B branches it tests locked(0)/locked(1) and checks a_req_i.lock/b_req_i.lock to leave busy; if a master holds its lock (checked at line 90/102) the grant can be held and other masters blocked."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 79,
+          "via": "arbiter_fsm",
+          "reason": "sel and stb are driven only by the arbiter_fsm combinational logic (default and state-branch assignments beginning at line 79) and there is no alternate debug/test override path in the RTL."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Master lock state (per-master lock bits that hold a granted transfer until the master releases the lock)",
+      "kind": "state",
+      "writers": "locked is reset and clocked in arbiter_sync (reset locked <= \"00\" at line 51; on clock locked <= locked_nxt at line 57). locked_nxt is computed in arbiter_fsm (default copy locked_nxt <= locked at line 78 and explicit derivation locked_nxt <= b_req_i.lock & a_req_i.lock at line 111 in the idle branch).",
+      "observers": "There is no direct output of the internal locked register, but its effect is observable externally through the driven request and response behavior: x_req_o.stb copies stb at line 158 (stb behavior depends on locked in busy states, e.g. stb <= a_req_i.stb at line 89 when locked(0)='1'), and a_rsp_o/b_rsp_o ack/err outputs are gated by sel and thus reflect the held transfers (lines 163-169 and gated ack/err at 164-165 and 168-169).",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 158,
+          "via": "x_req_o.stb",
+          "reason": "The locked bits affect which master continues to drive stb and thus the external request timing (x_req_o.stb at line 158), so external observers can infer locked state and the integrator may need to treat it as confidential."
+        },
+        "integrity": {
+          "answer": "yes-assumed",
+          "line": 111,
+          "via": "a_req_i.lock / b_req_i.lock (inputs)",
+          "reason": "locked is computed directly from the masters' lock inputs (locked_nxt <= b_req_i.lock & a_req_i.lock at line 111) and then clocked into locked (line 57), so external writers determine its value and its integrity depends on the trustworthiness of those inputs."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 90,
+          "via": "a_req_i.lock / b_req_i.lock (inputs)",
+          "reason": "The FSM checks the masters' lock inputs to keep a transfer active or to release it (e.g. S_BUSY_A checks a_req_i.lock and uses it to decide when to return to S_IDLE at line 90), so an external master holding its lock can prevent progress."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 111,
+          "via": "arbiter_fsm",
+          "reason": "The locked register is derived only from the masters' lock inputs inside arbiter_fsm (locked_nxt <= b_req_i.lock & a_req_i.lock at line 111) and latched in arbiter_sync, with no alternate override or debug bypass in the RTL."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Address decode result (which gateway port a request is routed to)",
+      "kind": "decision",
+      "writers": "port_sel bits are assigned by address-comparisons in concurrent statements: port_sel(0) <= '1' when A_EN and (req_i.addr(...) = A_BASE(...)) else '0' at line 356; port_sel(1) <= '1' when B_EN and (req_i.addr... = B_BASE...) at line 357; port_sel(2) <= '1' when C_EN and (req_i.addr... = C_BASE...) at line 358; port_sel(3) <= '1' when X_EN and (port_sel(2 downto 0) = \"000\") else '0' at line 361. port_sel is then used in the request process to gate port_req(i).stb <= port_sel(i) and req_i.stb (line 378).",
+      "observers": "The decode outcome is observable on the per-port request outputs and the routed requests: port_req(i) is driven into a_req_o/b_req_o/c_req_o/x_req_o (a_req_o <= port_req(0) etc at lines 366-369) and the per-port .stb values are masked by port_sel in the request process (port_req(i).stb <= port_sel(i) and req_i.stb at line 378).",
+      "answers": {
+        "confidentiality": {
+          "answer": "no",
+          "line": 356,
+          "via": "req_i.addr",
+          "reason": "port_sel is computed directly from the incoming request address (e.g. port_sel(0) <= '1' when req_i.addr matches A_BASE at line 356), and the requester already provides that address, so the selector reveals no additional secret by itself."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 378,
+          "via": "req_i.addr (input)",
+          "reason": "port_sel is derived from req_i.addr and is used immediately to gate port_req(i).stb (port_req(i).stb <= port_sel(i) and req_i.stb at line 378) with no protection preventing the address from changing during an asserted strobe, so the decode can be altered by external inputs while a request is presented."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 378,
+          "via": "req_i.addr (input)",
+          "reason": "If the decoded address does not select any enabled port (port_sel has no '1'), port_req(i).stb will remain deasserted because of the port_sel mask (line 378), preventing the request from being forwarded and blocking progress."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 356,
+          "via": "address-comparison concurrent assignments",
+          "reason": "port_sel bits are driven only by the explicit address-comparison assignments (lines 356-361) and there is no debug/test override in the RTL that substitutes a different decode."
+        }
+      },
+      "security objective": "Integrity"
+    },
+    {
+      "concept": "Aggregated device response (int_rsp) that the gateway presents to the system output",
+      "kind": "data",
+      "writers": "int_rsp is produced by the response process: tmp_v := rsp_terminate_c at line 387; for each enabled port tmp_v.data := tmp_v.data or port_rsp(i).data; tmp_v.ack := tmp_v.ack or port_rsp(i).ack; tmp_v.err := tmp_v.err or port_rsp(i).err at lines 390-392; then int_rsp <= tmp_v at line 395. port_rsp(i) are driven from the individual bus ports (port_rsp(0) <= a_rsp_i etc at lines 366-369).",
+      "observers": "The combined response is presented on the gateway output ports: rsp_o.data <= int_rsp.data at line 399; rsp_o.ack <= int_rsp.ack or keeper.err at line 400; rsp_o.err <= int_rsp.err or keeper.err at line 401, so external observers read int_rsp via rsp_o.*.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 399,
+          "via": "rsp_o.data",
+          "reason": "int_rsp (the OR-combined device responses) is copied to the external response outputs (rsp_o.data at line 399 and ack/err at 400-401), so external observers can learn its contents and an integrator may need to treat it as secret."
+        },
+        "integrity": {
+          "answer": "yes-assumed",
+          "line": 390,
+          "via": "port_rsp(i) (device response inputs)",
+          "reason": "int_rsp is derived by OR'ing the per-port responses (tmp_v updated from port_rsp(i) at lines 390-392) which are driven by the devices (inputs); the RTL provides no internal validation, so the integrity of int_rsp depends on the trustworthiness of those device inputs."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 400,
+          "via": "port_rsp(i) / device responses",
+          "reason": "The external output ack/err is gated by int_rsp.ack/err (and keeper.err) (rsp_o.ack <= int_rsp.ack or keeper.err at line 400), so devices can withhold ack or assert erroneous signals and thereby block or alter progress."
+        },
+        "undermined behavior": {
+          "answer": "yes-RTL",
+          "line": 400,
+          "via": "keeper.err",
+          "reason": "The keeper error signal is ORed into the final outputs (rsp_o.ack/rsp_o.err at lines 400-401), giving a second, internal path (keeper.err) that can force the externally observed ack/err independently of int_rsp."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Gateway request-tracking and timeout state (keeper.busy, keeper.cnt, keeper.err, keeper.halt, keeper.lock)",
+      "kind": "state",
+      "writers": "All keeper fields are initialized on reset (keeper.busy <= '0' at line 409; keeper.lock <= '0' at line 410; keeper.cnt <= (others => '0') at line 411; keeper.err <= '0' at line 412; keeper.halt <= '0' at line 413). On each clock rise the bus_monitor updates them: keeper.err <= '0' at line 415; keeper.halt <= port_sel(port_sel'left) at line 416; when keeper.busy='0' it captures a new request (keeper.cnt <= (others => '0') at line 418; keeper.busy <= req_i.stb at line 419; keeper.lock <= req_i.lock at line 420); when busy it increments keeper.cnt at line 422 and sets keeper.err <= '1' and clears busy on timeout when keeper.cnt saturates and halt='0' at lines 423-425; busy is also cleared when responses arrive or locks are released (keeper.busy <= '0' when int_rsp.ack='1' or (keeper.lock='1' and req_i.lock='0') at line 426-427).",
+      "observers": "keeper.err is folded into the external response outputs (rsp_o.ack/rsp_o.err at lines 400-401) and the timeout/ack behavior is externally observable via rsp_o and timing; keeper.halt is derived from port_sel (line 416) which is address-dependent and affects whether a timeout is suppressed, observable indirectly by timing and responses.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 400,
+          "via": "rsp_o.ack / rsp_o.err",
+          "reason": "keeper state (notably keeper.err) is ORed into the external response outputs (rsp_o.ack/rsp_o.err at lines 400-401), so observers can learn timeout/error state and the integrator may need to treat these internal fields as confidential."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 419,
+          "via": "req_i.stb / req_i.lock (inputs)",
+          "reason": "keeper.busy/lock/cnt are driven directly from the incoming request and lock inputs (keeper.busy <= req_i.stb at line 419; keeper.lock <= req_i.lock at line 420) and updated without additional protection while used by the timeout logic, so external inputs can alter keeper state during operation."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 422,
+          "via": "int_rsp.ack / req_i.lock",
+          "reason": "The monitor increments keeper.cnt and only clears busy on int_rsp.ack or when a master clears its lock (the increment and timeout at line 422 and release/clear tests at lines 426-427), so external devices or masters can prevent or delay completion and thus affect availability."
+        },
+        "undermined behavior": {
+          "answer": "yes-RTL",
+          "line": 416,
+          "via": "port_sel (derived from req_i.addr)",
+          "reason": "keeper.halt is driven from port_sel(port_sel'left) at line 416 and when halt='1' the timeout test is suppressed (the timeout assignment at line 423 checks keeper.halt), providing an alternate mode that bypasses timeout behavior."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "AMO RMW execution context and result (arbiter state / wdata/rdata/cmd and alu_res) that produce write-back data and core responses",
+      "kind": "state",
+      "writers": "The arbiter record is clocked in arbiter_sync (arbiter <= arbiter_nxt at line 763); arbiter_nxt is computed in the comb FSM (default arbiter_nxt <= arbiter at line 772 and specific transitions and field captures: when S_IDLE and an AMO request arrives arbiter_nxt.cmd <= core_req_i.amoop at line 778 and arbiter_nxt.wdata <= core_req_i.data at line 779 and arbiter_nxt.state <= S_READ_WAIT at line 780; in S_READ_WAIT arbiter_nxt.rdata <= sys_rsp_i.data at line 785; other state assignments at lines 787,792,796,800). alu_res is computed and clocked in amo_alu (reset alu_res <= (others => '0') at line 836; updated on rising edge by the ALU case using arbiter.cmd/wdata/rdata at lines 839-846).",
+      "observers": "The AMO write-back value and arbiter-driven outputs appear on the system request and core response ports: sys_req_o.data uses alu_res in write states (sys_req_o.data <= alu_res when arbiter.state = S_WRITE at line 813) and core_rsp_o.data is selected from sys_rsp_i.data or arbiter.rdata depending on arbiter.state (core_rsp_o.data at line 826), so the arbiter context and results are observable externally via sys_req_o.* and core_rsp_o.*.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 813,
+          "via": "sys_req_o.data",
+          "reason": "Computed AMO results (alu_res) are forwarded on the outgoing system request bus when issuing the write (sys_req_o.data <= alu_res in line 813), so external observers can learn the computed result."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 779,
+          "via": "core_req_i.data (input) and sys_rsp_i.data (input)",
+          "reason": "arbiter.wdata and arbiter.rdata are captured directly from core_req_i.data and sys_rsp_i.data (arbiter_nxt.wdata <= core_req_i.data at line 779; arbiter_nxt.rdata <= sys_rsp_i.data at line 785) and those external inputs can change the execution context that alu_res uses, with no RTL protection preventing changes during the sequence."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 786,
+          "via": "sys_rsp_i.ack (input)",
+          "reason": "The arbiter waits for sys_rsp_i.ack to advance from read/wait states (if sys_rsp_i.ack = '1' then arbiter_nxt.state <= S_EXECUTE at line 786), so an external responder that withholds ack can stall AMO progress."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 763,
+          "via": "arbiter_sync / arbiter_fsm",
+          "reason": "The AMO execution context (arbiter and alu_res) is driven only by the arbiter FSM and the AMO ALU processes (arbiter <= arbiter_nxt at line 763; alu_res updated in amo_alu), with no alternate debug/test override path present in the RTL."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Reservation/SC result and control (rvso and sc_fail) used to implement RVS semantics and to encode SC failure into core responses",
+      "kind": "decision",
+      "writers": "rvso is computed combinationally (rvso <= '1' when (core_req_i.amo = '1') and (core_req_i.amoop(3 downto 2) = \"10\") else '0' at line 935). sc_fail is a clocked register updated in sc_result (reset sc_fail <= '0' at line 955; on rising edge sc_fail <= rvso and core_req_i.stb and core_req_i.rw and (not state(1)) at line 957).",
+      "observers": "SC failure is encoded into the core response outputs: core_rsp_o.ack <= sys_rsp_i.ack or sc_fail at line 963 and core_rsp_o.data <= sys_rsp_i.data(31 downto 1) & (sys_rsp_i.data(0) or sc_fail) at line 964, so sc_fail/rvso effects are visible to the core via core_rsp_o.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 963,
+          "via": "core_rsp_o.ack / core_rsp_o.data",
+          "reason": "sc_fail (and rvso-influenced SC outcome) is reflected in the core response outputs (core_rsp_o.ack and core_rsp_o.data at lines 963-964), so external observers can learn the reservation/SC result."
+        },
+        "integrity": {
+          "answer": "yes-assumed",
+          "line": 957,
+          "via": "core_req_i.amo / core_req_i.amoop / core_req_i.stb (inputs)",
+          "reason": "rvso is derived from the core request AMO fields (line 935) and sc_fail is set based on rvso together with core_req_i signals (sc_fail assignment at line 957), so external requester inputs determine these values and their integrity depends on the trust in those inputs."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 963,
+          "via": "sys_rsp_i.ack (input)",
+          "reason": "core response ack is gated by sys_rsp_i.ack or sc_fail (core_rsp_o.ack <= sys_rsp_i.ack or sc_fail at line 963), so an external responder that withholds ack can affect RVS/SC completion and observable availability."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 935,
+          "via": "rvso combinational assignment",
+          "reason": "rvso and sc_fail are driven only by the combinational AMO fields (rvso at line 935) and the sc_result clocked update (line 957) with no alternate debug/test override path in the RTL."
+        }
+      },
+      "security objective": "Confidentiality"
+    }
+  ]
+}

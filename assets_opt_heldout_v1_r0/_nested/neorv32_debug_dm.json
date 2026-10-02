@@ -1,0 +1,187 @@
+{
+ "module name": "neorv32_debug_dm",
+ "module purpose": "neorv32_debug_dm decodes debugger DMI requests, optionally qualified by an authenticator sub-unit, into writes of debug control registers (dmcontrol halt/resume/reset-acknowledge/hart-select/ndmreset/dmactive, abstract command, abstractauto, program buffer, data0); it runs an abstract-command state machine that checks the command, builds a load/store instruction and triggers execution on the selected hart, tracks per-hart halted/resume/reset status from CPU bus writes, serves CPU bus reads of the code ROM, instruction image, data register and request flags, returns status on DMI reads, and drives halt_req_o and ndmrstn_o.",
+ "use-case flows": [
+  {"flow": "start", "value": "DMI request decode: write/read decision from the request op, qualified by the authentication result", "lines": [209, 210, 212, 213]},
+  {"flow": "lock", "value": "authentication result that blocks DMI register writes, status readback, the halt request and the ndmreset output when the authenticator is built in", "lines": [212, 213, 500, 505, 530, 555, 573, 584, 596, 604, 614, 745, 754]},
+  {"flow": "configure", "value": "dmcontrol fields: halt request, resume request, reset acknowledge, hart select and ndmreset on an authorized write; dmactive on any DMI write", "lines": [424, 425, 426, 427, 428, 429, 430, 432, 433]},
+  {"flow": "configure", "value": "abstractauto auto-execute enables for data0 and the two program buffer words", "lines": [443, 444, 445, 446]},
+  {"flow": "configure", "value": "program buffer words written by the debugger", "lines": [464, 465, 469, 470]},
+  {"flow": "start", "value": "abstract command written and started, directly or by auto-execute on a data0/progbuf access", "lines": [249, 250, 251, 252, 255, 256, 438, 439, 450, 451, 452, 453, 454, 635, 636, 637, 638, 639]},
+  {"flow": "operate", "value": "abstract-command execution: command check, load/store instruction generation, execute request to the selected hart, wait for acknowledgements; instruction image presented to the CPU", "lines": [245, 261, 262, 263, 264, 265, 266, 267, 279, 280, 281, 282, 283, 284, 286, 287, 288, 291, 293, 294, 298, 299, 300, 305, 306, 339, 508, 509, 510, 511, 692, 694]},
+  {"flow": "lock", "value": "busy and pending-error state that block writes of command, abstractauto, program buffer and data0 while a command runs or an error is pending", "lines": [251, 339, 438, 443, 464, 469, 474, 475, 476, 477, 478, 495]},
+  {"flow": "report", "value": "command error code from illegal command, illegal hart state, CPU exception and busy-access errors, cleared on request", "lines": [320, 321, 322, 323, 324, 325, 326, 327, 328, 330, 331, 459, 460, 474, 478, 626, 627, 628, 630]},
+  {"flow": "operate", "value": "halt request to the selected hart and non-debug-module reset to the system", "lines": [500, 505]},
+  {"flow": "report", "value": "per-hart halted, resume-request, resume-acknowledge and reset status updated from CPU acknowledgements and DMI requests", "lines": [355, 356, 357, 358, 359, 360, 364, 365, 366, 367, 368, 369, 373, 374, 375, 376, 377, 378, 382, 383, 384, 385, 501, 676, 678, 679, 680, 681, 682]},
+  {"flow": "operate", "value": "data0 register exchanged between the debugger (DMI) and the CPU (bus)", "lines": [495, 665, 666, 667, 668]},
+  {"flow": "start", "value": "CPU bus access decode: debug-mode strobe qualified read and full-word write", "lines": [708, 709, 710]},
+  {"flow": "read out", "value": "DMI readback of dmstatus, dmcontrol, abstractcs, abstractauto, data0, authdata and haltsum0; CPU bus readback of code ROM, instruction image, data0 and request flags", "lines": [524, 526, 534, 536, 538, 540, 542, 544, 549, 550, 562, 567, 569, 587, 589, 597, 598, 599, 605, 610, 615, 689, 690, 692, 694, 696, 699, 700]},
+  {"flow": "reset", "value": "control registers forced to constants while rstn_i is low; command controller cleared while dmactive is 0; hart status cleared while ndmreset is 1", "lines": [220, 221, 222, 223, 224, 225, 226, 227, 229, 230, 231, 232, 233, 234, 235, 236, 346, 347, 348, 349, 350, 355, 356, 364, 365, 373, 374, 382, 383, 397, 398, 399, 401, 402, 404, 405, 407, 408, 409, 410, 411, 412, 413, 518, 519, 520, 521, 522, 652, 654, 655, 656, 657, 658]}
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Debugger access authorization -- whether a DMI write or read is allowed to take effect, and the authentication exchange that decides it",
+   "security objective": "Integrity",
+   "reasoning": "`dmi_wren_auth <= dmi_wren when (not AUTHENTICATOR) or (auth.valid = '1') else '0';` (line 212) and the read twin at line 213 qualify every protected write (lines 425, 438, 443, 453, 459, 464, 469, 495) and the read-side error and auto-execute decisions (lines 626, 635); auth.valid also gates halt_req_o (line 500), ndmrstn_o (line 505) and DMI status readback (lines 530, 555, 604). Integrity: each authorized decision must equal the op decode AND the authentication result. Availability: the decision is produced in the cycle the request op and auth.valid hold. auth.valid enters this entity from neorv32_debug_auth_inst.valid_o (CONNECTS, occurrence 14, line 745) in AUTHENTICATOR builds and is constant '1' otherwise (line 754); it is tested in when/if conditions (lines 212, 530), so the sub-unit wiring exception holds, and it 'sets' the decision without any inference about the authenticator's internals. dmi_wren_auth and dmi_rden_auth compute the authorized decisions (GATED_BY auth.valid, occurrence 2). dmi_wren computes the write decode (GATED_BY dmi_req_i.op, line 209) and is itself the only qualifier of the dmactive write (line 432) and of the authenticator write strobe (line 748). auth.we and auth.re (lines 747-748, AUTHENTICATOR builds only) are computed here from dmi_wren/dmi_rden and the authdata address and delivered to the unsupplied authenticator (connections we_i/re_i, lines 738-739) together with wdata_i (line 740): the integrity of the strobes it receives is Established by the delivering lines. Not listed: dmi_rden is an operand of dmi_rden_auth and auth.re and otherwise only acknowledges (line 524); dmi_req_i and dmi_rsp_o are complete DMI transaction records (address, op, write data / read data, ack) and are excluded as transport; auth.rdata and auth.busy only receive sub-unit outputs and are read as data (lines 549-550, 610), so they are carriers. Confidentiality is not selected: the readback gate exists only when the AUTHENTICATOR generic is true, which is chosen outside this RTL.",
+   "related structural assets": [
+    {"asset rtl": "auth.valid", "entity": "neorv32_debug_dm", "realization": "sets", "occurrence": 14, "edge": {"type": "CONNECTS", "partner": "neorv32_debug_auth_inst.valid_o"}},
+    {"asset rtl": "dmi_wren_auth", "entity": "neorv32_debug_dm", "realization": "computes", "occurrence": 2, "edge": {"type": "GATED_BY", "partner": "auth.valid"}},
+    {"asset rtl": "dmi_rden_auth", "entity": "neorv32_debug_dm", "realization": "computes", "occurrence": 2, "edge": {"type": "GATED_BY", "partner": "auth.valid"}},
+    {"asset rtl": "dmi_wren", "entity": "neorv32_debug_dm", "realization": "computes", "occurrence": 2, "edge": {"type": "GATED_BY", "partner": "dmi_req_i.op"}},
+    {"asset rtl": "auth.we", "entity": "neorv32_debug_dm", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "dmi_wren"}},
+    {"asset rtl": "auth.re", "entity": "neorv32_debug_dm", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "dmi_rden"}}
+   ]
+  },
+  {
+   "concept": "Debug module active state -- the enable of the abstract-command controller and qualifier of the halt and ndmreset outputs",
+   "security objective": "Integrity",
+   "reasoning": "`dm_reg.dmcontrol_dmactive <= dmi_req_i.data(0);` (line 433) is written under `if (dmi_wren = '1')` (line 432), the only dmcontrol field not qualified by dmi_wren_auth. While it is 0 the controller is forced to CMD_IDLE and ldsw_progbuf, req_exe, pbuf_en, illegal flags and cmderr are cleared (lines 229-236, GATES records at occurrence 2); it is an operand of halt_req_o (line 500) and ndmrstn_o (line 505) and is wired to the authenticator enable_i (line 743). Integrity: controller state transitions and both outputs follow the stored value. Availability: held between writes, reset to 0 by rstn_i (line 399). It stores the state (CLOCKED_BY clk_i, occurrence 4, line 433). Its readback through dmi_rsp_o.data (line 569) is a transport field, not an exit.",
+   "related structural assets": [
+    {"asset rtl": "dm_reg.dmcontrol_dmactive", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Non-debug-module reset request -- the system reset the debugger asserts through the module",
+   "security objective": "Integrity",
+   "reasoning": "`dm_reg.dmcontrol_ndmreset <= dmi_req_i.data(1);` (line 430) on an authorized dmcontrol write (lines 424-425) is held and drives `ndmrstn_o <= '0' when (dm_reg.dmcontrol_ndmreset = '1') and (dm_reg.dmcontrol_dmactive = '1') and ((not AUTHENTICATOR) or (auth.valid = '1')) else '1';` (line 505); it also clears hart halted/resume status and sets hart_reset (lines 355-383). Integrity: the reset output must be asserted exactly under these conditions and the hart status must follow it. Availability: the request is held between writes and delivered combinationally on ndmrstn_o. dm_reg.dmcontrol_ndmreset stores it (CLOCKED_BY clk_i, occurrence 7; GATES ndmrstn_o at occurrence 8); ndmrstn_o is the exit port (GATED_BY dm_reg.dmcontrol_ndmreset, occurrence 2), whose consumer lies outside the supplied RTL.",
+   "related structural assets": [
+    {"asset rtl": "dm_reg.dmcontrol_ndmreset", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 7, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ndmrstn_o", "entity": "neorv32_debug_dm", "realization": "exit port", "occurrence": 2, "edge": {"type": "GATED_BY", "partner": "dm_reg.dmcontrol_ndmreset"}}
+   ]
+  },
+  {
+   "concept": "Hart halt request -- the request that stops the selected hart and enters debug mode",
+   "security objective": "Integrity",
+   "reasoning": "`dm_reg.halt_req <= dmi_req_i.data(31);` (line 426) on an authorized dmcontrol write is held and drives `halt_req_o(i) <= dm_reg.halt_req and dm_reg.hartsel_dec(i) and dm_reg.dmcontrol_dmactive when ((not AUTHENTICATOR) or (auth.valid = '1')) else '0';` (line 500). Integrity: the per-hart request must equal this conjunction. Availability: held between writes and driven continuously. dm_reg.halt_req stores it (CLOCKED_BY clk_i, occurrence 3; SOURCES halt_req_o at occurrence 4); halt_req_o is the exit port (DERIVES_FROM dm_reg.halt_req, occurrence 2), delivering to harts outside the supplied RTL.",
+   "related structural assets": [
+    {"asset rtl": "dm_reg.halt_req", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "halt_req_o", "entity": "neorv32_debug_dm", "realization": "exit port", "occurrence": 2, "edge": {"type": "DERIVES_FROM", "partner": "dm_reg.halt_req"}}
+   ]
+  },
+  {
+   "concept": "Hart selection -- which hart the halt, resume, reset-acknowledge and execute requests address, and whether the selection is valid",
+   "security objective": "Integrity",
+   "reasoning": "`dm_reg.hartsel <= dmi_req_i.data(18 downto 16);` (line 429) is held and decoded by `dm_reg.hartsel_dec(i) <= '1' when (dm_reg.hartsel(2) = '0') and (dm_reg.hartsel(1 downto 0) = ...) else '0';` (line 487). hartsel_dec routes the halt request (line 500), resume request (line 366), reset acknowledge (line 384) and execute request (line 298), and qualifies the command hart-state check (line 266) and status (lines 534-545). `dm_reg.hartsel_inv <= '0' when (unsigned(dm_reg.hartsel) < NUM_HARTS) else '1';` (line 489) computes the invalid-selection status reported at lines 538-539. Integrity: requests and status must address exactly the encoded hart. hartsel stores (CLOCKED_BY clk_i, occurrence 3; GATES dm_reg.hartsel_dec); hartsel_dec computes the decoded selection (GATED_BY dm_reg.hartsel, occurrence 9); hartsel_inv computes the validity result (GATED_BY dm_reg.hartsel, occurrence 2). dci.req_exe copies hartsel_dec only in CMD_TRIGGER and is listed under the execute handshake.",
+   "related structural assets": [
+    {"asset rtl": "dm_reg.hartsel", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "dm_reg.hartsel_dec", "entity": "neorv32_debug_dm", "realization": "computes", "occurrence": 9, "edge": {"type": "GATED_BY", "partner": "dm_reg.hartsel"}},
+    {"asset rtl": "dm_reg.hartsel_inv", "entity": "neorv32_debug_dm", "realization": "computes", "occurrence": 2, "edge": {"type": "GATED_BY", "partner": "dm_reg.hartsel"}}
+   ]
+  },
+  {
+   "concept": "Hart resume handshake -- the pending resume request per hart and its acknowledgement",
+   "security objective": "Integrity",
+   "reasoning": "A resume pulse `dm_reg.req_res <= dmi_req_i.data(30);` (line 427, cleared each cycle at line 417) sets `dm_ctrl.hart_resume_req(i) <= '1'` for the selected hart (lines 366-367), which is cleared by the CPU acknowledgement dci.ack_res (line 369) or ndmreset (line 365). dci.ack_res is captured from a CPU bus write to the status-register area (lines 676-680) and sets hart_resume_ack (line 376) and clears hart_halted (line 360); hart_resume_ack is reported in dmstatus (lines 536-537). Integrity: the request presented to the hart and the reported acknowledgement must follow these set/clear rules. Availability: the request is held until acknowledged. Roles: req_res stores (CLOCKED_BY, occurrence 6; GATES hart_resume_req); hart_resume_req stores (CLOCKED_BY, occurrence 4): the map records only SOURCES dci.req_res, but the RTL `dci.req_res(i) <= dm_ctrl.hart_resume_req(i);` (line 501, all indices) is a plain copy that is read into bus_rsp_o.data (line 699), so the register's value is what the hart reads and dci.req_res is not listed separately; dci.ack_res stores (CLOCKED_BY, occurrence 7; GATES hart state); hart_resume_ack stores (CLOCKED_BY, occurrence 4; SOURCES dmi_rsp_o.data).",
+   "related structural assets": [
+    {"asset rtl": "dm_reg.req_res", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 6, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "dm_ctrl.hart_resume_req", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "dci.ack_res", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 7, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "dm_ctrl.hart_resume_ack", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Hart reset status -- whether a hart has been reset by ndmreset and not yet acknowledged",
+   "security objective": "Integrity",
+   "reasoning": "`dm_ctrl.hart_reset(i) <= '1'` while ndmreset is set (line 383) and is cleared by `elsif (dm_reg.reset_ack = '1') and (dm_reg.hartsel_dec(i) = '1')` (lines 384-385), where reset_ack is a pulse written from dmi_req_i.data(28) on an authorized dmcontrol write (line 428, cleared at line 418). The status is reported in dmstatus (lines 534-535). Integrity: the reported reset state must follow these rules. dm_ctrl.hart_reset stores (CLOCKED_BY, occurrence 3; SOURCES dmi_rsp_o.data); dm_reg.reset_ack stores (CLOCKED_BY, occurrence 5; GATES dm_ctrl.hart_reset).",
+   "related structural assets": [
+    {"asset rtl": "dm_ctrl.hart_reset", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "dm_reg.reset_ack", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Hart halted status -- whether each hart is halted in debug mode, which gates abstract-command execution",
+   "security objective": "Integrity",
+   "reasoning": "dci.ack_hlt is captured from a CPU bus write to the status-register area (lines 676-679) and sets `dm_ctrl.hart_halted(i) <= '1'` (line 358); ack_res clears it (line 360) and ndmreset clears it (line 356). The command check admits a command only if `or_reduce_f(dm_ctrl.hart_halted and dm_reg.hartsel_dec) = '1'` (line 266), otherwise illegal_state is raised (line 269); ack_hlt also ends CMD_BUSY (line 305). The status is reported in dmstatus and haltsum0 (lines 542-545, 615). Integrity: command execution and reports must follow the actual halt acknowledgements. dm_ctrl.hart_halted stores (CLOCKED_BY, occurrence 5; GATES dm_ctrl.state); dci.ack_hlt stores (CLOCKED_BY, occurrence 6; GATES dm_ctrl.state). cpu_rsp_dec, which picks the acknowledging hart, is constant all-ones in the default single-hart build (line 715) and only routes the acknowledgement in multi-hart builds (line 723), so it is not listed.",
+   "related structural assets": [
+    {"asset rtl": "dm_ctrl.hart_halted", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "dci.ack_hlt", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 6, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Abstract command -- the debugger command that selects the register transfer the hart executes",
+   "security objective": "Integrity",
+   "reasoning": "`dm_reg.command <= dmi_req_i.data;` (line 439) is accepted only when `(dmi_req_i.addr = addr_command_c) and (dmi_wren_auth = '1') and (dm_ctrl.busy = '0') and (dm_ctrl.cmderr = 000)` (line 438). Its fields decide command legality (lines 261-265), whether a load or store is generated and the register number inserted (lines 279-288), and whether the program buffer runs (line 293). Integrity: the generated instruction and the legality decision must follow the stored command. Availability: held between accepted writes. It stores the command (CLOCKED_BY, occurrence 14; GATES dm_ctrl.state and dm_ctrl.ldsw_progbuf).",
+   "related structural assets": [
+    {"asset rtl": "dm_reg.command", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 14, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Abstract-command controller state -- the sequencing of check, prepare, trigger, busy and error phases",
+   "security objective": "Integrity",
+   "reasoning": "`case dm_ctrl.state is` (line 245) sequences CMD_IDLE to CMD_CHECK on a command write or auto-execute (lines 249-256), to CMD_PREPARE or CMD_ERROR after the legality and halted checks (lines 261-274), to CMD_TRIGGER (line 294), to CMD_BUSY on execute acknowledge (lines 299-300) and back to CMD_IDLE on halt acknowledge (lines 305-306). Each phase selects which outputs are produced (SELECTS dci.req_exe, dm_ctrl.ldsw_progbuf, dm_ctrl.pbuf_en, illegal flags at occurrence 4). Integrity: execute requests and instruction generation happen only in the implemented order. Availability: under dmactive the controller returns to CMD_IDLE from CMD_ERROR and others (lines 311, 315). It stores the state (CLOCKED_BY clk_i, occurrence 5, line 252).",
+   "related structural assets": [
+    {"asset rtl": "dm_ctrl.state", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Command busy lock -- the decision that a command is in progress, which freezes command, abstractauto, program buffer and data0",
+   "security objective": "Integrity",
+   "reasoning": "`dm_ctrl.busy <= '0' when (dm_ctrl.state = CMD_IDLE) else '1';` (line 339) blocks writes of command (line 438), abstractauto (line 443), progbuf (lines 464, 469) and data0 (line 495) while a command runs, and turns such writes and data/progbuf reads into access errors (lines 474-478, 626-628); it is reported in abstractcs (line 587). Integrity: the lock must hold exactly while the controller is not idle, so the program and data the hart is using cannot change underneath it. It computes the decision (GATED_BY dm_ctrl.state, occurrence 2).",
+   "related structural assets": [
+    {"asset rtl": "dm_ctrl.busy", "entity": "neorv32_debug_dm", "realization": "computes", "occurrence": 2, "edge": {"type": "GATED_BY", "partner": "dm_ctrl.state"}}
+   ]
+  },
+  {
+   "concept": "Execute handshake -- the request that makes the selected hart run the instruction image, and its acknowledgement",
+   "security objective": "Integrity",
+   "reasoning": "In CMD_TRIGGER `dci.req_exe <= dm_reg.hartsel_dec;` (line 298), cleared every other cycle (line 240) and while dmactive is 0 (line 232); the hart reads it through `bus_rsp_o.data(i*8+1) <= dci.req_exe(i);` (line 700). dci.ack_exe is captured from a CPU bus write (lines 676, 681) and moves the controller to CMD_BUSY (lines 299-300). Integrity: only the selected hart is requested, only in the trigger phase, and the controller advances only on its acknowledgement. dci.req_exe stores (CLOCKED_BY, occurrence 5; SOURCES bus_rsp_o.data, an output field); dci.ack_exe stores (CLOCKED_BY, occurrence 5; GATES dm_ctrl.state).",
+   "related structural assets": [
+    {"asset rtl": "dci.req_exe", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "dci.ack_exe", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Command error status -- the error code of the last abstract command and the error events that set or clear it",
+   "security objective": "Integrity",
+   "reasoning": "While no error is pending, cmderr is set by illegal_state (line 322), the CPU exception report dci.ack_exc (line 324), illegal_cmd (line 326) or a busy access error (lines 327-328), and is cleared only by clr_acc_err (lines 330-331). A pending error blocks new command writes (line 438) and command start (line 251), and is reported in abstractcs (line 589). illegal_state and illegal_cmd are the hart-state and legality decisions of CMD_CHECK (lines 269, 273); dci.ack_exc is captured from a CPU bus write (line 682); wr_acc_err and rd_acc_err are raised by accesses while busy (lines 478, 628); clr_acc_err by an authorized abstractcs write with bits 10-8 set (lines 459-460). Integrity: the error code and the lock it imposes must follow these events. Each is a register: cmderr stores (CLOCKED_BY, occurrence 6; GATES dm_reg.command), and each error flag stores its decision (CLOCKED_BY at the cited occurrence; GATES dm_ctrl.cmderr).",
+   "related structural assets": [
+    {"asset rtl": "dm_ctrl.cmderr", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 6, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "dm_ctrl.illegal_cmd", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "dm_ctrl.illegal_state", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "dci.ack_exc", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "dm_reg.wr_acc_err", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "dm_reg.rd_acc_err", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "dm_reg.clr_acc_err", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Debug instruction image -- the program buffer and generated load/store instruction the hart fetches and executes in debug mode",
+   "security objective": "Integrity",
+   "reasoning": "The debugger writes `dm_reg.progbuf(0) <= dmi_req_i.data;` (line 465, and line 470 for word 1) when not busy. In CMD_PREPARE the controller builds `dm_ctrl.ldsw_progbuf` from instr_sw_c/instr_lw_c, the data address and dm_reg.command(4 downto 0) (lines 279-291) and sets `dm_ctrl.pbuf_en <= dm_reg.command(18);` (line 293). The image is `cpu_progbuf(0) <= dm_ctrl.ldsw_progbuf;`, `cpu_progbuf(1) <= instr_nop_c when (dm_ctrl.pbuf_en = '0') else dm_reg.progbuf(0);`, the same for word 2, and `cpu_progbuf(3) <= instr_ebreak_c;` (lines 508-511), returned to the CPU fetch by `bus_rsp_o.data <= cpu_progbuf(...)` (line 694). Integrity: the instructions the hart executes must be exactly the stored program words and the generated transfer instruction. progbuf stores a configure-flow setting read by the cpu_progbuf selection (CLOCKED_BY, occurrence 3; SOURCES cpu_progbuf); pbuf_en stores the decision whether the program buffer runs (CLOCKED_BY, occurrence 4; GATES cpu_progbuf); ldsw_progbuf computes the transfer instruction (DERIVES_FROM dm_reg.command, occurrence 6, line 283); its register only feeds cpu_progbuf, so it is listed as computes. cpu_progbuf computes the image (DERIVES_FROM dm_reg.progbuf, occurrence 3): word 0 copies ldsw_progbuf, but words 1-2 are selections and word 3 a constant, so it is not only a copy.",
+   "related structural assets": [
+    {"asset rtl": "dm_reg.progbuf", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "dm_ctrl.pbuf_en", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "dm_ctrl.ldsw_progbuf", "entity": "neorv32_debug_dm", "realization": "computes", "occurrence": 6, "edge": {"type": "DERIVES_FROM", "partner": "dm_reg.command"}},
+    {"asset rtl": "cpu_progbuf", "entity": "neorv32_debug_dm", "realization": "computes", "occurrence": 3, "edge": {"type": "DERIVES_FROM", "partner": "dm_reg.progbuf"}}
+   ]
+  },
+  {
+   "concept": "Debug data register (data0) -- the value exchanged between debugger and hart by abstract register transfers",
+   "security objective": "Integrity",
+   "reasoning": "`dci.data_reg <= dmi_req_i.data;` when `dci.data_reg_we = '1'` (lines 665-666), where data_reg_we requires an authorized, non-busy data0 write (line 495), else `dci.data_reg <= bus_req_i.data;` on a CPU write to the data area (lines 667-668). It is returned to the debugger (line 605, gated by auth.valid at line 604) and to the CPU (line 696). Integrity: the value each side reads must be the last write the arbitration admitted. Availability: held between writes. dci.data_reg stores it (CLOCKED_BY, occurrence 4; CARRIES dmi_rsp_o.data and bus_rsp_o.data). dci.data_reg_we only gates the store and is not listed. Confidentiality is not selected: the DMI readback gate depends on the AUTHENTICATOR generic chosen outside this RTL.",
+   "related structural assets": [
+    {"asset rtl": "dci.data_reg", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "CPU debug-memory access eligibility -- whether a CPU bus access is a debug-mode read or a full-word write that this module serves",
+   "security objective": "Integrity",
+   "reasoning": "`accen <= bus_req_i.debug and bus_req_i.stb;` (line 708), `rden <= accen and (not bus_req_i.rw);` (line 709) and `wren <= accen and (bus_req_i.rw) and and_reduce_f(bus_req_i.ben);` (line 710). wren decides whether a CPU write lands in data0 (line 667) or in the halt/resume/execute/exception acknowledgements (line 676); rden decides whether the code ROM, instruction image, data0 or request flags are returned (line 689). Integrity: these decisions must obey the debug-mode, strobe, direction and byte-enable predicates. wren computes (GATED_BY accen, occurrence 4); rden computes (GATED_BY accen, occurrence 3). accen is an operand of both decisions and otherwise only acknowledges (line 661), so it is not listed; bus_req_i and bus_rsp_o are transaction records and are excluded as transport.",
+   "related structural assets": [
+    {"asset rtl": "wren", "entity": "neorv32_debug_dm", "realization": "computes", "occurrence": 4, "edge": {"type": "GATED_BY", "partner": "accen"}},
+    {"asset rtl": "rden", "entity": "neorv32_debug_dm", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "accen"}}
+   ]
+  },
+  {
+   "concept": "Auto-execute configuration and triggers -- the enables and access events that restart the abstract command without a command write",
+   "security objective": "Integrity",
+   "reasoning": "`dm_reg.abstractauto_autoexecdata <= dmi_req_i.data(0);` and the two autoexecprogbuf bits (lines 443-446) are written on an authorized, non-busy abstractauto write. They qualify `dm_reg.autoexec_wr <= '1'` on an authorized data0/progbuf write (lines 450-454) and `dm_reg.autoexec_rd <= '1'` on an authorized data0/progbuf read (lines 635-639), and either trigger moves the idle controller to CMD_CHECK (lines 255-256). Integrity: a command restarts only on accesses that the stored enables select. abstractauto_autoexecdata and abstractauto_autoexecprogbuf store the setting (CLOCKED_BY, occurrence 3; GATES dm_reg.autoexec_wr); autoexec_wr and autoexec_rd store the trigger decision (CLOCKED_BY at occurrences 5 and 4; GATES dm_ctrl.state).",
+   "related structural assets": [
+    {"asset rtl": "dm_reg.abstractauto_autoexecdata", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "dm_reg.abstractauto_autoexecprogbuf", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "dm_reg.autoexec_wr", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "dm_reg.autoexec_rd", "entity": "neorv32_debug_dm", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  }
+ ]
+}

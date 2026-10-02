@@ -1,0 +1,165 @@
+{
+  "module name": "neorv32_cpu_cp_crypto",
+  "conceptual assets": [
+    {
+      "concept": "Decoded crypto command selection and validity (which crypto operation is requested and whether it is considered valid)",
+      "security objective": "Integrity",
+      "reasoning": "Concurrent assignments compute the cmd bits from ctrl_i fields and EN_Z* generics (e.g. cmd(...) <= '1' when EN_ZBKX and ctrl_i.ir_opcode(5)= '1' and appropriate funct fields else '0'), and cmd_valid is computed as cmd_valid <= '1' when ctrl_i.alu_cp_alu = '1' and or_reduce_f(cmd) = '1' else '0'. The control process uses cmd_valid and cmd bits to latch operands and to decide S_IDLE->S_BUSY transitions (control process checks cmd(cmd_aesenc_c), cmd(cmd_aesdec_c), cmd(cmd_sm3_c), cmd(cmd_sm4_c)). These RTL relations establish that integrity of the decoded command and cmd_valid is required for correct operation selection and control flow.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "cmd",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "cmd_valid",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Latched instruction operands and fields (the stored rs1, rs2 operands and instruction fields funct3/funct12 used by crypto operations)",
+      "security objective": "Integrity",
+      "reasoning": "The control process explicitly latches operands and fields on a valid command: on rising_edge(clk_i) when cmd_valid = '1' it executes rs1 <= rs1_i; rs2 <= rs2_i; funct3 <= ctrl_i.ir_funct3; funct12 <= ctrl_i.ir_funct12. Those stored signals are subsequently consumed by multiple computation flows (xperm generation, sha_core, block_cyphers, result selection). The RTL therefore establishes that integrity of the latched operands and instruction fields is required for correct computed results.",
+      "related structural assets": [
+        {
+          "asset rtl": "rs1",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rs2",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "funct3",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "funct12",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rs1_i",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "rs2_i",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Execution state and completion indicator (the state machine state and done/valid signaling that control progress and result availability)",
+      "security objective": "Integrity",
+      "reasoning": "The control process implements a state machine (signal state) and drives done ('0' or '1') during transitions (reset initializes state and done; S_IDLE uses cmd bits to set state or done; S_BUSY->S_DONE transitions are explicit). The module exposes completion as valid_o <= done, and the result process only updates res_o when done = '1'. These RTL relations establish that integrity of state and done (and thus valid_o) is required for correct operation progress and correct result availability.",
+      "related structural assets": [
+        {
+          "asset rtl": "state",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "done",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "valid_o",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Computed crypto result delivered at the module interface (the res_o output selected from internal result signals)",
+      "security objective": "Integrity",
+      "reasoning": "The clocked result process updates res_o only when done = '1' and selects which internal result to present via out_sel: when out_sel indicates xperm it assigns res_o <= xperm_res; when out_sel selects block ciphers it assigns res_o <= blk_res; otherwise it selects sha_res or sm3_res depending on funct/control fields. out_sel is computed from funct12. The RTL therefore establishes that integrity of res_o and of the selected internal result signals (xperm_res, blk_res, sha_res, sm3_res) is required for correct output.",
+      "related structural assets": [
+        {
+          "asset rtl": "res_o",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "out_sel",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "xperm_res",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "blk_res",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "sha_res",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "sm3_res",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Block-cipher byte selection, rotation input and derived block result (the rs2_sel index, rol_in, rol_res and blk_res chain used by block-cipher outputs)",
+      "security objective": "Integrity",
+      "reasoning": "The block_cyphers logic computes rs2_sel from funct12 and rs2 (with-select on funct12), chooses rol_in from aes.mix2 or sm4.rnd depending on generics and funct12, computes rol_res by rotating rol_in (select-based concatenation), and then computes blk_res <= rs1 xor rol_res. blk_res is then used (when selected) to drive res_o. These explicit RTL computations establish that integrity of the rs2_sel / rol_in / rol_res / blk_res chain (and the stored sm4.rnd and computed aes.mix2 that feed it) is required for correct block-cipher results.",
+      "related structural assets": [
+        {
+          "asset rtl": "rs2_sel",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "rol_in",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "rol_res",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "blk_res",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "aes.mix2",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "sm4.rnd",
+          "entity": "neorv32_cpu_cp_crypto",
+          "realization": "stores"
+        }
+      ]
+    }
+  ]
+}

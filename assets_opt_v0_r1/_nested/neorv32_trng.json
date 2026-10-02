@@ -1,0 +1,114 @@
+{
+ "module name": "neorv32_trng",
+ "module purpose": "neorv32_trng decodes bus accesses into a control write (enable bit, pool-clear request) and reads of a status word or of a random byte; it instantiates the neoTRNG generator, whose neoTRNG_cell oscillator cells feed a combine, debias and sampling chain that emits a byte with a valid strobe, and it buffers those bytes in a neorv32_fifo pool that a data read pops.",
+ "use-case flows": [
+  {
+   "flow": "configure",
+   "value": "enable bit and one-cycle pool-clear request taken from the bus write data (bits ctrl_en_c and ctrl_fifo_clr_c) on a strobed write",
+   "lines": [101, 103, 104, 105, 106]
+  },
+  {
+   "flow": "start",
+   "value": "the stored enable delivered to the generator, registered as sample_en, and passed down the chain of cells, each staging it through its shift register into its oscillator stages",
+   "lines": [137, 304, 311, 312, 354, 416, 421, 435]
+  },
+  {
+   "flow": "operate",
+   "value": "oscillator bits synchronized per cell, XOR-combined, paired and debiased, folded into an 8-bit sample byte, emitted with a valid strobe when the bit counter's top bit sets, and written into the random pool",
+   "lines": [138, 139, 161, 162, 320, 322, 334, 336, 341, 342, 355, 358, 359, 360, 366, 367, 435, 440, 449, 457, 458, 470, 475]
+  },
+  {
+   "flow": "report",
+   "value": "status word on a read with addr(2) = '0': enable, pool size, simulation mode and random-data availability",
+   "lines": [108, 109, 110, 111, 112]
+  },
+  {
+   "flow": "read out",
+   "value": "head byte of the random pool on a read with addr(2) = '1' (zero when the pool reports no data), with the matching pop request",
+   "lines": [114, 115, 117, 165, 166, 171]
+  },
+  {
+   "flow": "reset",
+   "value": "rstn_i clears enable, the clear request and the response; generator and cell registers cleared; sampling state cleared while disabled or after a byte; pool cleared while enable = '0' or on a clear request",
+   "lines": [92, 93, 94, 95, 157, 170, 330, 331, 332, 349, 350, 351, 352, 355, 356, 357, 413, 414, 467, 468]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Entropy source enable -- whether the random generator runs, as written by the bus, held in the generator and staged into each oscillator cell",
+   "security objective": "Integrity",
+   "reasoning": "The configure flow stores it: `enable <= bus_req_i.data(ctrl_en_c);` under a strobed write (lines 103-105; CLOCKED_BY clk_i at occurrence 3); it is read back (line 109) and delivered to the generator (line 137). neoTRNG registers it with `sample_en <= enable_i;` (line 354; enable_i CARRIES sample_en at occurrence 2); sample_en clears the bit counter and byte while '0' (lines 355-357) and drives the first cell (line 311). Each neoTRNG_cell stores en_i in sreg (`sreg <= sreg(sreg'left-1 downto 0) & en_i;`, line 416), whose bits release the oscillator stages (line 435: latch forced to '0' when en_i = '0', held while sreg(i) = '0'), and passes the staged enable on through en_o (line 421) to the next cell (line 312). enable = '0' also forces the pool clear (line 170). Integrity is Established: generation, sampling and pool retention must follow the stored enable (lines 170, 354-357, 435), and the generator receives exactly that value (line 137). Availability is also Established under these conditions: random bytes are produced only while the enable is held '1', and it is held between writes (line 105). bus_req_i is a transport record, so its data field is not a setting point; enable_i and en_i are read to store (CARRIES sample_en, SOURCES sreg), so they set it. cell_en_in only copies sample_en and cell_en_out into the cells (lines 311-312), and cell_en_out only gates debias_state (line 336) and forwards: neither is reported. Confidentiality is not established: no line restricts the readback (line 109).",
+   "related structural assets": [
+    {"asset rtl": "enable", "entity": "neorv32_trng", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "enable_i", "entity": "neoTRNG", "realization": "sets", "occurrence": 2, "edge": {"type": "CARRIES", "partner": "sample_en"}},
+    {"asset rtl": "sample_en", "entity": "neoTRNG", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "en_i", "entity": "neoTRNG_cell", "realization": "sets", "occurrence": 2, "edge": {"type": "SOURCES", "partner": "sreg"}},
+    {"asset rtl": "sreg", "entity": "neoTRNG_cell", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "en_o", "entity": "neoTRNG_cell", "realization": "exit port", "occurrence": 2, "edge": {"type": "DERIVES_FROM", "partner": "sreg"}}
+   ]
+  },
+  {
+   "concept": "Random pool flush -- the bus-requested clear and the clear decision that empties the buffered random bytes",
+   "security objective": "Integrity",
+   "reasoning": "`fifo_clr <= bus_req_i.data(ctrl_fifo_clr_c);` under a strobed write (line 106; CLOCKED_BY clk_i at occurrence 4) stores a one-cycle request that is cleared again on every edge (line 101). `fifo.clear <= '1' when (enable = '0') or (fifo_clr = '1') else '0';` (line 170; GATED_BY enable, fifo_clr at occurrence 3) computes the decision and delivers it to the pool's clear_i (line 157). The pool is the neorv32_fifo instance, which is not supplied, so Integrity is Established from the delivering lines: the pool receives clear exactly when the enable is '0' or a clear was requested (lines 157, 170). Availability of the buffered bytes that the read-out flow returns (line 117) also depends on the clear holding only under that condition. fifo.clear is a sub-unit input field computed here from a when condition, so the sub-unit wiring exception holds. enable is an operand of this decision and is reported under its own concept.",
+   "related structural assets": [
+    {"asset rtl": "fifo_clr", "entity": "neorv32_trng", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "fifo.clear", "entity": "neorv32_trng", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "fifo_clr"}}
+   ]
+  },
+  {
+   "concept": "Random-byte consume decision -- whether a bus access pops the head byte of the random pool",
+   "security objective": "Integrity",
+   "reasoning": "`fifo.re <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(2) = '1') else '0';` (line 171; GATED_BY at occurrence 3) computes the pop request delivered to the pool's re_i (line 165); the same access condition returns the pool's head byte (lines 103, 104, 108, 117). Integrity is Established: the pool must be popped exactly on data-register reads, so that the byte returned at line 117 is the byte removed, and the pool, which is not supplied, receives exactly this decision (line 165). fifo.re is computed here from a when condition, so the sub-unit wiring exception holds. Its operands are fields of the transport record bus_req_i and are not reported.",
+   "related structural assets": [
+    {"asset rtl": "fifo.re", "entity": "neorv32_trng", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "bus_req_i.stb"}}
+   ]
+  },
+  {
+   "concept": "Random-data availability -- the pool's report that a random byte is ready, used to qualify data reads and reported in the status word",
+   "security objective": "Integrity",
+   "reasoning": "fifo.avail is driven by the pool's avail_o (line 167; CONNECTS at occurrence 4) and this entity tests it: `if (fifo.avail = '0') then` returns zero, otherwise `bus_rsp_o.data(...) <= fifo.rdata;` (lines 114-117); it is also reported as status bit ctrl_avail_c (line 112). Integrity is Established: read data is released only when the pool reports data, and the reported status must equal the pool's output (lines 112, 114-117). It is tested in an if condition here, so the sub-unit wiring exception holds; it is the setting point where the pool's decision enters this entity. How neorv32_fifo computes it is not supplied and is not inferred. fifo.half and fifo.free are only connected (lines 158, 163) and have no local use.",
+   "related structural assets": [
+    {"asset rtl": "fifo.avail", "entity": "neorv32_trng", "realization": "sets", "occurrence": 4, "edge": {"type": "CONNECTS", "partner": "rnd_pool_fifo_inst.avail_o"}}
+   ]
+  },
+  {
+   "concept": "Raw entropy bits -- the free-running oscillator value of each cell, its synchronized sample, and the combined bit pair awaiting debiasing",
+   "security objective": "Integrity",
+   "reasoning": "In neoTRNG_cell each stage `latch(i) <= '0' when (en_i = '0') else latch(i) when (sreg(i) = '0') else inv_out(i);` (line 435) closes a loop through inverters (lines 440, 457-458); when the generic SIM_MODE holds, the inverters are clocked registers instead (line 449, configuration SIM_MODE), so the loop is not free-running in that build. `sync <= sync(0) & latch(latch'left);` (line 470) samples the last stage and `rnd_o <= sync(1);` (line 475) delivers it. neoTRNG XOR-combines the cell outputs (lines 320-322), and `debias_sreg <= debias_sreg(0) & cell_sum;` (line 334) holds the last two combined bits. Integrity is Established for the operate flow: the acceptance decision (line 341) and the byte (line 360) are defined from exactly these bits, so they must be the oscillator samples these lines define. latch computes (DERIVES_FROM inv_out, line 435); sync and debias_sreg store (CLOCKED_BY clk_i); rnd_o is the exit of neoTRNG_cell (DERIVES_FROM sync). inv_in and inv_out are links of the same loop, cell_rnd only carries the cells' outputs into the XOR (line 320) and cell_sum is the XOR term stored in debias_sreg: none is reported. Confidentiality is not established: no line restricts observation of these values.",
+   "related structural assets": [
+    {"asset rtl": "latch", "entity": "neoTRNG_cell", "realization": "computes", "occurrence": 2, "edge": {"type": "DERIVES_FROM", "partner": "inv_out"}},
+    {"asset rtl": "sync", "entity": "neoTRNG_cell", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "rnd_o", "entity": "neoTRNG_cell", "realization": "exit port", "occurrence": 2, "edge": {"type": "DERIVES_FROM", "partner": "sync"}},
+    {"asset rtl": "debias_sreg", "entity": "neoTRNG", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Debiased-bit acceptance decision -- whether the current combined bit pair yields an output bit",
+   "security objective": "Integrity",
+   "reasoning": "`debias_state <= (not debias_state) and cell_en_out(cell_en_out'left);` (line 336; CLOCKED_BY clk_i at occurrence 3) alternates the pair phase once the last cell is enabled, and `debias_valid <= debias_state and (debias_sreg(1) xor debias_sreg(0));` (line 341; GATED_BY debias_state at occurrence 2) accepts a pair only on that phase and only when its two bits differ. debias_valid gates the counter and the byte update (lines 358-360). Integrity is Established: a bit enters the byte only when this decision holds (line 358). Availability is also Established under the implemented conditions: output bits are produced only when accepted pairs occur while the last cell is enabled (lines 336, 341). debias_state stores the pair phase and debias_valid computes the decision; debias_data only forwards debias_sreg(0) (line 342) and is not reported.",
+   "related structural assets": [
+    {"asset rtl": "debias_state", "entity": "neoTRNG", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "debias_valid", "entity": "neoTRNG", "realization": "computes", "occurrence": 2, "edge": {"type": "GATED_BY", "partner": "debias_state"}}
+   ]
+  },
+  {
+   "concept": "Generated random byte -- the byte assembled from accepted bits and delivered to the random pool",
+   "security objective": "Integrity",
+   "reasoning": "`sample_sreg <= sample_sreg(6 downto 0) & (sample_sreg(7) xor debias_data);` (line 360; CLOCKED_BY clk_i at occurrence 4) folds each accepted bit into the byte, which is cleared while disabled or after completion (lines 355-357) and leaves neoTRNG through `data_o <= sample_sreg;` (line 366; COPIES sample_sreg at occurrence 2). neorv32_trng passes it unchanged to the pool on fifo.wdata (lines 139, 161), and the read-out flow returns the pool's head byte (line 117). Integrity is Established: the byte written to the pool must be the accumulation lines 357-360 define, and the pool, which is not supplied, must receive exactly that value (lines 139, 161). Availability is also Established under the conditions of lines 355-360: a byte accumulates while the enable is held and accepted bits arrive. Confidentiality is context-dependent and not claimed: no line restricts who reads the data register (line 117). fifo.wdata only passes a sub-unit output to a sub-unit input, and fifo.rdata is only read as data (line 117): carriers, not reported. bus_rsp_o is a transport record, so no readback exit is reported in neorv32_trng.",
+   "related structural assets": [
+    {"asset rtl": "sample_sreg", "entity": "neoTRNG", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "data_o", "entity": "neoTRNG", "realization": "exit port", "occurrence": 2, "edge": {"type": "COPIES", "partner": "sample_sreg"}}
+   ]
+  },
+  {
+   "concept": "Random-byte completion event -- the bit count reaching its top bit, which marks a finished byte and writes it into the pool",
+   "security objective": "Integrity",
+   "reasoning": "`sample_cnt <= std_ulogic_vector(unsigned(sample_cnt) + 1);` on each accepted bit (lines 358-359; CLOCKED_BY clk_i at occurrence 6) counts the bits folded into the byte; it is cleared while disabled or once its top bit is set (lines 355-356). `valid_o <= sample_cnt(sample_cnt'left);` (line 367; DERIVES_FROM sample_cnt at occurrence 2) exports the event, and neorv32_trng delivers it as the pool's write enable (lines 138, 162). Integrity is Established: the pool must be written exactly when a byte is complete, so that each stored byte holds the full accumulation of lines 359-360, and the pool, which is not supplied, must receive exactly this strobe. Availability is also Established under the implemented conditions: the event recurs while accepted bits keep arriving with the enable held (lines 355-359). sample_cnt stores the count and valid_o is the exit port of neoTRNG. fifo.we only passes valid_o to the pool (lines 138, 162): a carrier, not reported.",
+   "related structural assets": [
+    {"asset rtl": "sample_cnt", "entity": "neoTRNG", "realization": "stores", "occurrence": 6, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "valid_o", "entity": "neoTRNG", "realization": "exit port", "occurrence": 2, "edge": {"type": "DERIVES_FROM", "partner": "sample_cnt"}}
+   ]
+  }
+ ]
+}

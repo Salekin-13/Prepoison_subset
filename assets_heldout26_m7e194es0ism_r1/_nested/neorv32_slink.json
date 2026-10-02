@@ -1,0 +1,311 @@
+{
+  "module name": "neorv32_slink",
+  "conceptual assets": [
+    {
+      "concept": "Control and IRQ-mask registers (module enable, FIFO clear bits, IRQ mask bits)",
+      "security objective": "Integrity",
+      "reasoning": "The bus-access write path stores control bits into the internal ctrl record: when bus_req_i.stb='1' and bus_req_i.rw='1' and addr(3 downto 2)=\"00\", the process assigns ctrl.enable <= bus_req_i.data(ctrl_en_c); ctrl.rx_clr <= bus_req_i.data(ctrl_rx_clr_c); ctrl.tx_clr <= bus_req_i.data(ctrl_tx_clr_c); and the irq-mask fields ctrl.irq_rx_nempty/ctrl.irq_rx_half/ctrl.irq_rx_full and ctrl.irq_tx_empty/ctrl.irq_tx_nhalf/ctrl.irq_tx_nfull are written from bus_req_i.data. Those stored bits directly control FIFO clearing (rx_fifo.clear <= (not ctrl.enable) or ctrl.rx_clr; tx_fifo.clear <= (not ctrl.enable) or ctrl.tx_clr) and mask interrupt generation (rx_irq_o and tx_irq_o expressions use ctrl.enable and the ctrl.irq_* bits). Corruption or incorrect setting of these stored control bits would therefore change clearing and interrupt behavior, establishing an Integrity objective.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.enable",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.rx_clr",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.tx_clr",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_rx_nempty",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_rx_half",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_rx_full",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_tx_empty",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_tx_nhalf",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_tx_nfull",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Route destination configuration (route_dst) used for outgoing TX entries",
+      "security objective": "Integrity",
+      "reasoning": "route_dst is written by bus writes: in bus_access when bus_req_i.stb='1' and bus_req_i.rw='1' and addr(3 downto 2)=\"01\" the process assigns route_dst <= bus_req_i.data(3 downto 0). That stored route_dst is concatenated into TX FIFO write data (tx_fifo.wdata <= bus_req_i.addr(2) & route_dst & bus_req_i.data), so it directly determines the destination bits enqueued for transmission. Corrupting route_dst changes the destination encoded in TX FIFO entries, establishing an Integrity objective.",
+      "related structural assets": [
+        {
+          "asset rtl": "route_dst",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Received link words stored in the RX FIFO (payload, source, last) and extracted attributes",
+      "security objective": "Integrity",
+      "reasoning": "Incoming link words are captured into the RX FIFO: rx_fifo.wdata(31 downto 0) <= slink_rx_data_i; rx_fifo.wdata(35 downto 32) <= slink_rx_src_i; rx_fifo.wdata(36) <= slink_rx_last_i; and rx_fifo.we <= slink_rx_valid_i. The FIFO read output rx_fifo.rdata is returned on bus reads (bus_rsp_o.data <= rx_fifo.rdata(31 downto 0) in the read case) and is sampled on reads to update rx_last <= rx_fifo.rdata(36) and route_src <= rx_fifo.rdata(35 downto 32) when rx_fifo.re='1'. These relations show the FIFO stores received words and their src/last flags and that host-visible values derive from rx_fifo.rdata; corruption of those stored words or the extracted attributes would violate the implemented data-consumption flows, establishing Integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "slink_rx_data_i",
+          "entity": "neorv32_slink",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "slink_rx_src_i",
+          "entity": "neorv32_slink",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "slink_rx_last_i",
+          "entity": "neorv32_slink",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "slink_rx_valid_i",
+          "entity": "neorv32_slink",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "rx_fifo.wdata",
+          "entity": "neorv32_slink",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "rx_fifo.rdata",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rx_last",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "route_src",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "RX FIFO occupancy/status indicators and link-ready output",
+      "security objective": "Integrity",
+      "reasoning": "The FIFO instance produces rx_fifo.avail, rx_fifo.half and rx_fifo.free which the design reads and reports: bus read maps these to status bits (bus_rsp_o.data(ctrl_rx_empty_c) <= not rx_fifo.avail; bus_rsp_o.data(ctrl_rx_half_c) <= rx_fifo.half; bus_rsp_o.data(ctrl_rx_full_c) <= not rx_fifo.free), rx_interrupt uses them to compute rx_irq_o, and the module reports readiness to the link via slink_rx_ready_o <= rx_fifo.free. These implemented uses establish that the occupancy indicators and the ready output must hold integrity for correct status reporting, flow control and interrupt behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "rx_fifo.avail",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rx_fifo.half",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rx_fifo.free",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "slink_rx_ready_o",
+          "entity": "neorv32_slink",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "RX interrupt request event (rx_irq_o)",
+      "security objective": "Integrity",
+      "reasoning": "The rx_interrupt process computes the RX IRQ output as rx_irq_o <= ctrl.enable and ((ctrl.irq_rx_nempty and rx_fifo.avail) or (ctrl.irq_rx_half and rx_fifo.half) or (ctrl.irq_rx_full and not rx_fifo.free)); the output therefore encodes a decision based on stored ctrl mask bits and FIFO status. Integrity of the produced interrupt event matters because incorrect assertion or suppression changes the module's external interrupt behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "rx_irq_o",
+          "entity": "neorv32_slink",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "ctrl.enable",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_rx_nempty",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_rx_half",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_rx_full",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rx_fifo.avail",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rx_fifo.half",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rx_fifo.free",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Transmit words stored in the TX FIFO (last, destination, payload)",
+      "security objective": "Integrity",
+      "reasoning": "TX enqueue forms FIFO write data with tx_fifo.wdata <= bus_req_i.addr(2) & route_dst & bus_req_i.data and tx_fifo.we <= '1' when bus_req_i.stb='1' and bus_req_i.rw='1' and addr(3)='1'; the FIFO read output tx_fifo.rdata is driven to the link outputs slink_tx_data_o <= tx_fifo.rdata(31 downto 0), slink_tx_dst_o <= tx_fifo.rdata(35 downto 32), slink_tx_last_o <= tx_fifo.rdata(36) and slink_tx_valid_o <= tx_fifo.avail. These relations show transmitted words derive from stored tx_fifo entries; corruption of the stored TX words or the values used to form them (route_dst) would change what is transmitted, establishing Integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "tx_fifo.wdata",
+          "entity": "neorv32_slink",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "tx_fifo.we",
+          "entity": "neorv32_slink",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "tx_fifo.rdata",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "slink_tx_data_o",
+          "entity": "neorv32_slink",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "slink_tx_dst_o",
+          "entity": "neorv32_slink",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "slink_tx_last_o",
+          "entity": "neorv32_slink",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "slink_tx_valid_o",
+          "entity": "neorv32_slink",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "route_dst",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "TX FIFO occupancy/status indicators and valid output",
+      "security objective": "Integrity",
+      "reasoning": "The TX FIFO outputs tx_fifo.avail, tx_fifo.half and tx_fifo.free are read for status (bus read maps them to ctrl_tx_* bits) and used in tx_interrupt; the module reports data-valid to the link via slink_tx_valid_o <= tx_fifo.avail. These implemented uses establish that the occupancy indicators and the valid output must retain integrity for correct status reporting, flow control and interrupt behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "tx_fifo.avail",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tx_fifo.half",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tx_fifo.free",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "slink_tx_valid_o",
+          "entity": "neorv32_slink",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "TX interrupt request event (tx_irq_o)",
+      "security objective": "Integrity",
+      "reasoning": "The tx_interrupt process computes tx_irq_o <= ctrl.enable and ((ctrl.irq_tx_empty and not tx_fifo.avail) or (ctrl.irq_tx_nhalf and not tx_fifo.half) or (ctrl.irq_tx_nfull and tx_fifo.free)); the output therefore encodes a decision based on stored ctrl mask bits and TX FIFO status. Integrity of the produced interrupt event matters because incorrect assertion or suppression changes the module's external interrupt behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "tx_irq_o",
+          "entity": "neorv32_slink",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "ctrl.enable",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_tx_empty",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_tx_nhalf",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_tx_nfull",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tx_fifo.avail",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tx_fifo.half",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tx_fifo.free",
+          "entity": "neorv32_slink",
+          "realization": "stores"
+        }
+      ]
+    }
+  ]
+}

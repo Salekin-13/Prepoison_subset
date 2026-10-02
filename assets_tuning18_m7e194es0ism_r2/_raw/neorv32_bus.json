@@ -1,0 +1,151 @@
+{"module name":"neorv32_bus_amo_rmw, neorv32_bus_amo_rvs, neorv32_bus_gateway, neorv32_bus_io_switch, neorv32_bus_reg, neorv32_bus_switch",
+ "conceptual assets": [
+  {
+   "concept": "Arbiter selection decision that routes requests and responses between port A and port B",
+   "security objective": "Integrity",
+   "reasoning": "The combinational FSM computes sel (arbiter_fsm) and the clocked process registers sel_q (arbiter_sync). sel drives which input fields are forwarded (e.g. x_req_o.addr <= a_req_i.addr when (sel = '0') else b_req_i.addr) and gates responses (a_rsp_o.ack <= x_rsp_i.ack when (sel = '0') else '0'; b_rsp_o.ack <= x_rsp_i.ack when (sel = '1') else '0'). Therefore correctness of the sel decision enforces correct request/response routing; sel is computed in arbiter_fsm and sel_q stores the selection for round-robin/next-decision logic.",
+   "related structural assets": [
+    {"asset rtl":"sel_q","entity":"neorv32_bus_switch","realization":"stores"},
+    {"asset rtl":"sel","entity":"neorv32_bus_switch","realization":"computes"}
+   ]
+  },
+  {
+   "concept": "Latched pending-request indicators for ports A and B used by the arbiter to decide grants",
+   "security objective": "Integrity",
+   "reasoning": "The clocked arbiter_sync accumulates request strobes into a_req and b_req (a_req <= a_req or a_req_i.stb; b_req <= b_req or b_req_i.stb), and arbiter_fsm in S_IDLE uses (a_req_i.stb = '1') or (a_req = '1') (and similarly for b_req) to choose which port to grant. These stored pending flags directly determine grant decisions; corrupting them changes arbitration.",
+   "related structural assets": [
+    {"asset rtl":"a_req","entity":"neorv32_bus_switch","realization":"stores"},
+    {"asset rtl":"b_req","entity":"neorv32_bus_switch","realization":"stores"}
+   ]
+  },
+  {
+   "concept": "Latched per-port lock bits that enforce locked (atomic) grant hold behavior",
+   "security objective": "Integrity",
+   "reasoning": "In S_IDLE the FSM computes locked_nxt <= b_req_i.lock & a_req_i.lock (concatenation) and arbiter_sync registers locked <= locked_nxt. arbiter_fsm checks locked(0) in S_BUSY_A and locked(1) in S_BUSY_B to continue forwarding only while the input lock remains asserted (stb <= a_req_i.stb when locked(0) = '1', etc.). These latched lock bits implement lock behavior; incorrect locked values alter grant hold semantics.",
+   "related structural assets": [
+    {"asset rtl":"locked","entity":"neorv32_bus_switch","realization":"stores"},
+    {"asset rtl":"locked_nxt","entity":"neorv32_bus_switch","realization":"computes"}
+   ]
+  },
+  {
+   "concept": "Forward-strobe decision that initiates a forwarded request to the external bus (x_req_o.stb)",
+   "security objective": "Availability",
+   "reasoning": "The FSM sets stb <= '1' when it grants a port (S_IDLE branch) or forwards the input stb while locked (stb <= a_req_i.stb when locked(0) = '1', stb <= b_req_i.stb when locked(1) = '1'), and the module assigns x_req_o.stb <= stb. The RTL therefore implements an availability property: when the FSM predicates hold stb is produced to forward the request; preventing stb from asserting when those predicates hold blocks progress.",
+   "related structural assets": [
+    {"asset rtl":"stb","entity":"neorv32_bus_switch","realization":"computes"}
+   ]
+  },
+  {
+   "concept": "Arbiter state encoding that governs acceptance, clearing and hold behavior (S_IDLE / S_BUSY_A / S_BUSY_B)",
+   "security objective": "Integrity",
+   "reasoning": "state is registered in arbiter_sync (state <= state_nxt) and arbiter_fsm drives state_nxt transitions based on inputs (a_req/b_req, locked, sel_q, x_rsp_i). state is used to clear latched requests (arbiter_sync clears a_req when state = S_BUSY_A, etc.) and to control forward/ack behavior; corrupting state changes arbitration sequence and correctness.",
+   "related structural assets": [
+    {"asset rtl":"state","entity":"neorv32_bus_switch","realization":"stores"},
+    {"asset rtl":"state_nxt","entity":"neorv32_bus_switch","realization":"computes"}
+   ]
+  },
+  {
+   "concept": "Address-based downstream port selection vector that chooses which destination port receives the incoming request",
+   "security objective": "Integrity",
+   "reasoning": "Concurrent assignments compute port_sel bits from req_i.addr and the configured bases/enables (e.g. port_sel(0) <= '1' when A_EN and (req_i.addr(31 downto a_lo_c) = A_BASE(31 downto a_lo_c)) else '0'). The request logic then uses port_sel to gate per-port strobe (port_req(i).stb <= port_sel(i) and req_i.stb). Wrong port_sel would route a request to the wrong downstream port.",
+   "related structural assets": [
+    {"asset rtl":"port_sel","entity":"neorv32_bus_gateway","realization":"computes"}
+   ]
+  },
+  {
+   "concept": "Per-port forwarded-request records that carry the inbound request to the selected downstream port (strobe gating included)",
+   "security objective": "Integrity",
+   "reasoning": "The request process in the gateway assigns port_req(i) <= req_i and sets port_req(i).stb <= port_sel(i) and req_i.stb when the port is enabled; port_req is then mapped to a_req_o/b_req_o/c_req_o/x_req_o. port_req therefore realizes which downstream port receives the request and when its strobe is asserted; corrupting port_req changes downstream routing.",
+   "related structural assets": [
+    {"asset rtl":"port_req","entity":"neorv32_bus_gateway","realization":"computes"}
+   ]
+  },
+  {
+   "concept": "Internal aggregated response computed by OR-ing enabled port responses and driving the outgoing response fields",
+   "security objective": "Integrity",
+   "reasoning": "The response process builds tmp_v by OR-ing port_rsp(i).data/ack/err across enabled ports and assigns int_rsp <= tmp_v; the module then assigns rsp_o.data <= int_rsp.data and rsp_o.ack <= int_rsp.ack or keeper.err and rsp_o.err <= int_rsp.err or keeper.err. The aggregation in int_rsp thus determines the host-visible ack/err/data; incorrect int_rsp breaks response integrity.",
+   "related structural assets": [
+    {"asset rtl":"int_rsp.data","entity":"neorv32_bus_gateway","realization":"computes"},
+    {"asset rtl":"int_rsp.ack","entity":"neorv32_bus_gateway","realization":"computes"},
+    {"asset rtl":"int_rsp.err","entity":"neorv32_bus_gateway","realization":"computes"}
+   ]
+  },
+  {
+   "concept": "Keeper timeout and status (busy, lock, counter, err, halt) that detect request timeouts and influence reported ack/err",
+   "security objective": "Integrity",
+   "reasoning": "The clocked bus_monitor process initializes and updates keeper fields: keeper.busy starts on req_i.stb, keeper.lock <= req_i.lock, keeper.cnt increments while busy, keeper.halt <= port_sel(port_sel'left), and if keeper.cnt MSB = '1' and keeper.halt = '0' then keeper.err <= '1'. rsp_o.ack and rsp_o.err are ORed with keeper.err, so keeper.err directly modifies responses. Corrupting keeper fields changes timeout/error signalling and the ack/err presented to the requester.",
+   "related structural assets": [
+    {"asset rtl":"keeper.cnt","entity":"neorv32_bus_gateway","realization":"stores"},
+    {"asset rtl":"keeper.err","entity":"neorv32_bus_gateway","realization":"stores"},
+    {"asset rtl":"keeper.busy","entity":"neorv32_bus_gateway","realization":"stores"},
+    {"asset rtl":"keeper.lock","entity":"neorv32_bus_gateway","realization":"stores"},
+    {"asset rtl":"keeper.halt","entity":"neorv32_bus_gateway","realization":"stores"}
+   ]
+  },
+  {
+   "concept": "Per-device request routing vector that derives per-device strobe from main_req address matching",
+   "security objective": "Integrity",
+   "reasoning": "In neorv32_bus_io_switch each enabled device's request is generated by the bus_request generate: dev_req(i) <= main_req and dev_req(i).stb <= main_req.stb only when main_req.addr(addr_hi_c downto addr_lo_c) = dev_base_list_c(i)(addr_hi_c downto addr_lo_c). dev_req therefore realizes per-device address decode and forwarding; corrupting dev_req misroutes or drops requests to devices.",
+   "related structural assets": [
+    {"asset rtl":"dev_req","entity":"neorv32_bus_io_switch","realization":"computes"}
+   ]
+  },
+  {
+   "concept": "Aggregated main response produced by OR-ing enabled device responses and returned to the host-side port",
+   "security objective": "Integrity",
+   "reasoning": "The bus_response process in neorv32_bus_io_switch accumulates dev_rsp(i).data/ack/err into a temporary rsp value (tmp_v) and assigns main_rsp <= tmp_v; main_rsp is then returned to the host (via the register instance). Incorrect aggregation would change host-visible ack/err/data values.",
+   "related structural assets": [
+    {"asset rtl":"main_rsp","entity":"neorv32_bus_io_switch","realization":"computes"}
+   ]
+  },
+  {
+   "concept": "Captured AMO command opcode and write operand stored in the AMO arbiter that define the read-modify-write operation",
+   "security objective": "Integrity",
+   "reasoning": "When the AMO arbiter sees a valid AMO request in S_IDLE the comb logic sets arbiter_nxt.cmd <= core_req_i.amoop and arbiter_nxt.wdata <= core_req_i.data; arbiter_sync then registers arbiter <= arbiter_nxt on the clock. These stored arbiter.cmd and arbiter.wdata determine the ALU operation and writeback data; corrupting them changes the performed AMO.",
+   "related structural assets": [
+    {"asset rtl":"arbiter.cmd","entity":"neorv32_bus_amo_rmw","realization":"stores"},
+    {"asset rtl":"arbiter.wdata","entity":"neorv32_bus_amo_rmw","realization":"stores"}
+   ]
+  },
+  {
+   "concept": "ALU result computed for AMO operations that is used as writeback data during the write phase",
+   "security objective": "Integrity",
+   "reasoning": "The amo_alu clocked process computes alu_res from arbiter.rdata and arbiter.wdata per arbiter.cmd (cases for add/xor/and/or/cmp), and sys_req_o.data <= alu_res when (arbiter.state = S_WRITE). Thus alu_res is the value written back for the AMO; corrupting alu_res alters memory semantics.",
+   "related structural assets": [
+    {"asset rtl":"alu_res","entity":"neorv32_bus_amo_rmw","realization":"stores"}
+   ]
+  },
+  {
+   "concept": "AMO arbiter sequencing state that controls the read-execute-write handshake",
+   "security objective": "Integrity",
+   "reasoning": "arbiter.state is registered in arbiter_sync and arbiter_comb drives transitions S_IDLE -> S_READ_WAIT -> S_EXECUTE -> S_WRITE -> S_WRITE_WAIT based on sys_rsp_i and core_req_i. sys_req_o.stb, sys_req_o.rw and sys_req_o.data are gated by arbiter.state, so corrupting arbiter.state changes the AMO handshake and may break atomicity.",
+   "related structural assets": [
+    {"asset rtl":"arbiter.state","entity":"neorv32_bus_amo_rmw","realization":"stores"}
+   ]
+  },
+  {
+   "concept": "Reservation-style AMO indicator that distinguishes reservation-style operations",
+   "security objective": "Integrity",
+   "reasoning": "rvso <= '1' when (core_req_i.amo = '1') and (core_req_i.amoop(3 downto 2) = '10'); bus_request uses rvso to gate sys_req_o.stb for store-conditional sequences and sc_result uses rvso in computing sc_fail. rvso therefore determines reservation handling; incorrect rvso changes handling of reservation AMOs.",
+   "related structural assets": [
+    {"asset rtl":"rvso","entity":"neorv32_bus_amo_rvs","realization":"computes"}
+   ]
+  },
+  {
+   "concept": "Reservation state that records reservation progress and gates store-conditional forwarding",
+   "security objective": "Integrity",
+   "reasoning": "rvs_control registers state across cycles based on core_req_i.stb, core_req_i.rw and rvso; bus_request uses state(1) to gate sys_req_o.stb for RVSO store condition sequences, and sc_result uses state(1) to decide sc_fail. The stored state therefore controls whether a store-conditional is allowed; corrupting it changes SC semantics.",
+   "related structural assets": [
+    {"asset rtl":"state","entity":"neorv32_bus_amo_rvs","realization":"stores"}
+   ]
+  },
+  {
+   "concept": "Store-conditional failure flag that marks SC failure and alters the core-visible response",
+   "security objective": "Integrity",
+   "reasoning": "sc_result updates sc_fail on clock: sc_fail <= rvso and core_req_i.stb and core_req_i.rw and (not state(1)); core_rsp_o.ack <= sys_rsp_i.ack or sc_fail and core_rsp_o.data LSB is ORed with sc_fail. sc_fail therefore changes the core-visible ack/data for SC operations; corrupting sc_fail changes SC outcomes.",
+   "related structural assets": [
+    {"asset rtl":"sc_fail","entity":"neorv32_bus_amo_rvs","realization":"stores"}
+   ]
+  }
+ ]
+}

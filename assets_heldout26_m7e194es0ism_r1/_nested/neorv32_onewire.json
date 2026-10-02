@@ -1,0 +1,164 @@
+{
+  "module name": "neorv32_onewire",
+  "conceptual assets": [
+    {
+      "concept": "Peripheral enable configuration (ctrl.enable) that gates clocking, FIFO clearing, serial start and exported clkgen_en",
+      "security objective": "Integrity",
+      "reasoning": "bus_access writes ctrl.enable on register writes (bus_access: when bus_req_i.stb='1' and bus_req_i.rw='1' and bus_req_i.addr(2)='0' then ctrl.enable <= bus_req_i.data(ctrl_en_c)); reset initializes it to '0'. ctrl.enable is tested in clock_generator (it gates counting/clk_tick generation), assigned to clkgen_en_o, used to assert fifo.tx_clr/rx_clr when disabled, and used in irq generation (irq_o <= ctrl.enable and not fifo.tx_avail and not serial.busy). These explicit RTL relations show ctrl.enable is a stored configuration whose unauthorized modification would violate implemented control and reporting flows (Integrity). The structural references are the stored register and the exported enable signal.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.enable",
+          "entity": "neorv32_onewire",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "clkgen_en_o",
+          "entity": "neorv32_onewire",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Clock-generation configuration (clk prescaler index and division) that defines clk_tick used for serial timing",
+      "security objective": "Integrity",
+      "reasoning": "bus_access writes ctrl.clk_prsc and ctrl.clk_div on register writes. clk_src is driven from clkgen_i and clock_generator uses clk_src(to_integer(unsigned(ctrl.clk_prsc))) and compares clk_cnt to unsigned(ctrl.clk_div) to assert clk_tick. clk_tick is used throughout serial_engine for bit-slot timing. Because these RTL assignments directly implement the tick selection and division, corruption of ctrl.clk_prsc or ctrl.clk_div (or of the produced clk_tick) violates the timing relations serial_engine depends on (Integrity).",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.clk_prsc",
+          "entity": "neorv32_onewire",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.clk_div",
+          "entity": "neorv32_onewire",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "clk_tick",
+          "entity": "neorv32_onewire",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "FIFO clear control (ctrl.clear) that forces RX/TX FIFOs to clear",
+      "security objective": "Integrity",
+      "reasoning": "bus_access writes ctrl.clear on register write; fifo.tx_clr and fifo.rx_clr are driven by (ctrl.enable='0') or (ctrl.clear='1') (fifo.tx_clr <= '1' when (ctrl.enable = '0') or (ctrl.clear = '1') else '0'). The RTL therefore makes ctrl.clear the implemented control that causes FIFO clear behavior; incorrect setting would change FIFO clear semantics and thus violate data availability/integrity as implemented, establishing Integrity for this configuration value.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.clear",
+          "entity": "neorv32_onewire",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Transmit-command queue contents (TX FIFO entries: command type + byte) used to drive onewire transactions",
+      "security objective": "Integrity",
+      "reasoning": "Writes to the TX queue are formed here (fifo.tx_we <= '1' when bus_req_i.stb='1' and bus_req_i.rw='1' and bus_req_i.addr(2)='1'; fifo.tx_wdata <= bus_req_i.data(...)). The instantiated tx_fifo (tx_fifo_inst) holds those entries and the serial engine consumes them: serial_engine checks fifo.tx_avail to start and, in state \"101\", reads fifo.tx_rdata to load serial.sreg and select the command (case fifo.tx_rdata(dcmd_cmd_hi_c downto dcmd_cmd_lo_c) ...). These explicit RTL flows show queued commands determine onewire drive; corruption or unauthorized modification of these values breaks the implemented transmit behavior (Integrity). Structural references are the local FIFO interface points where data and control cross this entity.",
+      "related structural assets": [
+        {
+          "asset rtl": "fifo.tx_wdata",
+          "entity": "neorv32_onewire",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "fifo.tx_we",
+          "entity": "neorv32_onewire",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "fifo.tx_rdata",
+          "entity": "neorv32_onewire",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "fifo.tx_avail",
+          "entity": "neorv32_onewire",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "fifo.tx_re",
+          "entity": "neorv32_onewire",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Received-data entries (RX FIFO) combining presence bit and sampled byte, delivered to bus reads",
+      "security objective": "Integrity",
+      "reasoning": "serial_engine forms received entries (fifo.rx_wdata <= serial.presence & serial.sreg) and asserts fifo.rx_we on completion (fifo.rx_we <= serial.done); the instantiated rx_fifo (rx_fifo_inst) stores them and bus_access returns fifo.rx_rdata to software on reads (bus_rsp_o.data(dcmd_msb_c downto dcmd_lsb_c) <= fifo.rx_rdata(7 downto 0); bus_rsp_o.data(dcmd_pres_c) <= fifo.rx_rdata(8)). These explicit RTL assignments establish that these enqueued values are the implemented readback; corruption or loss violates readback correctness (Integrity).",
+      "related structural assets": [
+        {
+          "asset rtl": "fifo.rx_wdata",
+          "entity": "neorv32_onewire",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "fifo.rx_we",
+          "entity": "neorv32_onewire",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "fifo.rx_rdata",
+          "entity": "neorv32_onewire",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Serial shift register content (serial.sreg) that is loaded from TX entries and collects sampled bits",
+      "security objective": "Integrity",
+      "reasoning": "serial.sreg is explicitly loaded from the FIFO in state \"101\" (serial.sreg <= fifo.tx_rdata(dcmd_msb_c downto dcmd_lsb_c)) and updated during receive slots (serial.sreg <= serial.sample & serial.sreg(7 downto 1) when a slot completes). serial.sreg is also used to form fifo.rx_wdata. The RTL therefore makes serial.sreg the implemented staging register for transmitted and received bits; corruption violates transmit/receive semantics (Integrity).",
+      "related structural assets": [
+        {
+          "asset rtl": "serial.sreg",
+          "entity": "neorv32_onewire",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Interrupt request signal (irq_o) reporting queue-empty and engine-idle condition",
+      "security objective": "Integrity",
+      "reasoning": "irq_generator process explicitly drives irq_o on clock edges: irq_o <= ctrl.enable and (not fifo.tx_avail) and (not serial.busy). irq_o is the entity exit that reports this condition; incorrect irq_o values would violate the module's implemented reporting relation, establishing Integrity for the interrupt output.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_o",
+          "entity": "neorv32_onewire",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "One-wire driver output level (onewire_o) through which serial decisions leave the entity",
+      "security objective": "Integrity",
+      "reasoning": "serial_engine assigns onewire_o (reset to '0'; then on rising edges: if serial.busy = '0' or serial.wire_hi = '1' then onewire_o <= '1' elsif serial.wire_lo = '1' then onewire_o <= '0'). onewire_o is the physical drive exported by this entity; its value implements the module's drive decisions and its corruption changes external bus behavior, establishing Integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "onewire_o",
+          "entity": "neorv32_onewire",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Serial busy status (serial.busy) used in reporting and IRQ qualification",
+      "security objective": "Integrity",
+      "reasoning": "serial.busy is computed in this entity (serial.busy <= '0' when (serial.state(1 downto 0) = \"00\") else '1') and is used directly in bus_access readback (bus_rsp_o.data(ctrl_busy_c) <= fifo.tx_avail or serial.busy) and in irq generation (irq_o uses serial.busy). Because the RTL explicitly derives and consumes serial.busy for reporting and interrupt logic, its incorrect value violates those implemented relations (Integrity).",
+      "related structural assets": [
+        {
+          "asset rtl": "serial.busy",
+          "entity": "neorv32_onewire",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Peripheral bus access qualification (which bus transactions write or read control registers and FIFOs)",
+      "security objective": "Integrity",
+      "reasoning": "The bus_access process explicitly tests the transaction record to qualify register writes and reads (examples: writes with bus_req_i.stb='1' and bus_req_i.rw='1' and bus_req_i.addr(2)='0' set ctrl.*, writes with addr(2)='1' drive fifo.tx_wdata/tx_we, reads with bus_req_i.rw='0' select ctrl fields or fifo.rx_rdata). That qualification determines which internal registers and FIFO endpoints are modified or returned, so its correctness is security-relevant. Mapping limitation: the bus_req_i/bus_rsp_o ports are transport-record ports and transport ports are excluded as structural references; no single internal declared signal implements the whole transaction qualification, so no eligible structural reference is reported here.",
+      "related structural assets": []
+    }
+  ]
+}

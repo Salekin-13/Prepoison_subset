@@ -1,0 +1,481 @@
+{
+  "module name": "neorv32_cache",
+  "module purpose": "neorv32_cache sits between a host request/response interface and an external bus, keeps local valid bits, tags and data words in a cache memory, and decides whether to satisfy a request from the cache or forward it directly to the external bus. On read misses it downloads a cache line word by word, can clear or invalidate cached state, and returns data or error status to the host.",
+  "use-case flows": [
+    {
+      "flow": "start",
+      "value": "buffered host request or buffered fence that starts a lookup or cache-clear sequence",
+      "lines": [
+        137,
+        138,
+        168,
+        169,
+        170,
+        175
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "request classification and lookup: capture tag/index/offset, decide direct bypass versus cached access, and classify hit versus miss",
+      "lines": [
+        171,
+        172,
+        173,
+        180,
+        181,
+        182,
+        186,
+        189,
+        190,
+        194,
+        199,
+        200,
+        366,
+        367,
+        368,
+        387,
+        400,
+        405
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "cache maintenance by clear, invalidate, and new-line marking",
+      "lines": [
+        216,
+        219,
+        220,
+        226,
+        255,
+        380,
+        381,
+        383,
+        385,
+        397,
+        398
+      ]
+    },
+    {
+      "flow": "lock",
+      "value": "locked miss refill that reads successive words from the external bus while advancing the cache-line offset",
+      "lines": [
+        225,
+        226,
+        227,
+        228,
+        229,
+        230,
+        235,
+        236,
+        237,
+        238,
+        239,
+        240,
+        242,
+        243,
+        244,
+        245,
+        246,
+        248
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "cached word returned from cache memory on a hit",
+      "lines": [
+        156,
+        189,
+        190,
+        191,
+        425,
+        426,
+        427,
+        428
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "direct-bus response forwarding or refill-error completion reported back to the host",
+      "lines": [
+        209,
+        210,
+        254,
+        255,
+        256,
+        257
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "controller context and cache valid-read state forced to zero when rstn_i is low",
+      "lines": [
+        116,
+        117,
+        118,
+        119,
+        120,
+        121,
+        122,
+        123,
+        124,
+        376,
+        377,
+        378
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Controller phase of the cache transaction engine",
+      "security objective": "Integrity",
+      "reasoning": "All major flows depend on the current controller phase: the case on ctrl.state selects lookup, direct response, clear, refill request, refill response, and refill completion behavior (lines 164-267), and ctrl is updated from ctrl_nxt on the clock edge (line 126). Corrupting this phase mis-sequences which operation executes and when completion occurs. The store reference on ctrl.state uses edge null because the field is clocked by the whole-record assignment ctrl <= ctrl_nxt at line 126, while the map attaches CLOCKED_BY only to whole ctrl; the field's own occurrence on line 117 shows its stored state is explicitly initialized.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.state",
+          "entity": "neorv32_cache",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": null
+        },
+        {
+          "asset rtl": "ctrl_nxt.state",
+          "entity": "neorv32_cache",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "SELECTED_BY",
+            "partner": "ctrl.state"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Pending host-request presence",
+      "security objective": "Integrity",
+      "reasoning": "The cache remembers an unserved request with ctrl_nxt.buf_req <= ctrl.buf_req or host_req_i.stb (line 137), starts lookup when the pending bit or a new strobe is present (lines 170-175), and clears the pending bit in S_LOOKUP (line 184). Integrity and availability of request service depend on preserving exactly this pending-request state until it is consumed. As with the other ctrl fields, the clocked field update is the whole-record assignment at line 126, so the ctrl.buf_req store reference uses edge null and cites its explicit reset/store line 118.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.buf_req",
+          "entity": "neorv32_cache",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": null
+        },
+        {
+          "asset rtl": "ctrl_nxt.buf_req",
+          "entity": "neorv32_cache",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "host_req_i.stb"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Pending fence or cache-clear presence",
+      "security objective": "Integrity",
+      "reasoning": "The cache remembers a pending clear request with ctrl_nxt.buf_sync <= ctrl.buf_sync or host_req_i.fence (line 138), moves from S_IDLE to S_CLEAR when that pending condition is present (lines 168-169), asserts the local clear command in S_CLEAR (line 219), and then clears the pending bit (line 220). Wrong state can lose a required clear or trigger one spuriously. The ctrl.buf_sync store reference uses edge null because line 126 clocks the whole ctrl record, not the field itself, while line 119 shows the field is stored and reset.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.buf_sync",
+          "entity": "neorv32_cache",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": null
+        },
+        {
+          "asset rtl": "ctrl_nxt.buf_sync",
+          "entity": "neorv32_cache",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "host_req_i.fence"
+          }
+        },
+        {
+          "asset rtl": "cache_o.cmd_clr",
+          "entity": "neorv32_cache",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "SELECTED_BY",
+            "partner": "ctrl.state"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Direct-bypass decision for the current request",
+      "security objective": "Integrity",
+      "reasoning": "In S_IDLE the controller computes ctrl_nxt.buf_dir when the request address is in the uncached range or when amo/debug are asserted (lines 171-173). In S_LOOKUP that stored decision chooses between direct bus handling (lines 186-188) and cached hit/miss handling (lines 189-203). Integrity of request routing depends on this decision being correct. The ctrl.buf_dir store reference uses edge null because the field is captured through the whole-record update at line 126; line 121 shows its stored state initialization.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.buf_dir",
+          "entity": "neorv32_cache",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": null
+        },
+        {
+          "asset rtl": "ctrl_nxt.buf_dir",
+          "entity": "neorv32_cache",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "host_req_i.addr"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Refill-error status for an in-progress line download",
+      "security objective": "Integrity",
+      "reasoning": "The refill error state is cleared for a new lookup (line 183), accumulated across refill beats with ctrl_nxt.buf_err <= ctrl.buf_err or bus_rsp_i.err (line 242), and then used in S_DOWNLOAD_DONE to invalidate the line and report error completion instead of reusing the downloaded line (lines 254-258). Integrity depends on remembering any refill error across the burst and applying the invalidate/error behavior exactly when finishing. The ctrl.buf_err store reference uses edge null because the field is clocked by the whole ctrl assignment at line 126, while line 120 shows its stored reset value.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.buf_err",
+          "entity": "neorv32_cache",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": null
+        },
+        {
+          "asset rtl": "ctrl_nxt.buf_err",
+          "entity": "neorv32_cache",
+          "realization": "computes",
+          "occurrence": 4,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "bus_rsp_i.err"
+          }
+        },
+        {
+          "asset rtl": "cache_o.cmd_inv",
+          "entity": "neorv32_cache",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "ctrl.buf_err"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Refill line address context: cached tag, index, and word offset for the active miss",
+      "security objective": "Integrity",
+      "reasoning": "On lookup the controller captures the request tag and index and initializes the refill offset to zero (lines 180-182). During the miss sequence it rebuilds cache and bus addresses from ctrl.tag, ctrl.idx, and ctrl.ofs (lines 225-238), and it increments ctrl_nxt.ofs on each acknowledged refill word (line 244) until the line is complete (lines 245-249). Corrupting this context reads or writes the wrong cache line or wrong word position. The ctrl.tag, ctrl.idx, and ctrl.ofs store references use edge null because the map places CLOCKED_BY only on whole ctrl at line 126; the field reset assignments at lines 122-124 show the stored elements themselves.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.tag",
+          "entity": "neorv32_cache",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": null
+        },
+        {
+          "asset rtl": "ctrl_nxt.tag",
+          "entity": "neorv32_cache",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "host_req_i.addr"
+          }
+        },
+        {
+          "asset rtl": "ctrl.idx",
+          "entity": "neorv32_cache",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": null
+        },
+        {
+          "asset rtl": "ctrl_nxt.idx",
+          "entity": "neorv32_cache",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "host_req_i.addr"
+          }
+        },
+        {
+          "asset rtl": "ctrl.ofs",
+          "entity": "neorv32_cache",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": null
+        },
+        {
+          "asset rtl": "ctrl_nxt.ofs",
+          "entity": "neorv32_cache",
+          "realization": "computes",
+          "occurrence": 4,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "ctrl.ofs"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Cache-line qualification state and the hit result it produces",
+      "security objective": "Integrity",
+      "reasoning": "The cache-memory status logic clears valid bits (line 381), invalidates one indexed line (line 383), marks a line valid on new_i (line 385), writes the stored tag for a new line (lines 397-398), and reports a hit only when the stored valid bit and stored tag match the current access tag (line 405). Lookup, clear, invalidate, and refill flows all depend on this state and decision being correct. Availability is also established because the stored valid/tag state is read every cycle into valid_mem_rd and tag_mem_rd (lines 387 and 400) to produce hit_o.",
+      "related structural assets": [
+        {
+          "asset rtl": "clr_i",
+          "entity": "neorv32_cache_memory",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATES",
+            "partner": "valid_mem"
+          }
+        },
+        {
+          "asset rtl": "inv_i",
+          "entity": "neorv32_cache_memory",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATES",
+            "partner": "valid_mem"
+          }
+        },
+        {
+          "asset rtl": "new_i",
+          "entity": "neorv32_cache_memory",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATES",
+            "partner": "tag_mem"
+          }
+        },
+        {
+          "asset rtl": "valid_mem",
+          "entity": "neorv32_cache_memory",
+          "realization": "stores",
+          "occurrence": 5,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "tag_mem",
+          "entity": "neorv32_cache_memory",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "addr_i",
+          "entity": "neorv32_cache_memory",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "acc_tag"
+          }
+        },
+        {
+          "asset rtl": "hit_o",
+          "entity": "neorv32_cache_memory",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "CONSTRAINED_BY",
+            "partner": "acc_tag"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Cached data contents of each stored line word",
+      "security objective": "Integrity",
+      "reasoning": "The top cache writes cache memory either with host write-hit data (default cache_o.data from line 151 and cache_o.we from line 194) or with refill data from the external bus (lines 236-237). Inside neorv32_cache_memory, we_i qualifies which bytes are written and wdata_i supplies the stored bytes (lines 413-423); the selected word is then returned on rdata_o every clock (lines 425-428), which the top uses for hit responses (lines 156 and 189-191). Integrity requires the stored bytes and returned word to match the applied write data and byte enables; availability requires the stored word to remain readable until overwritten.",
+      "related structural assets": [
+        {
+          "asset rtl": "we_i",
+          "entity": "neorv32_cache_memory",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATES",
+            "partner": "data_mem_b0"
+          }
+        },
+        {
+          "asset rtl": "wdata_i",
+          "entity": "neorv32_cache_memory",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "data_mem_b0"
+          }
+        },
+        {
+          "asset rtl": "data_mem_b0",
+          "entity": "neorv32_cache_memory",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "data_mem_b1",
+          "entity": "neorv32_cache_memory",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "data_mem_b2",
+          "entity": "neorv32_cache_memory",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "data_mem_b3",
+          "entity": "neorv32_cache_memory",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "rdata_o",
+          "entity": "neorv32_cache_memory",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "data_mem_b0"
+          }
+        }
+      ]
+    }
+  ]
+}

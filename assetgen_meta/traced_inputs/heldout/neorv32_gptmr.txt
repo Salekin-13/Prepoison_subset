@@ -1,0 +1,299 @@
+TARGET IP MODULE: neorv32_gptmr
+
+=== RTL (comments removed, blank lines left out; each line starts with its line number in the source file) ===
+   18 | entity neorv32_gptmr is
+   19 |   port (
+   20 |     clk_i       : in  std_ulogic;
+   21 |     rstn_i      : in  std_ulogic;
+   22 |     bus_req_i   : in  bus_req_t;
+   23 |     bus_rsp_o   : out bus_rsp_t;
+   24 |     clkgen_en_o : out std_ulogic;
+   25 |     clkgen_i    : in  std_ulogic_vector(7 downto 0);
+   26 |     irq_o       : out std_ulogic
+   27 |   );
+   28 | end neorv32_gptmr;
+
+   30 | architecture neorv32_gptmr_rtl of neorv32_gptmr is
+   33 |   constant ctrl_en_c      : natural := 0;
+   34 |   constant ctrl_prsc0_c   : natural := 1;
+   35 |   constant ctrl_prsc1_c   : natural := 2;
+   36 |   constant ctrl_prsc2_c   : natural := 3;
+   38 |   constant ctrl_irq_clr_c : natural := 30;
+   39 |   constant ctrl_irq_c     : natural := 31;
+   41 |   signal ctrl : std_ulogic_vector(3 downto 0);
+   44 |   type timer_t is record
+   45 |     tick  : std_ulogic;
+   46 |     thres : std_ulogic_vector(31 downto 0);
+   47 |     count : std_ulogic_vector(31 downto 0);
+   48 |     match : std_ulogic;
+   49 |   end record;
+   50 |   signal timer : timer_t;
+   53 |   signal irq_pnd, irq_clr : std_ulogic;
+   55 | begin
+   59 |   bus_access: process(rstn_i, clk_i)
+   60 |   begin
+   61 |     if (rstn_i = '0') then
+   62 |       bus_rsp_o   <= rsp_terminate_c;
+   63 |       ctrl        <= (others => '0');
+   64 |       timer.thres <= (others => '0');
+   65 |       irq_clr     <= '0';
+   66 |     elsif rising_edge(clk_i) then
+   68 |       bus_rsp_o.ack  <= bus_req_i.stb;
+   69 |       bus_rsp_o.err  <= '0';
+   70 |       bus_rsp_o.data <= (others => '0');
+   71 |       irq_clr        <= '0';
+   73 |       if (bus_req_i.stb = '1') then
+   74 |         if (bus_req_i.rw = '1') then
+   75 |           if (bus_req_i.addr(3 downto 2) = "00") then
+   76 |             ctrl(ctrl_en_c)    <= bus_req_i.data(ctrl_en_c);
+   77 |             ctrl(ctrl_prsc0_c) <= bus_req_i.data(ctrl_prsc0_c);
+   78 |             ctrl(ctrl_prsc1_c) <= bus_req_i.data(ctrl_prsc1_c);
+   79 |             ctrl(ctrl_prsc2_c) <= bus_req_i.data(ctrl_prsc2_c);
+   81 |             irq_clr <= bus_req_i.data(ctrl_irq_clr_c);
+   82 |           end if;
+   83 |           if (bus_req_i.addr(3 downto 2) = "01") then
+   84 |             timer.thres <= bus_req_i.data;
+   85 |           end if;
+   86 |         else
+   87 |           case bus_req_i.addr(3 downto 2) is
+   88 |             when "00" =>
+   89 |               bus_rsp_o.data(ctrl_en_c)    <= ctrl(ctrl_en_c);
+   90 |               bus_rsp_o.data(ctrl_prsc0_c) <= ctrl(ctrl_prsc0_c);
+   91 |               bus_rsp_o.data(ctrl_prsc1_c) <= ctrl(ctrl_prsc1_c);
+   92 |               bus_rsp_o.data(ctrl_prsc2_c) <= ctrl(ctrl_prsc2_c);
+   94 |               bus_rsp_o.data(ctrl_irq_c) <= irq_pnd;
+   95 |             when "01" =>
+   96 |               bus_rsp_o.data <= timer.thres;
+   97 |             when others =>
+   98 |               bus_rsp_o.data <= timer.count;
+   99 |           end case;
+  100 |         end if;
+  101 |       end if;
+  102 |     end if;
+  103 |   end process bus_access;
+  106 |   clkgen_en_o <= ctrl(ctrl_en_c);
+  111 |   timer_core: process(rstn_i, clk_i)
+  112 |   begin
+  113 |     if (rstn_i = '0') then
+  114 |       timer.tick  <= '0';
+  115 |       timer.count <= (others => '0');
+  116 |     elsif rising_edge(clk_i) then
+  117 |       timer.tick <= clkgen_i(to_integer(unsigned(ctrl(ctrl_prsc2_c downto ctrl_prsc0_c))));
+  118 |       if (ctrl(ctrl_en_c) = '0') then
+  119 |         timer.count <= (others => '0');
+  120 |       elsif (timer.tick = '1') then
+  121 |         if (timer.match = '1') then
+  122 |           timer.count <= (others => '0');
+  123 |         else
+  124 |           timer.count <= std_ulogic_vector(unsigned(timer.count) + 1);
+  125 |         end if;
+  126 |       end if;
+  127 |     end if;
+  128 |   end process timer_core;
+  131 |   timer.match <= '1' when (timer.count = timer.thres) else '0';
+  136 |   irq_generator: process(rstn_i, clk_i)
+  137 |   begin
+  138 |     if (rstn_i = '0') then
+  139 |       irq_pnd <= '0';
+  140 |     elsif rising_edge(clk_i) then
+  141 |       if (ctrl(ctrl_en_c) = '1') then
+  142 |         if (timer.match = '1') then
+  143 |           irq_pnd <= '1';
+  144 |         elsif (irq_clr = '1') then
+  145 |           irq_pnd <= '0';
+  146 |         end if;
+  147 |       else
+  148 |         irq_pnd <= '0';
+  149 |       end if;
+  150 |     end if;
+  151 |   end process irq_generator;
+  154 |   irq_o <= irq_pnd;
+  157 | end neorv32_gptmr_rtl;
+
+=== RELATIONSHIP MAP: ELEMENTS AND RECORDS ===
+PORT {"name":"clk_i","entity":"neorv32_gptmr","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":20},{"id":2,"line":59},{"id":3,"line":66},{"id":4,"line":111},{"id":5,"line":116},{"id":6,"line":136},{"id":7,"line":140}]}
+    {"type":"SEQUENCES","at":[3],"lines":[66],"targets":["bus_rsp_o.ack","bus_rsp_o.data","bus_rsp_o.err","ctrl","irq_clr","timer.thres"]}
+    {"type":"SEQUENCES","at":[5],"lines":[116],"targets":["timer.count","timer.tick"]}
+    {"type":"SEQUENCES","at":[7],"lines":[140],"targets":["irq_pnd"]}
+PORT {"name":"rstn_i","entity":"neorv32_gptmr","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":21},{"id":2,"line":59},{"id":3,"line":61},{"id":4,"line":111},{"id":5,"line":113},{"id":6,"line":136},{"id":7,"line":138}]}
+    {"type":"RESETS","at":[3],"lines":[61],"targets":["bus_rsp_o","ctrl","irq_clr","timer.thres"]}
+    {"type":"RESETS","at":[5],"lines":[113],"targets":["timer.count","timer.tick"]}
+    {"type":"RESETS","at":[7],"lines":[138],"targets":["irq_pnd"]}
+PORT {"name":"bus_req_i","entity":"neorv32_gptmr","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":22},{"id":2,"line":68},{"id":3,"line":73},{"id":4,"line":74},{"id":5,"line":75},{"id":6,"line":76},{"id":7,"line":77},{"id":8,"line":78},{"id":9,"line":79},{"id":10,"line":81},{"id":11,"line":83},{"id":12,"line":84},{"id":13,"line":87}]}
+PORT {"name":"bus_req_i.addr","entity":"neorv32_gptmr","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":22},{"id":2,"line":75},{"id":3,"line":83},{"id":4,"line":87}]}
+    {"type":"SELECTS","at":[4],"guard":"bus_req_i.addr(3 downto 2) = \"00\" | bus_req_i.addr(3 downto 2) = \"01\" | not (bus_req_i.addr(3 downto 2) in {\"00\", \"01\"})","lines":[87],"targets":["bus_rsp_o.data"]}
+    {"type":"GATES","at":[2],"guard":"bus_req_i.addr(3 downto 2) = \"00\"","lines":[75],"targets":["ctrl","irq_clr"]}
+    {"type":"GATES","at":[3],"guard":"bus_req_i.addr(3 downto 2) = \"01\"","lines":[83],"targets":["timer.thres"]}
+PORT {"name":"bus_req_i.data","entity":"neorv32_gptmr","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":22},{"id":2,"line":76},{"id":3,"line":77},{"id":4,"line":78},{"id":5,"line":79},{"id":6,"line":81},{"id":7,"line":84}]}
+    {"type":"CARRIES","at":[7],"lines":[84],"targets":["timer.thres"]}
+    {"type":"SOURCES","at":[2,3,4,5],"lines":[76,77,78,79],"targets":["ctrl"]}
+    {"type":"SOURCES","at":[6],"lines":[81],"targets":["irq_clr"]}
+PORT {"name":"bus_req_i.ben","entity":"neorv32_gptmr","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":22}]}
+PORT {"name":"bus_req_i.stb","entity":"neorv32_gptmr","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":22},{"id":2,"line":68},{"id":3,"line":73}]}
+    {"type":"GATES","at":[3],"guard":"bus_req_i.stb = '1'","lines":[73],"targets":["bus_rsp_o.data","ctrl","irq_clr","timer.thres"]}
+    {"type":"CARRIES","at":[2],"lines":[68],"targets":["bus_rsp_o.ack"]}
+PORT {"name":"bus_req_i.rw","entity":"neorv32_gptmr","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":22},{"id":2,"line":74}]}
+    {"type":"GATES","at":[2],"guard":"not (bus_req_i.rw = '1')","lines":[74],"targets":["bus_rsp_o.data"]}
+    {"type":"GATES","at":[2],"guard":"bus_req_i.rw = '1'","lines":[74],"targets":["ctrl","irq_clr","timer.thres"]}
+PORT {"name":"bus_req_i.src","entity":"neorv32_gptmr","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":22}]}
+PORT {"name":"bus_req_i.priv","entity":"neorv32_gptmr","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":22}]}
+PORT {"name":"bus_req_i.debug","entity":"neorv32_gptmr","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":22}]}
+PORT {"name":"bus_req_i.amo","entity":"neorv32_gptmr","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":22}]}
+PORT {"name":"bus_req_i.amoop","entity":"neorv32_gptmr","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":22}]}
+PORT {"name":"bus_req_i.lock","entity":"neorv32_gptmr","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":22}]}
+PORT {"name":"bus_req_i.fence","entity":"neorv32_gptmr","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":22}]}
+PORT {"name":"bus_rsp_o","entity":"neorv32_gptmr","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":23},{"id":2,"line":62},{"id":3,"line":68},{"id":4,"line":69},{"id":5,"line":70},{"id":6,"line":89},{"id":7,"line":90},{"id":8,"line":91},{"id":9,"line":92},{"id":10,"line":94},{"id":11,"line":96},{"id":12,"line":98}]}
+    {"constant_drivers":[{"at":2,"value":"rsp_terminate_c","lines":[62]}]}
+    {"type":"RESET_BY","at":[2],"lines":[62],"targets":["rstn_i"]}
+PORT {"name":"bus_rsp_o.ack","entity":"neorv32_gptmr","handling":["ORIGINATES"],"boundary":{"mode":"out","drive":"driven"},"storage":"edge"}
+    {"occurrences":[{"id":1,"line":23},{"id":2,"line":68}]}
+    {"type":"CLOCKED_BY","at":[2],"lines":[68],"targets":["clk_i"]}
+    {"type":"COPIES","at":[2],"lines":[68],"targets":["bus_req_i.stb"]}
+PORT {"name":"bus_rsp_o.err","entity":"neorv32_gptmr","handling":["ORIGINATES"],"boundary":{"mode":"out","drive":"driven"},"storage":"edge"}
+    {"occurrences":[{"id":1,"line":23},{"id":2,"line":69}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[69]}]}
+    {"type":"CLOCKED_BY","at":[2],"lines":[69],"targets":["clk_i"]}
+PORT {"name":"bus_rsp_o.data","entity":"neorv32_gptmr","handling":["ORIGINATES"],"boundary":{"mode":"out","drive":"driven"},"storage":"edge"}
+    {"occurrences":[{"id":1,"line":23},{"id":2,"line":70},{"id":3,"line":89},{"id":4,"line":90},{"id":5,"line":91},{"id":6,"line":92},{"id":7,"line":94},{"id":8,"line":96},{"id":9,"line":98}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[70]}]}
+    {"type":"CLOCKED_BY","at":[2,3,4,5,6,7,8,9],"lines":[70,89,90,91,92,94,96,98],"targets":["clk_i"]}
+    {"type":"SELECTED_BY","at":[3,4,5,6,7],"guard":"bus_req_i.addr(3 downto 2) = \"00\"","lines":[89,90,91,92,94],"targets":["bus_req_i.addr"]}
+    {"type":"SELECTED_BY","at":[8],"guard":"bus_req_i.addr(3 downto 2) = \"01\"","lines":[96],"targets":["bus_req_i.addr"]}
+    {"type":"SELECTED_BY","at":[9],"guard":"not (bus_req_i.addr(3 downto 2) in {\"00\", \"01\"})","lines":[98],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[3,4,5,6,7,8,9],"guard":"not (bus_req_i.rw = '1')","lines":[89,90,91,92,94,96,98],"targets":["bus_req_i.rw"]}
+    {"type":"GATED_BY","at":[3,4,5,6,7,8,9],"guard":"bus_req_i.stb = '1'","lines":[89,90,91,92,94,96,98],"targets":["bus_req_i.stb"]}
+    {"type":"COPIES","at":[7],"lines":[94],"targets":["irq_pnd"]}
+    {"type":"COPIES","at":[8],"lines":[96],"targets":["timer.thres"]}
+    {"type":"COPIES","at":[9],"lines":[98],"targets":["timer.count"]}
+    {"type":"DERIVES_FROM","at":[3,4,5,6],"lines":[89,90,91,92],"targets":["ctrl"]}
+PORT {"name":"clkgen_en_o","entity":"neorv32_gptmr","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":24},{"id":2,"line":106}]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[106],"targets":["ctrl"]}
+PORT {"name":"clkgen_i","entity":"neorv32_gptmr","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25},{"id":2,"line":117}]}
+    {"type":"SOURCES","at":[2],"lines":[117],"targets":["timer.tick"]}
+PORT {"name":"irq_o","entity":"neorv32_gptmr","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":26},{"id":2,"line":154}]}
+    {"type":"COPIES","at":[2],"lines":[154],"targets":["irq_pnd"]}
+SIGNAL {"name":"ctrl","entity":"neorv32_gptmr","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":41},{"id":2,"line":63},{"id":3,"line":76},{"id":4,"line":77},{"id":5,"line":78},{"id":6,"line":79},{"id":7,"line":89},{"id":8,"line":90},{"id":9,"line":91},{"id":10,"line":92},{"id":11,"line":106},{"id":12,"line":117},{"id":13,"line":118},{"id":14,"line":141}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[63]}]}
+    {"type":"SELECTS","at":[12],"guard":"clkgen_i(to_integer(unsigned(ctrl(ctrl_prsc2_c downto ctrl_prsc0_c))))","lines":[117],"targets":["timer.tick"]}
+    {"type":"GATES","at":[13],"guard":"ctrl(ctrl_en_c) = '0' | not (ctrl(ctrl_en_c) = '0')","lines":[118],"targets":["timer.count"]}
+    {"type":"GATES","at":[14],"guard":"ctrl(ctrl_en_c) = '1' | not (ctrl(ctrl_en_c) = '1')","lines":[141],"targets":["irq_pnd"]}
+    {"type":"SOURCES","at":[7,8,9,10],"lines":[89,90,91,92],"targets":["bus_rsp_o.data"]}
+    {"type":"SOURCES","at":[11],"lines":[106],"targets":["clkgen_en_o"]}
+    {"type":"CLOCKED_BY","at":[3,4,5,6],"lines":[76,77,78,79],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[63],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3,4,5,6],"guard":"bus_req_i.addr(3 downto 2) = \"00\"","lines":[76,77,78,79],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[3,4,5,6],"guard":"bus_req_i.rw = '1'","lines":[76,77,78,79],"targets":["bus_req_i.rw"]}
+    {"type":"GATED_BY","at":[3,4,5,6],"guard":"bus_req_i.stb = '1'","lines":[76,77,78,79],"targets":["bus_req_i.stb"]}
+    {"type":"DERIVES_FROM","at":[3,4,5,6],"lines":[76,77,78,79],"targets":["bus_req_i.data"]}
+SIGNAL {"name":"timer","entity":"neorv32_gptmr","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":50},{"id":2,"line":64},{"id":3,"line":84},{"id":4,"line":96},{"id":5,"line":98},{"id":6,"line":114},{"id":7,"line":115},{"id":8,"line":117},{"id":9,"line":119},{"id":10,"line":120},{"id":11,"line":121},{"id":12,"line":122},{"id":13,"line":124},{"id":14,"line":124},{"id":15,"line":131},{"id":16,"line":131},{"id":17,"line":131},{"id":18,"line":142}]}
+SIGNAL {"name":"timer.tick","entity":"neorv32_gptmr","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":50},{"id":2,"line":114},{"id":3,"line":117},{"id":4,"line":120}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[114]}]}
+    {"type":"GATES","at":[4],"guard":"timer.tick = '1'","lines":[120],"targets":["timer.count"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[117],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[114],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[3],"guard":"clkgen_i(to_integer(unsigned(ctrl(ctrl_prsc2_c downto ctrl_prsc0_c))))","lines":[117],"targets":["ctrl"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[117],"targets":["clkgen_i"]}
+SIGNAL {"name":"timer.thres","entity":"neorv32_gptmr","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":50},{"id":2,"line":64},{"id":3,"line":84},{"id":4,"line":96},{"id":5,"line":131}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[64]}]}
+    {"type":"CONSTRAINS","at":[5],"guard":"(timer.count = timer.thres)","lines":[131],"targets":["timer.match"]}
+    {"type":"CARRIES","at":[4],"lines":[96],"targets":["bus_rsp_o.data"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[84],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[64],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.addr(3 downto 2) = \"01\"","lines":[84],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.rw = '1'","lines":[84],"targets":["bus_req_i.rw"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.stb = '1'","lines":[84],"targets":["bus_req_i.stb"]}
+    {"type":"COPIES","at":[3],"lines":[84],"targets":["bus_req_i.data"]}
+SIGNAL {"name":"timer.count","entity":"neorv32_gptmr","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":50},{"id":2,"line":98},{"id":3,"line":115},{"id":4,"line":119},{"id":5,"line":122},{"id":6,"line":124},{"id":7,"line":124},{"id":8,"line":131}]}
+    {"constant_drivers":[{"at":3,"value":"(others => '0')","lines":[115]},{"at":4,"value":"(others => '0')","lines":[119]},{"at":5,"value":"(others => '0')","lines":[122]}]}
+    {"type":"CONSTRAINS","at":[8],"guard":"(timer.count = timer.thres)","lines":[131],"targets":["timer.match"]}
+    {"type":"CARRIES","at":[2],"lines":[98],"targets":["bus_rsp_o.data"]}
+    {"type":"SOURCES","at":[7],"lines":[124],"targets":["timer.count"]}
+    {"type":"CLOCKED_BY","at":[4,5,6],"lines":[119,122,124],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[3],"lines":[115],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[4],"guard":"ctrl(ctrl_en_c) = '0'","lines":[119],"targets":["ctrl"]}
+    {"type":"GATED_BY","at":[5,6],"guard":"not (ctrl(ctrl_en_c) = '0')","lines":[122,124],"targets":["ctrl"]}
+    {"type":"GATED_BY","at":[5],"guard":"timer.match = '1'","lines":[122],"targets":["timer.match"]}
+    {"type":"GATED_BY","at":[5,6],"guard":"timer.tick = '1'","lines":[122,124],"targets":["timer.tick"]}
+    {"type":"GATED_BY","at":[6],"guard":"not (timer.match = '1')","lines":[124],"targets":["timer.match"]}
+    {"type":"DERIVES_FROM","at":[6],"lines":[124],"targets":["timer.count"]}
+SIGNAL {"name":"timer.match","entity":"neorv32_gptmr","kind":"signal","handling":["ORIGINATES","CONSUMES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":50},{"id":2,"line":121},{"id":3,"line":131},{"id":4,"line":142}]}
+    {"type":"GATES","at":[2],"guard":"not (timer.match = '1') | timer.match = '1'","lines":[121],"targets":["timer.count"]}
+    {"type":"GATES","at":[4],"guard":"not (timer.match = '1') | timer.match = '1'","lines":[142],"targets":["irq_pnd"]}
+    {"type":"CONSTRAINED_BY","at":[3],"guard":"(timer.count = timer.thres)","lines":[131],"targets":["timer.count","timer.thres"]}
+SIGNAL {"name":"irq_pnd","entity":"neorv32_gptmr","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":53},{"id":2,"line":94},{"id":3,"line":139},{"id":4,"line":143},{"id":5,"line":145},{"id":6,"line":148},{"id":7,"line":154}]}
+    {"constant_drivers":[{"at":3,"value":"'0'","lines":[139]},{"at":4,"value":"'1'","lines":[143]},{"at":5,"value":"'0'","lines":[145]},{"at":6,"value":"'0'","lines":[148]}]}
+    {"type":"CARRIES","at":[2],"lines":[94],"targets":["bus_rsp_o.data"]}
+    {"type":"CARRIES","at":[7],"lines":[154],"targets":["irq_o"]}
+    {"type":"CLOCKED_BY","at":[4,5,6],"lines":[143,145,148],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[3],"lines":[139],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[4,5],"guard":"ctrl(ctrl_en_c) = '1'","lines":[143,145],"targets":["ctrl"]}
+    {"type":"GATED_BY","at":[4],"guard":"timer.match = '1'","lines":[143],"targets":["timer.match"]}
+    {"type":"GATED_BY","at":[5],"guard":"irq_clr = '1'","lines":[145],"targets":["irq_clr"]}
+    {"type":"GATED_BY","at":[5],"guard":"not (timer.match = '1')","lines":[145],"targets":["timer.match"]}
+    {"type":"GATED_BY","at":[6],"guard":"not (ctrl(ctrl_en_c) = '1')","lines":[148],"targets":["ctrl"]}
+SIGNAL {"name":"irq_clr","entity":"neorv32_gptmr","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":53},{"id":2,"line":65},{"id":3,"line":71},{"id":4,"line":81},{"id":5,"line":144}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[65]},{"at":3,"value":"'0'","lines":[71]}]}
+    {"type":"GATES","at":[5],"guard":"irq_clr = '1'","lines":[144],"targets":["irq_pnd"]}
+    {"type":"CLOCKED_BY","at":[3,4],"lines":[71,81],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[65],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[4],"guard":"bus_req_i.addr(3 downto 2) = \"00\"","lines":[81],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[4],"guard":"bus_req_i.rw = '1'","lines":[81],"targets":["bus_req_i.rw"]}
+    {"type":"GATED_BY","at":[4],"guard":"bus_req_i.stb = '1'","lines":[81],"targets":["bus_req_i.stb"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[81],"targets":["bus_req_i.data"]}
+
+=== RELATIONSHIP MAP: FLOW GRAPH (computed by a program from the records above) ===
+MAP CHECK {"elements":30,"driving records":49,"receiving records":49,"driving without receiving":0,"receiving without driving":0}
+    {"clock or reset (drive SEQUENCES / RESETS)":["clk_i","rstn_i"]}
+    {"whole records (their fields carry the records)":["bus_req_i","bus_rsp_o","timer"]}
+    {"self-updating (X is computed from X: counters, state registers)":["timer.count"]}
+PATH {"from":"bus_req_i.data","source":"input"}
+    {"stores":["bus_rsp_o.data","ctrl","irq_clr","timer.thres"]}
+    {"exits":["bus_rsp_o.data","clkgen_en_o"]}
+    {"influence":["bus_req_i.addr","bus_req_i.rw","bus_req_i.stb"]}
+PATH {"from":"bus_req_i.stb","source":"input"}
+    {"stores":["bus_rsp_o.ack"]}
+    {"exits":["bus_rsp_o.ack"]}
+PATH {"from":"clkgen_i","source":"input"}
+    {"stores":["timer.tick"]}
+    {"influence":["ctrl"]}
+PATH {"from":"irq_pnd","source":"constant-valued"}
+    {"stores":["bus_rsp_o.data"]}
+    {"exits":["bus_rsp_o.data","irq_o"]}
+    {"influence":["bus_req_i.addr","bus_req_i.rw","bus_req_i.stb","ctrl","irq_clr","timer.match"]}
+PATH {"from":"timer.count","source":"constant-valued"}
+    {"stores":["bus_rsp_o.data"]}
+    {"exits":["bus_rsp_o.data"]}
+    {"influence":["bus_req_i.addr","bus_req_i.rw","bus_req_i.stb","ctrl","timer.match","timer.tick"]}
+CONTROL-ONLY {"from":"bus_req_i.addr","source":"input","gates or selects":["bus_rsp_o.data","ctrl","irq_clr","timer.thres"]}
+CONTROL-ONLY {"from":"bus_req_i.rw","source":"input","gates or selects":["bus_rsp_o.data","ctrl","irq_clr","timer.thres"]}
+    {"no local use (no relationship, connection or constant driver)":["bus_req_i.amo","bus_req_i.amoop","bus_req_i.ben","bus_req_i.debug","bus_req_i.fence","bus_req_i.lock","bus_req_i.priv","bus_req_i.src"]}
+    {"not reached from an input or constant-valued element":["timer.match"]}
+
+Identify the primary security assets for 'neorv32_gptmr' and return the JSON object per the contract.

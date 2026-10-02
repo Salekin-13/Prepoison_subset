@@ -1,0 +1,215 @@
+{
+  "module name": "neorv32_debug_dtm",
+  "conceptual assets": [
+    {
+      "concept": "Synchronized JTAG inputs and TCK edge detection (TDI/TMS sampling and TCK rising/falling)",
+      "security objective": "Integrity",
+      "reasoning": "The tap_synchronizer process samples jtag_tck_i, jtag_tdi_i and jtag_tms_i into tap_sync.t*_ff and concurrent assignments define tap_sync.tck_rising, tap_sync.tck_falling, tap_sync.tdi and tap_sync.tms. tap_control and reg_access use these computed signals to gate TAP state transitions, IR/DR shifting and TDO updates. Incorrect sampling or edge detection would cause wrong state changes or incorrect serial shifts, so integrity of these sampled inputs/edges is required for correct TAP operation.",
+      "related structural assets": [
+        {
+          "asset rtl": "jtag_tck_i",
+          "entity": "neorv32_debug_dtm",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "jtag_tdi_i",
+          "entity": "neorv32_debug_dtm",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "jtag_tms_i",
+          "entity": "neorv32_debug_dtm",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "tap_sync.tck_rising",
+          "entity": "neorv32_debug_dtm",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "tap_sync.tck_falling",
+          "entity": "neorv32_debug_dtm",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "tap_sync.tdi",
+          "entity": "neorv32_debug_dtm",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "tap_sync.tms",
+          "entity": "neorv32_debug_dtm",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "TAP controller state (TAP FSM) that selects IR/DR phases",
+      "security objective": "Integrity",
+      "reasoning": "tap_ctrl_state is updated in the tap_control process (on tap_sync.tck_rising) and determines transitions between LOGIC_RESET, IR_* and DR_* states. reg_access, update_trigger and other logic branch on tap_ctrl_state to perform IR capture/shift and DR capture/shift/update; corruption of this state would change which operations the module performs, establishing an integrity requirement.",
+      "related structural assets": [
+        {
+          "asset rtl": "tap_ctrl_state",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "DR-UPDATE event (single-cycle strobe) used to trigger DTM actions",
+      "security objective": "Integrity",
+      "reasoning": "update_trigger records DR_UPDATE into dr_trigger.sreg (bit0 set when tap_ctrl_state = DR_UPDATE, bit1 delayed) and dr_trigger.valid is asserted when sreg = \"01\". dmi_controller and other logic test dr_trigger.valid to load dtmcs resets and to start/qualify DMI operations; false or missing update events would cause incorrect application of control or start of transactions, so the event's integrity is established by the RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "dr_trigger.sreg",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "dr_trigger.valid",
+          "entity": "neorv32_debug_dtm",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Instruction register selection value (IREG) that selects which DR register is addressed",
+      "security objective": "Integrity",
+      "reasoning": "tap_reg.ireg is loaded to addr_idcode_c on LOGIC_RESET or IR_CAPTURE and is shifted in during IR_SHIFT using the sampled TDI. reg_access uses tap_reg.ireg to select IDCODE, DTMCS, DMI or bypass paths for DR_CAPTURE/DR_SHIFT/DR_UPDATE. Integrity of ireg is required so the intended DR register is selected and operated on, as shown by the reg_access case on tap_reg.ireg.",
+      "related structural assets": [
+        {
+          "asset rtl": "tap_reg.ireg",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "IDCODE register content and its JTAG readout",
+      "security objective": "Integrity",
+      "reasoning": "When tap_reg.ireg = addr_idcode_c the DR_CAPTURE path sets tap_reg.idcode to IDCODE_VERSION & IDCODE_PARTID & IDCODE_MANID & '1', and DR_SHIFT shifts tap_reg.idcode from tap_sync.tdi; on tap_sync.tck_falling jtag_tdo_o is driven from tap_reg.idcode(0) for IDCODE. The RTL's capture/shift/readback flow establishes that integrity of tap_reg.idcode and its output on jtag_tdo_o is required for correct device identification.",
+      "related structural assets": [
+        {
+          "asset rtl": "tap_reg.idcode",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "jtag_tdo_o",
+          "entity": "neorv32_debug_dtm",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "DTM control/status register (DTMCS) content presented via JTAG",
+      "security objective": "Integrity",
+      "reasoning": "tap_reg.dtmcs is assigned from tap_reg.dtmcs_nxt on DR_CAPTURE and shifted in DR_SHIFT; tap_reg.dtmcs_nxt is computed from dmi_ctrl fields (including dmihardreset/dmireset) and dmi_nxt. reg_access drives jtag_tdo_o from tap_reg.dtmcs when ireg = addr_dtmcs_c. The RTL establishes that tap_reg.dtmcs is the register carrying DTM control/status bits whose correctness (integrity) governs controller status and commands.",
+      "related structural assets": [
+        {
+          "asset rtl": "tap_reg.dtmcs",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tap_reg.dtmcs_nxt",
+          "entity": "neorv32_debug_dtm",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "jtag_tdo_o",
+          "entity": "neorv32_debug_dtm",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "DMI reset state (dmireset and dmihardreset) that gates DMI acceptance and clears error",
+      "security objective": "Integrity",
+      "reasoning": "dmi_controller loads dmi_ctrl.dmireset <= tap_reg.dtmcs(16) and dmi_ctrl.dmihardreset <= tap_reg.dtmcs(17) when dr_trigger.valid and tap_reg.ireg = addr_dtmcs_c; these fields are used to clear dmi_ctrl.err and to prevent starting new DMI ops when asserted. The RTL shows these fields determine DMI control behavior, so their integrity is required.",
+      "related structural assets": [
+        {
+          "asset rtl": "dmi_ctrl.dmireset",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "dmi_ctrl.dmihardreset",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "DMI request payload and operation control (address, write data, op) that start DMI transactions",
+      "security objective": "Integrity",
+      "reasoning": "The DMI register (tap_reg.dmi) holds concatenated addr|wdata|op fields and is shifted or captured in reg_access; when dmi_ctrl.busy = '0' and dr_trigger.valid and ireg = addr_dmi_c, dmi_controller copies tap_reg.dmi(40 downto 34) into dmi_ctrl.addr, tap_reg.dmi(33 downto 02) into dmi_ctrl.wdata and, for op codes matching read/write, sets dmi_ctrl.op and dmi_ctrl.busy to start a transaction. The RTL therefore establishes that integrity of the tap_reg.dmi contents and the dmi_ctrl.addr/wdata/op fields is required to control target accesses.",
+      "related structural assets": [
+        {
+          "asset rtl": "tap_reg.dmi",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tap_reg.dmi_nxt",
+          "entity": "neorv32_debug_dtm",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "dmi_ctrl.addr",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "dmi_ctrl.wdata",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "dmi_ctrl.op",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "DMI busy state that gates acceptance of new DMI requests and influences error generation",
+      "security objective": "Integrity",
+      "reasoning": "dmi_ctrl.busy is driven in dmi_controller: it is set to '1' when a new DMI op is accepted and cleared when dmi_rsp_i.ack = '1'. The busy bit is tested to prevent accepting new ops and to set dmi_ctrl.err on conflicting updates; the RTL thus establishes that integrity of busy is required for correct request sequencing and error signaling.",
+      "related structural assets": [
+        {
+          "asset rtl": "dmi_ctrl.busy",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "DMI response data and error state presented to JTAG (rdata and err readback)",
+      "security objective": "Integrity",
+      "reasoning": "When dmi_ctrl.busy = '1' the controller assigns dmi_ctrl.rdata <= dmi_rsp_i.data and clears busy when dmi_rsp_i.ack = '1'; dmi_ctrl.err is updated and both rdata and err are concatenated into tap_reg.dmi_nxt (tap_reg.dmi_nxt <= dmi_ctrl.addr & dmi_ctrl.rdata & replicate_f(dmi_ctrl.err,2)) which is captured into tap_reg.dmi for DR_CAPTURE and then shifted out via jtag_tdo_o. The RTL thus establishes that integrity of read response data and error state (and availability of ack) is required for correct readback.",
+      "related structural assets": [
+        {
+          "asset rtl": "dmi_ctrl.rdata",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "dmi_ctrl.err",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tap_reg.dmi_nxt",
+          "entity": "neorv32_debug_dtm",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "jtag_tdo_o",
+          "entity": "neorv32_debug_dtm",
+          "realization": "exit port"
+        }
+      ]
+    }
+  ]
+}

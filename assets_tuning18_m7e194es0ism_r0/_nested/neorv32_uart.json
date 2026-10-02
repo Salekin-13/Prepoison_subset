@@ -1,0 +1,246 @@
+{
+  "module name": "neorv32_uart",
+  "conceptual assets": [
+    {
+      "concept": "UART global enable configuration (controls transmitter, receiver and clock-generation)",
+      "security objective": "Integrity",
+      "reasoning": "bus_access writes and clears the enable bit (`if (bus_req_i.stb = '1') ... ctrl.enable <= bus_req_i.data(ctrl_en_c);` ; reset clears it). The enable gates multiple flows: `clkgen_en_o <= ctrl.enable;` transmitter samples `tx_engine.state(2) <= ctrl.enable;` receiver samples `rx_engine.state(1) <= ctrl.enable;` and both IRQ generators AND their outputs with ctrl.enable. Corruption of this stored configuration would violate the implemented gating of clocks, engines and IRQs. The concept is realized by the stored ctrl.enable and exported via clkgen_en_o.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.enable",
+          "entity": "neorv32_uart",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "clkgen_en_o",
+          "entity": "neorv32_uart",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "UART baud-rate configuration (baud)",
+      "security objective": "Integrity",
+      "reasoning": "bus_access stores the baud field on writes (`ctrl.baud <= bus_req_i.data(ctrl_baud9_c downto ctrl_baud0_c)`); transmitter and receiver use this stored value to load and reload baud counters (`tx_engine.baudcnt <= ctrl.baud;` and receiver reloads `rx_engine.baudcnt <= ctrl.baud` / initializes from `ctrl.baud`). Integrity of ctrl.baud is required for the implemented baud timing behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.baud",
+          "entity": "neorv32_uart",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "UART prescaler selection (prsc) used to derive uart_clk",
+      "security objective": "Integrity",
+      "reasoning": "bus_access stores the prescaler bits on writes (`ctrl.prsc <= bus_req_i.data(ctrl_prsc2_c downto ctrl_prsc0_c)`), and the module selects the UART sampling clock with `uart_clk <= clkgen_i(to_integer(unsigned(ctrl.prsc)));`. The stored prescaler controls which clkgen_i bit is sampled for uart timing; its integrity matters to the implemented sampling/baud flow.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.prsc",
+          "entity": "neorv32_uart",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Hardware flow-control enable configuration (hwfc_en)",
+      "security objective": "Integrity",
+      "reasoning": "bus_access programs the hwfc enable (`ctrl.hwfc_en <= bus_req_i.data(ctrl_hwfc_en_c)`). That stored bit is used in transmitter start logic (`... or (ctrl.hwfc_en = '0')`) and in RTS control (`rtr_control` process branches on `if (ctrl.hwfc_en = '1') then ...`). Integrity of ctrl.hwfc_en is required for the implemented flow-control decisions.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.hwfc_en",
+          "entity": "neorv32_uart",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "RTS line state (uart_rtsn_o)",
+      "security objective": "Integrity",
+      "reasoning": "The rtr_control process computes the RTS output and drives the external line: `if (ctrl.hwfc_en = '1') then if (ctrl.enable = '0') or (rx_fifo.half = '1') then uart_rtsn_o <= '1'; else uart_rtsn_o <= '0'; end if; else uart_rtsn_o <= '0';`. The serial RTS level leaving the entity must reflect this implemented decision; its integrity is therefore security-relevant.",
+      "related structural assets": [
+        {
+          "asset rtl": "uart_rtsn_o",
+          "entity": "neorv32_uart",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Interrupt-generation configuration and IRQ outputs",
+      "security objective": "Integrity",
+      "reasoning": "bus_access writes the irq-enable bits (`ctrl.irq_rx_nempty`, `ctrl.irq_rx_half`, `ctrl.irq_rx_full`, `ctrl.irq_tx_empty`, `ctrl.irq_tx_nhalf`) on bus writes. rx_irq_generator and tx_irq_generator compute irq_rx_o and irq_tx_o by ANDing ctrl.enable with the corresponding ctrl.irq_* flags combined with FIFO status signals (e.g. `(ctrl.irq_rx_nempty and rx_fifo.avail)` and `(ctrl.irq_tx_empty and (not tx_fifo.avail))`). Corruption of the stored enable bits or the IRQ outputs would change whether IRQs are raised, violating the implemented interrupt behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.irq_rx_nempty",
+          "entity": "neorv32_uart",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_rx_half",
+          "entity": "neorv32_uart",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_rx_full",
+          "entity": "neorv32_uart",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_tx_empty",
+          "entity": "neorv32_uart",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_tx_nhalf",
+          "entity": "neorv32_uart",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "irq_rx_o",
+          "entity": "neorv32_uart",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "irq_tx_o",
+          "entity": "neorv32_uart",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Transmit FIFO occupancy/status (avail, half, free)",
+      "security objective": "Integrity",
+      "reasoning": "The instantiated TX FIFO exposes status signals mapped to tx_fifo.avail, tx_fifo.half and tx_fifo.free. These signals are read by the transmitter (`if (tx_fifo.avail = '1') then ...`), by tx_irq_generator (`(ctrl.irq_tx_empty and (not tx_fifo.avail)) or (ctrl.irq_tx_nhalf and (not tx_fifo.half))`), and by bus_access for status readback (`bus_rsp_o.data(...) <= not tx_fifo.avail/half/free`). Integrity of these status signals is required for correct decision and reporting flows.",
+      "related structural assets": [
+        {
+          "asset rtl": "tx_fifo.avail",
+          "entity": "neorv32_uart",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tx_fifo.half",
+          "entity": "neorv32_uart",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tx_fifo.free",
+          "entity": "neorv32_uart",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Receive FIFO occupancy/status (avail, half, free)",
+      "security objective": "Integrity",
+      "reasoning": "The instantiated RX FIFO exposes status signals mapped to rx_fifo.avail, rx_fifo.half and rx_fifo.free. These are used in rx_irq_generator (`(ctrl.irq_rx_nempty and rx_fifo.avail) or (ctrl.irq_rx_half and rx_fifo.half) or (ctrl.irq_rx_full and (not rx_fifo.free))`), in rtr_control (`rx_fifo.half`), and in bus_access readback (`bus_rsp_o.data(...) <= rx_fifo.avail/half/not rx_fifo.free`). Integrity of these status signals matters to interrupt, RTS and readback behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "rx_fifo.avail",
+          "entity": "neorv32_uart",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rx_fifo.half",
+          "entity": "neorv32_uart",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rx_fifo.free",
+          "entity": "neorv32_uart",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Transmit shift-register content and serial output (byte -> serial bit)",
+      "security objective": "Integrity",
+      "reasoning": "The transmitter loads the shift register from the FIFO (`tx_engine.sreg <= tx_fifo.rdata & '0'` in state \"100\"), shifts bits and drives the transmit bit (`tx_engine.txd <= tx_engine.sreg(0)` in state \"111\"). The serial line is exported with `uart_txd_o <= tx_engine.txd`. Integrity of the stored shift-register contents and the driven tx bit is required so transmitted bits reflect the stored byte.",
+      "related structural assets": [
+        {
+          "asset rtl": "tx_engine.sreg",
+          "entity": "neorv32_uart",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tx_engine.txd",
+          "entity": "neorv32_uart",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "uart_txd_o",
+          "entity": "neorv32_uart",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Received shift-register content and RX FIFO queueing (sampled byte -> queued data)",
+      "security objective": "Integrity",
+      "reasoning": "The receiver assembles sampled bits into rx_engine.sreg (`rx_engine.sreg <= rx_engine.sync(2) & rx_engine.sreg(...)`), raises rx_engine.done when a byte completes, then the module sets `rx_fifo.wdata <= rx_engine.sreg(7 downto 0)` and `rx_fifo.we <= rx_engine.done` to enqueue the received byte. bus_access reads queued data from `rx_fifo.rdata`. Integrity of the in-progress and queued receive data is required for correct reception and readback.",
+      "related structural assets": [
+        {
+          "asset rtl": "rx_engine.sreg",
+          "entity": "neorv32_uart",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rx_fifo.wdata",
+          "entity": "neorv32_uart",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "rx_fifo.rdata",
+          "entity": "neorv32_uart",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Receive FIFO overrun flag (rx_engine.over)",
+      "security objective": "Integrity",
+      "reasoning": "The fifo_overrun process sets `rx_engine.over <= '1'` when `(rx_fifo.we = '1') and (rx_fifo.free = '0')` and clears it when `ctrl.enable = '0'`. bus_access reads this flag (`bus_rsp_o.data(ctrl_rx_over_c) <= rx_engine.over`). Integrity of rx_engine.over is required to correctly report and react to FIFO overrun conditions implemented in the RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "rx_engine.over",
+          "entity": "neorv32_uart",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "CTS handshake input and sampled CTS history",
+      "security objective": "Integrity",
+      "reasoning": "The transmitter samples the external CTS input into a 2-bit history (`tx_engine.cts <= tx_engine.cts(0) & uart_ctsn_i`) and checks `tx_engine.cts(1)` together with `ctrl.hwfc_en` to decide progression (`if (tx_engine.cts(1) = '0') or (ctrl.hwfc_en = '0') then ...`). Integrity of the external uart_ctsn_i sample and the stored tx_engine.cts history is required for the implemented HW-FC decision.",
+      "related structural assets": [
+        {
+          "asset rtl": "uart_ctsn_i",
+          "entity": "neorv32_uart",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "tx_engine.cts",
+          "entity": "neorv32_uart",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "FIFO clear control bits (clr_rx, clr_tx)",
+      "security objective": "Integrity",
+      "reasoning": "bus_access writes the clear bits (`ctrl.clr_rx`, `ctrl.clr_tx`) on register writes. The module uses them to clear FIFOs (`tx_fifo.clear <= '1' when (ctrl.enable = '0') or (ctrl.sim_mode = '1') or (ctrl.clr_tx = '1') else '0'` and analogous for rx_fifo.clear). Integrity of the stored clear-control bits is required for the implemented FIFO-clear behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.clr_rx",
+          "entity": "neorv32_uart",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.clr_tx",
+          "entity": "neorv32_uart",
+          "realization": "stores"
+        }
+      ]
+    }
+  ]
+}

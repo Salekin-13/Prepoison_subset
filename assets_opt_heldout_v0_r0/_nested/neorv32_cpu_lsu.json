@@ -1,0 +1,163 @@
+{
+ "module name": "neorv32_cpu_lsu",
+ "module purpose": "neorv32_cpu_lsu captures the access address (mar) and a misalignment flag when ctrl_i.lsu_mo_we is set, registers a data-bus request (store data replicated to the access size, byte enables, rw/priv/debug/amo attributes, a decoded atomic code and a lock flag), issues the request strobe only for an aligned request without a PMP fault, tracks a pending access until acknowledge or trap, and returns aligned, sign- or zero-extended load data on rdata_o with wait status on wait_o and load/store misaligned and access-fault bits on err_o.",
+ "use-case flows": [
+  {
+   "flow": "start",
+   "value": "a load/store request: ctrl_i.lsu_req taken into pending when no access is outstanding, cleared on bus acknowledge or ctrl_i.cpu_trap, and the bus strobe issued only for an aligned request without a PMP fault",
+   "lines": [191, 192, 193, 194, 209]
+  },
+  {
+   "flow": "operate",
+   "value": "access address captured from addr_i into mar under ctrl_i.lsu_mo_we and driven to the bus address and to mar_o",
+   "lines": [55, 56, 67, 68]
+  },
+  {
+   "flow": "operate",
+   "value": "misalignment decision from addr_i(1 downto 0) and the access size ctrl_i.ir_funct3(1 downto 0)",
+   "lines": [55, 57, 58, 59, 60]
+  },
+  {
+   "flow": "operate",
+   "value": "request registered under ctrl_i.lsu_mo_we: write data replicated to the access size, byte enables decoded from addr_i, rw/priv/debug/amo attributes and the decoded atomic code",
+   "lines": [84, 86, 87, 88, 89, 90, 92, 94, 95, 96, 97, 98, 100, 101, 103, 104]
+  },
+  {
+   "flow": "operate",
+   "value": "atomic operation code decoded from ctrl_i.ir_funct12(11 downto 7)",
+   "lines": [119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130]
+  },
+  {
+   "flow": "operate",
+   "value": "lock flag set for an atomic request with ctrl_i.ir_funct12(8) = '0' and cleared when no access is pending",
+   "lines": [142, 143, 144, 145]
+  },
+  {
+   "flow": "read out",
+   "value": "bus read data selected by mar(1 downto 0), sign- or zero-extended by ctrl_i.ir_funct3 and registered on rdata_o while pending, zero otherwise",
+   "lines": [158, 159, 160, 162, 163, 164, 165, 166, 169, 170, 172, 175]
+  },
+  {
+   "flow": "report",
+   "value": "err_o load/store misaligned and access-fault bits (bus error or registered PMP fault) qualified by pending and ctrl_i.lsu_rw, and wait_o as the inverted bus acknowledge",
+   "lines": [190, 200, 203, 204, 205, 206]
+  },
+  {
+   "flow": "reset",
+   "value": "mar, misaligned, the registered request fields, the lock flag, rdata_o, pmp_err and pending cleared while rstn_i = '0'",
+   "lines": [51, 52, 53, 75, 76, 77, 78, 79, 80, 81, 82, 139, 140, 155, 156, 186, 187, 188]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Access address -- the memory address captured for the current load/store and presented on the bus and on mar_o",
+   "security objective": "Integrity",
+   "reasoning": "`mar <= addr_i;` (line 56) captures the address when `ctrl_i.lsu_mo_we = '1'` (line 55); `dbus_req_o.addr <= mar;` (line 67) and `mar_o <= mar;` (line 68) deliver it, and mar(1 downto 0) selects the load byte lane (lines 162, 169). The consumers of the bus address and of mar_o are not supplied, so integrity (they receive exactly the captured address) is Established from lines 56, 67 and 68; inside this entity a wrong mar also misplaces load data (lines 162-172). Availability: mar holds the address between captures (CLOCKED_BY clk_i). addr_i sets (occurrence 2, CARRIES mar); ctrl_i sets through ctrl_i.lsu_mo_we, which gates the capture (occurrence 2, GATES mar, line 55); mar stores (occurrence 3, CLOCKED_BY clk_i, line 56); mar_o is the exit (occurrence 2, COPIES mar, line 68). dbus_req_o.addr is a field of the transport record dbus_req_o and is not reported. No line restricts who reads mar_o, so confidentiality is not established.",
+   "related structural assets": [
+    {"asset rtl": "addr_i", "entity": "neorv32_cpu_lsu", "realization": "sets", "occurrence": 2, "edge": {"type": "CARRIES", "partner": "mar"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_lsu", "realization": "sets", "occurrence": 2, "edge": {"type": "GATES", "partner": "mar"}},
+    {"asset rtl": "mar", "entity": "neorv32_cpu_lsu", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "mar_o", "entity": "neorv32_cpu_lsu", "realization": "exit port", "occurrence": 2, "edge": {"type": "COPIES", "partner": "mar"}}
+   ]
+  },
+  {
+   "concept": "Misaligned-access decision -- whether the captured access violates the alignment its size requires",
+   "security objective": "Integrity",
+   "reasoning": "`case ctrl_i.ir_funct3(1 downto 0) is` (line 57) gives `misaligned <= '0'` for byte accesses (line 58), `misaligned <= addr_i(0);` for halfwords (line 59) and `misaligned <= addr_i(1) or addr_i(0);` otherwise (line 60), registered when ctrl_i.lsu_mo_we is set (line 55). The decision withholds the bus strobe in `dbus_req_o.stb <= ctrl_i.lsu_req and (not misaligned) and (not pmp_fault_i);` (line 209) and raises err_o(0) for loads and err_o(2) for stores while pending (lines 203, 205). Integrity is Established: a wrong flag lets a misaligned access reach the bus or reports a false error. Availability is also Established: a flag held at '1' withholds every strobe (line 209). misaligned stores the decision (occurrence 4, CLOCKED_BY clk_i, line 59; it also computes it, and stores takes precedence); addr_i sets (occurrence 4, GATES misaligned, line 60); ctrl_i sets through ctrl_i.ir_funct3 (occurrence 3, SELECTS misaligned, line 57); err_o is the exit (occurrence 2, GATED_BY misaligned, line 203). dbus_req_o.stb is a transport field and is not reported.",
+   "related structural assets": [
+    {"asset rtl": "misaligned", "entity": "neorv32_cpu_lsu", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "addr_i", "entity": "neorv32_cpu_lsu", "realization": "sets", "occurrence": 4, "edge": {"type": "GATES", "partner": "misaligned"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_lsu", "realization": "sets", "occurrence": 3, "edge": {"type": "SELECTS", "partner": "misaligned"}},
+    {"asset rtl": "err_o", "entity": "neorv32_cpu_lsu", "realization": "exit port", "occurrence": 2, "edge": {"type": "GATED_BY", "partner": "misaligned"}}
+   ]
+  },
+  {
+   "concept": "PMP access-fault status -- the protection fault of the current access, registered and reported as a load or store access fault",
+   "security objective": "Integrity",
+   "reasoning": "`pmp_err <= pmp_fault_i;` (line 190) registers the fault on every clock edge, and `err_o(1) <= pending and (not ctrl_i.lsu_rw) and (dbus_rsp_i.err or pmp_err);` (line 204) with its store counterpart (line 206) reports it as a load or store access fault. Integrity is Established: a cleared pmp_err hides a fault from the report (lines 204, 206), and the unsupplied consumer of err_o must receive exactly these bits. pmp_fault_i sets (occurrence 2, CARRIES pmp_err, line 190; it is also read at line 209, see the request-issue concept); pmp_err stores (occurrence 3, CLOCKED_BY clk_i, line 190); err_o is the exit (occurrence 3, DERIVES_FROM pmp_err, line 204). dbus_rsp_i.err, the other operand, is a field of the transport record dbus_rsp_i and is not reported.",
+   "related structural assets": [
+    {"asset rtl": "pmp_fault_i", "entity": "neorv32_cpu_lsu", "realization": "sets", "occurrence": 2, "edge": {"type": "CARRIES", "partner": "pmp_err"}},
+    {"asset rtl": "pmp_err", "entity": "neorv32_cpu_lsu", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "err_o", "entity": "neorv32_cpu_lsu", "realization": "exit port", "occurrence": 3, "edge": {"type": "DERIVES_FROM", "partner": "pmp_err"}}
+   ]
+  },
+  {
+   "concept": "Bus request issue decision -- whether a load/store request is sent to the data bus",
+   "security objective": "Integrity",
+   "reasoning": "`dbus_req_o.stb <= ctrl_i.lsu_req and (not misaligned) and (not pmp_fault_i);` (line 209) issues the request only when it is requested, aligned and not faulted. Integrity is Established: the RTL withholds misaligned and PMP-faulted requests at this line, and the unsupplied bus consumer must receive exactly this strobe. ctrl_i sets through ctrl_i.lsu_req (occurrence 29, GATES dbus_req_o.stb, line 209); pmp_fault_i sets (occurrence 3, GATES dbus_req_o.stb, line 209), read combinationally here. The decision is stored nowhere and leaves only through dbus_req_o.stb, a field of the transport record dbus_req_o, so no stores, computes or exit reference survives the exclusions; misaligned influences it and is reported under its own concept.",
+   "related structural assets": [
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_lsu", "realization": "sets", "occurrence": 29, "edge": {"type": "GATES", "partner": "dbus_req_o.stb"}},
+    {"asset rtl": "pmp_fault_i", "entity": "neorv32_cpu_lsu", "realization": "sets", "occurrence": 3, "edge": {"type": "GATES", "partner": "dbus_req_o.stb"}}
+   ]
+  },
+  {
+   "concept": "Pending-access state -- whether a load/store is outstanding",
+   "security objective": "Integrity",
+   "reasoning": "access_arbiter sets `pending <= ctrl_i.lsu_req;` when pending = '0' (lines 191-192) and clears it on `(dbus_rsp_i.ack = '1') or (ctrl_i.cpu_trap = '1')` (lines 193-194); it is a self-updating state register (GATED_BY pending at lines 192, 194). pending qualifies load-data capture (line 159), every error bit (lines 203-206) and the lock release (line 144). Integrity is Established: a wrong state captures bus data into rdata_o with no access outstanding, reports or suppresses errors wrongly, or clears the lock flag early. Availability: while pending = '1' a new request is not taken (line 191), so a stuck state blocks later requests; the clear depends on an acknowledge or trap from outside, which is not assumed. pending stores (occurrence 6, CLOCKED_BY clk_i, line 192); ctrl_i sets through ctrl_i.lsu_req (occurrence 23, CARRIES pending, line 192) and ctrl_i.cpu_trap (line 193). dbus_rsp_i.ack also clears it but is a transport field. No output carries pending directly.",
+   "related structural assets": [
+    {"asset rtl": "pending", "entity": "neorv32_cpu_lsu", "realization": "stores", "occurrence": 6, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_lsu", "realization": "sets", "occurrence": 23, "edge": {"type": "CARRIES", "partner": "pending"}}
+   ]
+  },
+  {
+   "concept": "Load data -- bus read data aligned and sign- or zero-extended and returned on rdata_o",
+   "security objective": "Integrity",
+   "reasoning": "mem_di_reg sets rdata_o to zero on every clock edge (line 158) and, while pending = '1' (line 159), selects the byte or halfword by ctrl_i.ir_funct3(1 downto 0) and mar (lines 160-172), extends it as in `rdata_o <= replicate_f((not ctrl_i.ir_funct3(2)) and dbus_rsp_i.data(7),  24) & dbus_rsp_i.data(7 downto 0);` (line 163), or passes the word (line 175). Integrity is Established: the unsupplied consumer of rdata_o must receive exactly the value these lines define. Availability: the value is registered for one edge per pending cycle (lines 157-159). rdata_o is the exit (occurrence 4, DERIVES_FROM dbus_rsp_i.data, line 163; it also stores, CLOCKED_BY clk_i, and exit takes precedence); ctrl_i sets through ctrl_i.ir_funct3 (occurrence 16, SELECTS rdata_o, line 160; SOURCES at lines 163-172). mar selects the lane (lines 162, 169) and pending gates the capture (line 159); each is reported under its own concept. dbus_rsp_i, which carries the read data, is a transport record and is not reported. The zero default (line 158) limits rdata_o to data of a pending access, but no line restricts who reads it, so confidentiality is not claimed.",
+   "related structural assets": [
+    {"asset rtl": "rdata_o", "entity": "neorv32_cpu_lsu", "realization": "exit port", "occurrence": 4, "edge": {"type": "DERIVES_FROM", "partner": "dbus_rsp_i.data"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_lsu", "realization": "sets", "occurrence": 16, "edge": {"type": "SELECTS", "partner": "rdata_o"}}
+   ]
+  },
+  {
+   "concept": "Store data -- write data replicated to the access size and registered for the bus",
+   "security objective": "Integrity",
+   "reasoning": "When ctrl_i.lsu_mo_we is set (line 84), `case ctrl_i.ir_funct3(1 downto 0) is` (line 92) registers wdata_i(7 downto 0) four times (line 94), wdata_i(15 downto 0) twice (line 100) or `dbus_req_o.data <= wdata_i;` (line 103). Integrity is Established: the unsupplied bus consumer must receive exactly this replicated data. wdata_i sets (occurrence 8, CARRIES dbus_req_o.data, line 103; SOURCES at lines 94 and 100): this entity reads it to store it. ctrl_i sets through ctrl_i.ir_funct3 (occurrence 9, SELECTS dbus_req_o.data, line 92). The register that stores the data, dbus_req_o.data, is a field of the transport record dbus_req_o, so no stores or exit reference survives the exclusions.",
+   "related structural assets": [
+    {"asset rtl": "wdata_i", "entity": "neorv32_cpu_lsu", "realization": "sets", "occurrence": 8, "edge": {"type": "CARRIES", "partner": "dbus_req_o.data"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_lsu", "realization": "sets", "occurrence": 9, "edge": {"type": "SELECTS", "partner": "dbus_req_o.data"}}
+   ]
+  },
+  {
+   "concept": "Byte-lane enable mask -- which bytes of the bus word a request enables",
+   "security objective": "Integrity",
+   "reasoning": "Under ctrl_i.lsu_mo_we (line 84) and ctrl_i.ir_funct3 (line 92), dbus_req_o.ben is decoded from addr_i(1 downto 0): one lane for byte accesses, as in `dbus_req_o.ben(0) <= (not addr_i(1)) and (not addr_i(0));` (lines 95-98), two lanes for halfwords (line 101), all four otherwise (line 104). Integrity is Established: a wrong mask enables bytes outside the addressed lanes, and the unsupplied bus consumer must receive exactly this mask. addr_i sets (occurrence 6, GATES dbus_req_o.ben, line 95); ctrl_i sets through ctrl_i.ir_funct3 (occurrence 9, SELECTS dbus_req_o.ben, line 92). The mask is stored only in dbus_req_o.ben, a transport field, so no stores or exit reference survives.",
+   "related structural assets": [
+    {"asset rtl": "addr_i", "entity": "neorv32_cpu_lsu", "realization": "sets", "occurrence": 6, "edge": {"type": "GATES", "partner": "dbus_req_o.ben"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_lsu", "realization": "sets", "occurrence": 9, "edge": {"type": "SELECTS", "partner": "dbus_req_o.ben"}}
+   ]
+  },
+  {
+   "concept": "Access attributes -- read/write direction, privilege, debug and atomic flags registered with each request",
+   "security objective": "Integrity",
+   "reasoning": "`dbus_req_o.rw <= ctrl_i.lsu_rw;`, `dbus_req_o.priv <= ctrl_i.lsu_priv;`, `dbus_req_o.debug <= ctrl_i.cpu_debug;` and `dbus_req_o.amo <= ctrl_i.lsu_amo;` (lines 86-89) are registered when ctrl_i.lsu_mo_we is set (line 84); ctrl_i.lsu_rw also chooses the load or store error bit (lines 203-206). Integrity is Established: the unsupplied bus consumer must receive exactly the attributes of the request. ctrl_i sets (occurrence 6, CARRIES dbus_req_o.priv, line 87): this entity reads these fields to store them and to decide the error bits. The registers holding them are fields of the transport record dbus_req_o, so no stores or exit reference survives. ctrl_i.lsu_fence only passes unchanged to dbus_req_o.fence (line 114) and is not a setting point.",
+   "related structural assets": [
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_lsu", "realization": "sets", "occurrence": 6, "edge": {"type": "CARRIES", "partner": "dbus_req_o.priv"}}
+   ]
+  },
+  {
+   "concept": "Atomic operation code -- the operation decoded from the instruction field and sent with the request",
+   "security objective": "Integrity",
+   "reasoning": "amo_encode decodes `case ctrl_i.ir_funct12(11 downto 7) is` (line 119) into a 4-bit code (lines 120-129, all-zero default at line 130), and `dbus_req_o.amoop <= amo_cmd;` (line 90) registers it under ctrl_i.lsu_mo_we (line 84). Integrity is Established: the unsupplied bus consumer must receive exactly the decoded code. amo_cmd computes it (occurrence 3, SELECTED_BY ctrl_i.ir_funct12, line 120); ctrl_i sets through ctrl_i.ir_funct12 (occurrence 12, SELECTS amo_cmd, line 119). dbus_req_o.amoop, where the code is stored and leaves, is a transport field and is not reported.",
+   "related structural assets": [
+    {"asset rtl": "amo_cmd", "entity": "neorv32_cpu_lsu", "realization": "computes", "occurrence": 3, "edge": {"type": "SELECTED_BY", "partner": "ctrl_i.ir_funct12"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_lsu", "realization": "sets", "occurrence": 12, "edge": {"type": "SELECTS", "partner": "amo_cmd"}}
+   ]
+  },
+  {
+   "concept": "Atomic lock flag -- the flag held from an atomic request until no access is pending",
+   "security objective": "Integrity",
+   "reasoning": "bus_lock sets `dbus_req_o.lock <= '1';` when `(ctrl_i.lsu_mo_we = '1') and (ctrl_i.lsu_amo = '1') and (ctrl_i.ir_funct12(8) = '0')` (lines 142-143) and clears it when `pending = '0'` (lines 144-145). Integrity is Established: the unsupplied bus consumer must receive the flag exactly as these lines define it. ctrl_i sets (occurrence 13, GATES dbus_req_o.lock, line 142). pending decides the clear and is reported under the pending-access state. The flag is stored only in dbus_req_o.lock, a transport field, so no stores or exit reference survives.",
+   "related structural assets": [
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_lsu", "realization": "sets", "occurrence": 13, "edge": {"type": "GATES", "partner": "dbus_req_o.lock"}}
+   ]
+  },
+  {
+   "concept": "Access wait status -- whether the current bus access is still unacknowledged",
+   "security objective": "Integrity",
+   "reasoning": "`wait_o <= not dbus_rsp_i.ack;` (line 200) reports the inverted bus acknowledge. Integrity is Established for delivery: the unsupplied consumer of wait_o must receive exactly this value. wait_o is the exit (occurrence 2, DERIVES_FROM dbus_rsp_i.ack, line 200). The acknowledge enters through dbus_rsp_i, a transport record, which is not reported. wait_o does not depend on pending in this file.",
+   "related structural assets": [
+    {"asset rtl": "wait_o", "entity": "neorv32_cpu_lsu", "realization": "exit port", "occurrence": 2, "edge": {"type": "DERIVES_FROM", "partner": "dbus_rsp_i.ack"}}
+   ]
+  }
+ ]
+}

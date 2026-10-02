@@ -1,0 +1,72 @@
+{
+  "module name": "neorv32_hwspinlock",
+  "module purpose": "neorv32_hwspinlock holds 32 one-bit states in lock_q, decodes bus_req_i.addr into a one-hot selector sel, updates the selected bit on accesses with bus_req_i.stb='1' and addr(7)='0' using not bus_req_i.rw, and on reads returns either the selected bit or the full 32-bit state vector on bus_rsp_o while acknowledging the request.",
+  "use-case flows": [
+    {
+      "flow": "lock",
+      "value": "selected one-bit lock state set on low-address read access and cleared on low-address write access",
+      "lines": [
+        44,
+        45,
+        51
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "selected lock state or full 32-bit lock bitmap returned on qualifying bus reads",
+      "lines": [
+        51,
+        66,
+        67,
+        68,
+        70
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "all lock bits cleared to '0' and the bus response forced to rsp_terminate_c while rstn_i='0'",
+      "lines": [
+        41,
+        42,
+        60,
+        61
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Spinlock state bitmap -- the held 32-bit state of all lock slots",
+      "security objective": "Integrity",
+      "reasoning": "The lock flow stores each addressed lock bit in lock_q: reset clears it at line 42, and on a qualified access `(bus_req_i.stb = '1') and (bus_req_i.addr(7) = '0') and (sel(i) = '1')` at line 44, `lock_q(i) <= not bus_req_i.rw` at line 45 updates the selected bit. The read-out flow returns this state as `lock_q and sel` for the selected slot at line 68 or as the full vector `lock_q` at line 70. Integrity is Established because corrupting lock_q changes both the stored acquire/release state and the returned lock status. Availability is also Established under the RTL-visible read condition at lines 66-70 because the register holds its value between clock edges and is delivered on qualifying reads. The bus request and response records are transport ports, so the stored internal register is the eligible structural reference.",
+      "related structural assets": [
+        {
+          "asset rtl": "lock_q",
+          "entity": "neorv32_hwspinlock",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Address-decoded lock selection -- which lock slot is targeted by the current access",
+      "security objective": "Integrity",
+      "reasoning": "The module computes a one-hot selection decision with `sel(i) <= '1' when (bus_req_i.addr(6 downto 2) = std_ulogic_vector(to_unsigned(i, 5))) else '0';` at line 51. That decision is used in the update guard at line 44 to choose which lock_q bit changes, and in `bus_rsp_o.data <= lock_q and sel;` at line 68 to choose which selected lock state is reported. Integrity is Established because a wrong sel value applies acquire/release or selected readback to the wrong lock slot. The address field is part of the transport request record and is not reportable, so the internal decoded decision sel is the eligible structural reference.",
+      "related structural assets": [
+        {
+          "asset rtl": "sel",
+          "entity": "neorv32_hwspinlock",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "bus_req_i.addr"
+          }
+        }
+      ]
+    }
+  ]
+}

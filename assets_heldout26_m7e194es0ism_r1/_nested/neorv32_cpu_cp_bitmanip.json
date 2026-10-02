@@ -1,0 +1,184 @@
+{
+  "module name": "neorv32_cpu_cp_bitmanip",
+  "conceptual assets": [
+    {
+      "concept": "Decoded operation selection and valid-command decision",
+      "security objective": "Integrity",
+      "reasoning": "The RTL computes one-hot decode bits into the internal cmd vector from instruction fields and feature generics (concurrent cmd(...) <= '1' when ... else '0'), and computes a validity decision valid_cmd from ctrl_i.alu_cp_alu and the decode (valid_cmd <= '1' when (ctrl_i.alu_cp_alu = '1') and (or_reduce_f(cmd) = '1') else '0'). The controller process reads valid_cmd to start shifter or clmul or to produce an immediate result (controller: if (valid_cmd = '1') then ... shifter.start <= '1' / clmul.start <= '1' / valid <= '1'). Therefore integrity of the decoded command bits and the valid-command decision is required for correct operation selection and start. Structural realization: cmd and valid_cmd are computed inside this entity from ctrl_i, and ctrl_i is the input that sets those computations.",
+      "related structural assets": [
+        {
+          "asset rtl": "cmd",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "valid_cmd",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Captured operand registers (operands sampled for the operation)",
+      "security objective": "Integrity",
+      "reasoning": "The controller process explicitly samples and stores operands when an ALU coprocess instruction is present: on (ctrl_i.alu_cp_alu = '1') the RTL does 'less_reg <= cmp_i(...); rs1_reg <= rs1_i; rs2_reg <= rs2_i; sha_reg <= shamt_i'. These stored registers are then used by the combinational and sequential computations that produce outputs (res_int assignments reference rs1_reg, rs2_reg, sha_reg, less_reg). Corruption of these captured operand registers or their input sources would alter all dependent results, establishing integrity importance.",
+      "related structural assets": [
+        {
+          "asset rtl": "rs1_reg",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rs2_reg",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "sha_reg",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "less_reg",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rs1_i",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "rs2_i",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "shamt_i",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "cmp_i",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Computed per-operation results and the final registered output",
+      "security objective": "Integrity",
+      "reasoning": "Per-operation values are produced by the res_int assignments (examples: res_int(op_andn_c) <= rs1_reg and (not rs2_reg); res_int(op_rot_c) <= shifter.sreg; res_int(op_clmul_c) <= clmul.res(...) ). Each res_out(...) entry gates its corresponding res_int under the decode and feature enables (res_out(...) <= res_int(...) when <EN_*> and (cmd(...) = '1') else zero). The output_gate process then registers res_o on clk when valid = '1' by ORing all res_out entries. The RTL therefore establishes a flow from res_int -> res_out -> res_o; integrity of these computed values and of the registered exit res_o is required for correct results to leave the entity.",
+      "related structural assets": [
+        {
+          "asset rtl": "res_int",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "res_out",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "res_o",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Result readiness / completion indicator (valid)",
+      "security objective": "Integrity",
+      "reasoning": "The controller FSM drives the internal valid flag (valid <= '1' for immediate operations in S_IDLE or when busy operations complete in the S_BUSY->S_IDLE transition) and the output_gate uses valid to decide when to register and present res_o; the port valid_o is driven as 'valid_o <= valid'. The RTL therefore implements valid as the result-ready signal; integrity of valid (and its exported valid_o) is required so results are produced and presented only when intended.",
+      "related structural assets": [
+        {
+          "asset rtl": "valid",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "valid_o",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Shifter internal state and computed shift/rotate/count results",
+      "security objective": "Integrity",
+      "reasoning": "The RTL implements a multi-cycle serial shifter (serial_shifter_core) and a fast barrel shifter (EN_FAST_SHIFT branch). The shifter record fields are initialized on shifter.start and updated while shifter.run = '1' (serial path) or computed combinationally in the barrel path; res_int(op_rot_c) <= shifter.sreg, res_int(op_cz_c) and res_int(op_cpop_c) read shifter.cnt and shifter.bcnt. These fields (shifter.sreg,cnt,bcnt) therefore realize the shift/rotate/count outputs; corruption of them or the start/run control would produce incorrect rot/cz/cpop results, establishing integrity significance.",
+      "related structural assets": [
+        {
+          "asset rtl": "shifter.sreg",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "shifter.cnt",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "shifter.bcnt",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "shifter.start",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "shifter.run",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Carry-less multiplication internal state and result (clmul)",
+      "security objective": "Integrity",
+      "reasoning": "When EN_ZBKC is enabled the clmul_core process initializes clmul.cnt and clmul.res on clmul.start and iteratively updates clmul.res while clmul.run = '1'; the computed clmul.res is selected into res_int(op_clmul_c) (res_int(op_clmul_c) <= clmul.res(...) when ...). The RTL thus establishes clmul.res and clmul.cnt as the mult operation's internal state and result; their integrity is required for correct clmul outputs.",
+      "related structural assets": [
+        {
+          "asset rtl": "clmul.res",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "clmul.cnt",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "clmul.start",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "clmul.run",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Controller finite-state (ctrl_state) that sequences starts, runs and completion",
+      "security objective": "Integrity",
+      "reasoning": "The controller process stores and updates ctrl_state (type ctrl_state_t) and uses it to sequence operation start and completion: in S_IDLE it reacts to valid_cmd to assert shifter.start/clmul.start or valid, S_START transitions to S_BUSY, and in S_BUSY the FSM checks shifter.run/clmul.run or cpu_trap to assert valid and return to S_IDLE. The FSM state therefore governs when operations begin and when results are presented; integrity of ctrl_state is required for correct sequencing.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl_state",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores"
+        }
+      ]
+    }
+  ]
+}

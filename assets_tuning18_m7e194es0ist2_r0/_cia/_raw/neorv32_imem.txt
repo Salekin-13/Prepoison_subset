@@ -1,0 +1,137 @@
+{
+  "module name": "neorv32_imem",
+  "concepts": [
+    {
+      "concept": "Instruction memory contents (the 32-bit word fetched and delivered on the bus)",
+      "kind": "data",
+      "writers": "rdata is sourced from ROM or RAM: ROM paths rdata <= mem_rom_c(to_integer(addr)) (line 81, inside clocked process lines 78-83 under IMEM_INIT=true and not alt_style_c) and rdata <= mem_rom_c(to_integer(addr_ff)) (line 95, IMEM_INIT=true and alt_style_c); RAM paths assemble rdata from mem_ram_b0..mem_ram_b3 by rdata(7 downto 0) <= mem_ram_b0(to_integer(addr)) .. rdata(31 downto 24) <= mem_ram_b3(to_integer(addr)) (lines 128-131, default RAM style clocked at lines 111-133) or lines 159-162 (alt-style); the mem_ram_bX arrays themselves are written from the bus at mem_ram_b0(..) <= bus_req_i.data(7 downto 0) (line 116), mem_ram_b1(..) <= bus_req_i.data(15 downto 8) (line 119), mem_ram_b2(..) <= bus_req_i.data(23 downto 16) (line 122), mem_ram_b3(..) <= bus_req_i.data(31 downto 24) (line 125) (alternative-style writes at lines 145,148,151,154) under the guard (bus_req_i.stb = '1') and (bus_req_i.rw = '1') with per-byte ben gating (lines 115,118,121,124 / 144,147,150,153).",
+      "observers": "External observation via bus_rsp_o.data which is driven from rdata when rden='1' (bus_rsp_o.data <= rdata when (rden = '1') else (others => '0'); line 185) (port declared line 31).",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 185,
+          "via": "bus_rsp_o.data",
+          "reason": "The 32-bit word rdata is presented on the external port bus_rsp_o.data when rden='1' (line 185), so an external requester or observer can read the instruction word even if the integrator considers it secret."
+        },
+        "integrity": {
+          "answer": "yes-assumed",
+          "line": 116,
+          "via": "bus_req_i.data",
+          "reason": "In RAM mode the stored bytes (mem_ram_b0..mem_ram_b3) are written from bus_req_i.data under the write guard ((bus_req_i.stb = '1') and (bus_req_i.rw = '1')) (e.g. mem_ram_b0 <= bus_req_i.data(7 downto 0) at line 116), so an external bus writer can change the instruction contents."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 176,
+          "via": "bus_req_i.stb / bus_req_i.rw",
+          "reason": "Presentation of rdata is gated by rden and rden is assigned from bus_req_i.stb and bus_req_i.rw (rden <= bus_req_i.stb and (not bus_req_i.rw); line 176) and bus_rsp_o.data is gated by rden (line 185), so external request signals can prevent the word from being output."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 185,
+          "via": null,
+          "reason": "bus_rsp_o.data has a single driver that conditionally forwards rdata (line 185) and there is no debug/test override or alternate runtime bypass in the RTL."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Requested address (the bus-provided address used to select which IMEM word is read or written)",
+      "kind": "data",
+      "writers": "addr is driven directly from the bus input: addr <= unsigned(bus_req_i.addr(addr_hi_c downto 2)) (line 101, concurrent assignment from bus_req_i.addr); the registered index addr_ff is written from addr in clocked processes (addr_ff <= addr at line 92 in alt/default generates or at line 142 in alternative style) and addr_ff is driven to zero by constants in other generate branches (lines 84 and 134).",
+      "observers": "The selected memory word returned on bus_rsp_o.data depends on addr (bus_rsp_o.data <= rdata when (rden='1') else zeros; rdata is selected using addr/addr_ff at lines 81,95,128-131,159-162), so external observers receive values that reflect the chosen address (port bus_rsp_o.data line 185).",
+      "answers": {
+        "confidentiality": {
+          "answer": "no",
+          "line": 101,
+          "via": "bus_req_i.addr",
+          "reason": "addr is directly derived from the external bus_req_i.addr input (line 101) and the requester that supplied the address already knows it, and the RTL does not export the address itself to other ports."
+        },
+        "integrity": {
+          "answer": "yes-assumed",
+          "line": 101,
+          "via": "bus_req_i.addr",
+          "reason": "The selected index addr is taken directly from bus_req_i.addr (line 101), an external input, so an external agent controlling the bus can change which IMEM word is selected and thus affect integrity of instruction fetches."
+        },
+        "availability": {
+          "answer": "no",
+          "line": 101,
+          "via": null,
+          "reason": "addr is assigned concurrently from bus_req_i.addr without internal gating (line 101) and there is no internal enable/stall that the RTL shows which can freeze addr updates (aside from clock/reset)."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 101,
+          "via": null,
+          "reason": "addr has a single source (the concurrent assignment from bus_req_i.addr at line 101) and there is no alternate runtime override or debug mode in the RTL that replaces it."
+        }
+      },
+      "security objective": "Integrity"
+    },
+    {
+      "concept": "Bus response acknowledge (the ack event driven to the requester)",
+      "kind": "event",
+      "writers": "bus_rsp_o.ack is driven in bus_feedback: reset drives ack <= '0' (line 174) when rstn_i='0'; on clock rising edge ack is assigned in the IMEM_INIT-dependent branches: if IMEM_INIT = true then bus_rsp_o.ack <= bus_req_i.stb and (not bus_req_i.rw) (line 178) else bus_rsp_o.ack <= bus_req_i.stb (line 180).",
+      "observers": "External observer is the bus response port bus_rsp_o.ack (declaration line 31; driven by lines 174, 178, 180), i.e. the requester sees the ack on the bus port.",
+      "answers": {
+        "confidentiality": {
+          "answer": "no",
+          "line": 178,
+          "via": "bus_rsp_o.ack",
+          "reason": "The ack is an explicit handshake output driven to the requester (bus_rsp_o.ack assigned from bus_req_i.stb/(not bus_req_i.rw) in the bus_feedback process; line 178) and is intended to be observed, so it is not treated as secret."
+        },
+        "integrity": {
+          "answer": "no",
+          "line": 178,
+          "via": "bus_feedback process",
+          "reason": "bus_rsp_o.ack is produced only by the internal bus_feedback process (lines 170-181) from the request signals and reset, so there is no unintended external writer inside the RTL that modifies ack outside its designed handshake logic."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 178,
+          "via": "bus_req_i.stb",
+          "reason": "The ack output is generated from the incoming request signals (e.g. bus_rsp_o.ack <= bus_req_i.stb and (not bus_req_i.rw) in the IMEM_INIT branch; line 178), so an external requester controlling bus_req_i.stb can prevent ack and thereby stall progress."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 178,
+          "via": null,
+          "reason": "ack has a single internal driver in the bus_feedback process (lines 170-181) and there is no debug/test override or alternate assignment in the RTL."
+        }
+      },
+      "security objective": "Availability"
+    },
+    {
+      "concept": "Read-enable decision rden (the internal read-request latch that gates returned data)",
+      "kind": "decision",
+      "writers": "rden is reset to '0' on rstn_i = '0' (line 173) and otherwise is clocked in bus_feedback as rden <= bus_req_i.stb and (not bus_req_i.rw) on the rising edge (line 176 in process lines 170-183).",
+      "observers": "rden's effect is observable externally because bus_rsp_o.data is gated by rden (bus_rsp_o.data <= rdata when (rden = '1') else (others => '0'); line 185), so external observers can infer rden from whether data or zeros are returned.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 185,
+          "via": "bus_rsp_o.data",
+          "reason": "rden gates the external data output (line 185) so observing bus_rsp_o.data (and its absence) reveals the read-enable state to external observers and thus the RTL exposes this internal decision."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 176,
+          "via": "bus_req_i.stb / bus_req_i.rw",
+          "reason": "rden is assigned from external request signals (rden <= bus_req_i.stb and (not bus_req_i.rw); line 176) and there is no protection preventing those inputs from changing rden while it is gating output, so an external actor can change rden at times that affect operation."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 176,
+          "via": "bus_req_i.stb",
+          "reason": "Because rden is driven from bus_req_i.stb/(not bus_req_i.rw) (line 176) an external requester can prevent or force rden and thereby stop or allow the module from presenting read data, affecting availability."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 176,
+          "via": null,
+          "reason": "rden is written by a single internal process (line 176) with no alternate debug/test override or secondary driver shown in the RTL."
+        }
+      },
+      "security objective": "Confidentiality"
+    }
+  ]
+}

@@ -1,0 +1,291 @@
+{
+  "module name": "neorv32_cpu_control",
+  "conceptual assets": [
+    {
+      "concept": "Fetched instruction value held in exe_engine.ir (current instruction executed)",
+      "security objective": "Integrity",
+      "reasoning": "The module captures a fetched instruction into the exe_engine register and uses it to drive decode and control decisions. Evidence: EX_DISPATCH assigns exe_engine_nxt.ir <= frontend_i.instr and the sync FSM commits exe_engine <= exe_engine_nxt (execute_engine_fsm_sync). exe_engine.ir is read by branch_check, execute_engine_fsm_comb and illegal_check (e.g. branch_check: process(exe_engine.ir, ...) and illegal_check: case exe_engine.ir(...)), so corruption of exe_engine.ir would change decode, branch and illegal-instruction behavior, establishing an integrity requirement. exe_engine.ir is the stored realization of this concept.",
+      "related structural assets": [
+        {
+          "asset rtl": "exe_engine.ir",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "exe_engine.ci",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Program counter state (current PC, next PC and return address) that directs fetch/branch/return targets",
+      "security objective": "Integrity",
+      "reasoning": "Program-counter registers determine instruction fetch and trap/return targets. Evidence: exe_engine.pc and exe_engine.pc2 are initialized/reset (execute_engine_fsm_sync) and updated in dispatch/branch/trap paths (EX_DISPATCH sets exe_engine_nxt.pc <= exe_engine.pc2; EX_TRAP_ENTER/EX_TRAP_EXIT set exe_engine_nxt.pc2 from csr.mtvec/DEBUG_EXC_ADDR/ csr.mepc). The controller exports PC values via control outputs (ctrl_o.pc_cur <= exe_engine.pc(...), ctrl_o.pc_nxt <= exe_engine.pc2(...), ctrl_o.pc_ret <= exe_engine.ra(...)). Corruption of PC/PC2/RA would misdirect execution and traps, establishing integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "exe_engine.pc",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "exe_engine.pc2",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "exe_engine.ra",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl_o",
+          "entity": "neorv32_cpu_control",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Microarchitectural control signals that determine ALU/LSU/register-file operations (alu_op, rf write-back enable, lsu request, etc.)",
+      "security objective": "Integrity",
+      "reasoning": "Control fields are computed in the FSM and exported to execution units; they govern core behavior. Evidence: execute_engine_fsm_comb computes ctrl_nxt.* (e.g. ctrl_nxt.alu_op <= ..., ctrl_nxt.rf_wb_en <= '1', ctrl_nxt.lsu_req <= '1' in EX_MEM_REQ), the sync FSM stores ctrl <= ctrl_nxt (execute_engine_fsm_sync), and outputs use these fields (e.g. ctrl_o.alu_op <= ctrl.alu_op, ctrl_o.lsu_req <= ctrl.lsu_req, ctrl_o.rf_wb_en <= ctrl.rf_wb_en and (not trap_ctrl.exc_fire)). Integrity of these stored control signals is required to ensure correct ALU/LSU/RF behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.alu_op",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.alu_sub",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.alu_opa_mux",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.alu_opb_mux",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.alu_unsigned",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.alu_imm",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.rf_wb_en",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.lsu_req",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.lsu_rw",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.lsu_amo",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.lsu_fence",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl_o",
+          "entity": "neorv32_cpu_control",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "CSR state that governs privilege, trap vector selection and interrupt enables (mstatus/mie, mtvec, mepc, mcause, mtval, mtinst, prv_level)",
+      "security objective": "Integrity",
+      "reasoning": "CSR fields are written and read by CSR access logic and used by trap/interrupt handling. Evidence: csr_write_access updates CSR fields on write (e.g. if csr.addr = csr_mstatus_c then csr.mstatus_mie <= csr.wdata(3); if csr.addr = csr_mtvec_c then csr.mtvec <= ...), trap_buffer uses CSR enable bits to populate trap_ctrl.irq_buf (trap_ctrl.irq_buf(...) <= (trap_ctrl.irq_pnd(...) and csr.mie_firq(...)) ...) and trap_ctrl.irq_fire uses csr.mstatus_mie and csr.prv_level to gate interrupts. EX_TRAP_ENTER uses csr.mtvec to form trap target. Corruption of these CSR fields would change privileges, interrupt delivery and trap routing, establishing integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "csr.mstatus_mie",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr.mie_firq",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr.mie_msi",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr.mie_mei",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr.mie_mti",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr.mtvec",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr.mepc",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr.mcause",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr.mtval",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr.mtinst",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr.prv_level",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr.prv_level_eff",
+          "entity": "neorv32_cpu_control",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "CSR access control and data path (csr.we, csr.re, csr.addr, csr.wdata and readback csr.rdata -> csr_rdata_o) used to perform CSR writes/reads",
+      "security objective": "Integrity",
+      "reasoning": "CSR read/write flow is implemented by dedicated signals and affects CSR registers. Evidence: execute_engine_fsm_comb drives csr.we_nxt and csr.re_nxt, csr_write_access commits csr.we <= csr.we_nxt and on csr.we = '1' updates registers based on csr.addr and csr.wdata (e.g. many 'if (csr.addr = ... ) then ... <= csr.wdata(...)'), csr_read_access gates csr.rdata on csr.re and csr.addr and the module exposes csr.rdata via 'csr_rdata_o <= csr.rdata'. Integrity of csr.we/re/addr/wdata/rdata is required to ensure correct CSR updates and readback.",
+      "related structural assets": [
+        {
+          "asset rtl": "csr.we",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr.re",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr.addr",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr.wdata",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr.rdata",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr_rdata_o",
+          "entity": "neorv32_cpu_control",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Buffered exception and interrupt state and derived trap decision (pending/ buffered IRQs and exceptions, trap cause and computed fire signals)",
+      "security objective": "Integrity",
+      "reasoning": "The module buffers incoming IRQs/exceptions and computes trap decisions that drive trap entry. Evidence: trap_buffer updates trap_ctrl.irq_pnd and trap_ctrl.irq_buf from irq_machine_i/irq_fast_i and csr.mie_*; trap_buffer and trap_priority set trap_ctrl.exc_buf and register trap_ctrl.cause in the rising-edge process; trap_ctrl.exc_fire <= '1' when or_reduce_f(trap_ctrl.exc_buf) and trap_ctrl.irq_fire bits are computed and used to set env_pending and to cause EX_TRAP_ENTER from EX_DISPATCH. Corruption of pending/buffered bits, cause or computed fire signals changes trap selection/entry, establishing integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "trap_ctrl.irq_pnd",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "trap_ctrl.irq_buf",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "trap_ctrl.exc_buf",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "trap_ctrl.cause",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "trap_ctrl.exc_fire",
+          "entity": "neorv32_cpu_control",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "trap_ctrl.irq_fire",
+          "entity": "neorv32_cpu_control",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Debug-mode enable state (debug_ctrl.run) that gates debug/trap behavior",
+      "security objective": "Integrity",
+      "reasoning": "When debug extension is present, debug_ctrl.run is set/cleared by the debug_control process and used throughout trap/interrupt selection and vectoring. Evidence: debug_control toggles debug_ctrl.run on trap_ctrl.env_enter and trap_ctrl.env_exit; trap_ctrl.irq_fire and trap_buffer conditions include debug_ctrl.run (e.g. trap_ctrl.irq_fire(0) requires debug_ctrl.run = '0'); EX_TRAP_ENTER uses debug_ctrl.run to select DEBUG_EXC_ADDR. Integrity of debug_ctrl.run is required to ensure correct debug vs normal trap behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "debug_ctrl.run",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Hardware-trigger configuration and fired state used to match PC and raise trigger exceptions (csr.tdata1_execute, csr.tdata2, hwtrig_fired)",
+      "security objective": "Integrity",
+      "reasoning": "When the trigger extension is enabled the module compares configured trigger data to the PC and raises an exception. Evidence: hwtrig_match is computed from csr.tdata1_execute, hwtrig_fired and csr.tdata2 compared to exe_engine.pc2; hwtrig_exception process sets hwtrig_fired <= hwtrig_match and trap_ctrl.exc_buf(exc_ebreak_c) and csr_write_access can clear hwtrig_fired on writes to csr_tdata1_c. Integrity of csr.tdata1_execute/csr.tdata2 and hwtrig_fired is required to ensure correct firing/clearing of hardware triggers.",
+      "related structural assets": [
+        {
+          "asset rtl": "csr.tdata1_execute",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "csr.tdata2",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "hwtrig_fired",
+          "entity": "neorv32_cpu_control",
+          "realization": "stores"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,186 @@
+{
+  "module name": "neorv32_spi",
+  "conceptual assets": [
+    {
+      "concept": "SPI operational enable (module enable configuration)",
+      "security objective": "Integrity",
+      "reasoning": "The ctrl.enable bit is written by bus-access writes (bus_access assigns ctrl.enable <= bus_req_i.data(ctrl_en_c) on writes to addr(2)= '0'). The RTL uses ctrl.enable to clear FIFOs (tx_fifo.clear <= not ctrl.enable; rx_fifo.clear <= not ctrl.enable), to set the transceiver MSB state (rtx_engine.state(2) <= ctrl.enable), to gate IRQ output (irq_o <= ctrl.enable and ...), and to export the enable externally (clkgen_en_o <= ctrl.enable). Corrupting this stored configuration would change enable/disable, FIFO clears, IRQ gating and engine state, violating the implemented operation, so Integrity is Established. The stored field ctrl.enable realizes the configuration and clkgen_en_o is the external exit.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.enable",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "clkgen_en_o",
+          "entity": "neorv32_spi",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "rtx_engine.state",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "SPI clock phase and polarity configuration (cpha, cpol) that determine SCK edge behavior",
+      "security objective": "Integrity",
+      "reasoning": "ctrl.cpha and ctrl.cpol are written from bus accesses (bus_access assigns ctrl.cpha and ctrl.cpol from bus_req_i.data when writing control registers). The transceiver uses these fields to drive the SCK state: e.g. rtx_engine.sck <= ctrl.cpol (idle), conditional updates use ctrl.cpha and ctrl.cpol in the '101','110','111' transfer states to toggle sck. The resulting clock is exported (spi_clk_o <= rtx_engine.sck). Corrupting cpha/cpol or their realization would change sampling/drive edges and thus transmitted/received bit sequencing, establishing Integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.cpha",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.cpol",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "spi_clk_o",
+          "entity": "neorv32_spi",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "rtx_engine.sck",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "SPI bit-clock enable decision (spi_clk_en) derived from prescaler/divider/highspeed and clkgen input",
+      "security objective": "Availability",
+      "reasoning": "The clock_generator computes spi_clk_en: it defaults to '0' each cycle and sets spi_clk_en <= '1' when ctrl.enable is active and ((clkgen_i(to_integer(unsigned(ctrl.prsc))) = '1') or ctrl.highspeed = '1') and cdiv_cnt reaches ctrl.cdiv. The transceiver checks spi_clk_en in transfer states (transceiver branches require spi_clk_en = '1' before advancing and incrementing bitcnt). Preventing spi_clk_en from being produced when its conditions hold would stop transfer state progress and completion (done), so Availability of this computed decision is Established. The decision is computed by spi_clk_en from ctrl.prsc, ctrl.cdiv, ctrl.highspeed and clkgen_i.",
+      "related structural assets": [
+        {
+          "asset rtl": "spi_clk_en",
+          "entity": "neorv32_spi",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "ctrl.prsc",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.cdiv",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.highspeed",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "clkgen_i",
+          "entity": "neorv32_spi",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Chip-select control value that selects which CS line is asserted",
+      "security objective": "Integrity",
+      "reasoning": "In the transceiver main state, when tx_fifo.avail = '1' and tx_fifo.rdata(8) = '1' the RTL assigns rtx_engine.cs_ctrl <= tx_fifo.rdata(3 downto 0). The chip_select process then drives spi_csn_o to all '1' and, if rtx_engine.cs_ctrl(3) = '1', drives the indexed spi_csn_o(to_integer(unsigned(rtx_engine.cs_ctrl(2 downto 0)))) <= '0'. Corruption of cs_ctrl or its FIFO source would assert/deassert a chip-select incorrectly; the RTL establishes this selection path and its effect, so Integrity is Established. The value is stored in rtx_engine.cs_ctrl, leaves via spi_csn_o, and is set from tx_fifo.rdata.",
+      "related structural assets": [
+        {
+          "asset rtl": "rtx_engine.cs_ctrl",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "spi_csn_o",
+          "entity": "neorv32_spi",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "tx_fifo.rdata",
+          "entity": "neorv32_spi",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Transmit byte held in the shift register (active TX byte) and its driven MOSI bit",
+      "security objective": "Integrity",
+      "reasoning": "When the transceiver is idle and tx_fifo.avail = '1' and tx_fifo.rdata(8) = '0', the RTL loads the transmit register: rtx_engine.sreg <= tx_fifo.rdata(7 downto 0). During transfers the process shifts sreg and the top bit is driven out: spi_dat_o <= rtx_engine.sreg(7). Corrupting rtx_engine.sreg or its FIFO source changes transmitted bits; the RTL demonstrates these assignments and the external effect, so Integrity is Established.",
+      "related structural assets": [
+        {
+          "asset rtl": "rtx_engine.sreg",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "spi_dat_o",
+          "entity": "neorv32_spi",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "tx_fifo.rdata",
+          "entity": "neorv32_spi",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Received data stored in RX FIFO and its availability flag",
+      "security objective": "Integrity",
+      "reasoning": "Completed transfer bytes are written into the RX FIFO via rx_fifo.wdata <= '0' & rtx_engine.sreg and rx_fifo.we <= rtx_engine.done; bus_access read-handles return rx_fifo.rdata(7 downto 0) on reads and irq_generator uses rx_fifo.avail with ctrl.irq_rx_avail to raise irq_o. The RTL thus realizes rx FIFO content and the avail flag for readback and IRQ generation; corruption of rx_fifo.rdata or rx_fifo.avail would produce incorrect readback or interrupts, so Integrity is Established.",
+      "related structural assets": [
+        {
+          "asset rtl": "rx_fifo.rdata",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rx_fifo.avail",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rtx_engine.done",
+          "entity": "neorv32_spi",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "TX FIFO occupancy and status flags used for readback and interrupt conditions",
+      "security objective": "Integrity",
+      "reasoning": "The RTL exposes and uses FIFO status signals: bus_access reads tx_fifo.avail/free/half to form bus readback bits (ctrl_tx_empty, ctrl_tx_nhalf, ctrl_tx_full) and the transceiver and irq_generator use tx_fifo.avail and tx_fifo.half in decision logic (e.g., availability check in transceiver and irq conditions). These internal FIFO status fields (tx_fifo.avail, tx_fifo.half, tx_fifo.free) are the realized sources of occupancy information; corrupting them falsifies readback and IRQ behavior, establishing Integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "tx_fifo.avail",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tx_fifo.half",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tx_fifo.free",
+          "entity": "neorv32_spi",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Transceiver busy status",
+      "security objective": "Integrity",
+      "reasoning": "The RTL computes rtx_engine.busy from state bits ('rtx_engine.busy <= '0' when rtx_engine.state(1 downto 0) = 00 else '1') and bus_access reports ctrl_busy using rtx_engine.busy (bus_rsp_o.data(ctrl_busy_c) <= rtx_engine.busy or tx_fifo.avail). irq_generator's idle condition depends on not rtx_engine.busy. The computed busy signal therefore governs readback and idle IRQ behavior; corruption of rtx_engine.busy would misreport engine activity and IRQ conditions, establishing Integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "rtx_engine.busy",
+          "entity": "neorv32_spi",
+          "realization": "computes"
+        }
+      ]
+    }
+  ]
+}

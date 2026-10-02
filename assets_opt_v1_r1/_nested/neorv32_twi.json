@@ -1,0 +1,158 @@
+{
+ "module name": "neorv32_twi",
+ "module purpose": "neorv32_twi takes bus writes into a control register (enable, prescaler select, clock divider, clock-stretch enable) and into an 11-bit command queue (TX FIFO sub-unit); an engine fetches each queued command and drives twi_sda_o and twi_scl_o in four timed phases per bit, samples twi_sda_i and twi_scl_i, writes each completed 9-bit word into an RX FIFO sub-unit, returns control, status and received words on bus reads, and raises irq_o when enabled, idle and the command queue is empty.",
+ "use-case flows": [
+  {"flow": "configure", "value": "control settings (enable, prescaler select, clock divider, clock-stretch enable) taken from bus write data when addr(2) = '0'", "lines": [133, 134, 135, 136, 137, 138, 139]},
+  {"flow": "start", "value": "command word (data byte, acknowledge bit, 2-bit command) pushed into the TX FIFO by a bus write when addr(2) = '1'", "lines": [188, 189, 197, 198]},
+  {"flow": "start", "value": "command fetch: the idle engine pops the next command on a tick and loads its command bits and data word", "lines": [192, 193, 199, 324, 326, 327, 328, 329]},
+  {"flow": "operate", "value": "bit-timing tick produced from the selected prescaler enable and the divider compare", "lines": [252, 256, 257, 258, 259, 260, 262]},
+  {"flow": "operate", "value": "four-phase bit sequencing, frozen by the clock-stretch hold", "lines": [279, 280, 281, 282, 283, 289, 290, 291, 292, 296]},
+  {"flow": "operate", "value": "line levels driven per engine state and phase, data word shifted out and sampled in, bit counting and completion", "lines": [314, 315, 321, 322, 334, 335, 336, 337, 340, 341, 342, 343, 344, 349, 350, 351, 352, 353, 356, 357, 358, 359, 365, 366, 367, 368, 371, 372, 373, 374, 377, 378, 381, 382, 385, 386, 387, 392, 393, 394, 401, 406, 407, 408, 409]},
+  {"flow": "operate", "value": "completed 9-bit word written into the RX FIFO", "lines": [219, 220, 228, 229]},
+  {"flow": "report", "value": "interrupt request and status bits (sensed line levels, TX full, RX available, busy)", "lines": [150, 151, 152, 153, 154, 239]},
+  {"flow": "read out", "value": "control settings and FIFO depth returned on a control-register read; received word popped and returned on a data-register read", "lines": [143, 144, 145, 146, 148, 156, 223, 224, 230]},
+  {"flow": "reset", "value": "rstn_i clears enable, prescaler, divider, response, irq, timing, phase and engine registers; a cleared enable clears both FIFOs, holds the timing and phase logic and idles the engine", "lines": [122, 123, 124, 125, 126, 168, 236, 237, 248, 249, 250, 252, 253, 254, 275, 276, 277, 280, 281, 303, 304, 305, 306, 307, 308, 309, 310, 311, 321]}
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Controller enable setting -- whether the timing logic, phase sequencer, engine and both FIFOs operate",
+   "security objective": "Integrity",
+   "reasoning": "Configure flow: `ctrl.enable <= bus_req_i.data(ctrl_en_c);` (line 136, under stb, rw and addr(2) = '0', lines 133-135), cleared by reset (line 124). This entity decides on it: `fifo.clear <= not ctrl.enable;` (line 168) clears both FIFOs (lines 184, 215), `if (ctrl.enable = '0')` holds tick and cnt at zero (lines 252-254), phase_gen is forced to 0001 (lines 280-281), `engine.state(2) <= ctrl.enable;` (line 321) idles the engine, irq_o requires it (line 239), and `clkgen_en_o <= ctrl.enable;` (line 270) exports it. Integrity: queue clearing, transfer activity and the exported enable must follow the written value. Availability is also Established: a low enable stops every transfer (lines 252-254, 321) and clears queued commands. ctrl.enable stores it (CLOCKED_BY clk_i at occurrence 3; use records GATES irq_o, CARRIES clkgen_en_o). clkgen_en_o is the exit port (COPIES ctrl.enable, occurrence 2); its consumer is outside this file, so its integrity is Established at line 270. Not listed: fifo.clear only inverts the enable on its way to the FIFO clear inputs (a carrier); bus_req_i is a transport record, so the write-setting point is ctrl.enable itself; engine.state is reported under its own concept.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.enable", "entity": "neorv32_twi", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "clkgen_en_o", "entity": "neorv32_twi", "realization": "exit port", "occurrence": 2, "edge": {"type": "COPIES", "partner": "ctrl.enable"}}
+   ]
+  },
+  {
+   "concept": "Bit-clock rate configuration -- the prescaler select and divider value that set how often the timing tick fires",
+   "security objective": "Integrity",
+   "reasoning": "Configure flow: ctrl.prsc and ctrl.cdiv are written from bus data (lines 137-138) and cleared by reset (lines 125-126). `if (clkgen_i(to_integer(unsigned(ctrl.prsc))) = '1')` (line 257, SELECTS clk_gen.cnt and clk_gen.tick) picks which prescaler enable advances the divider, and `if (clk_gen.cnt = ctrl.cdiv)` (line 258, CONSTRAINS clk_gen.tick) decides when tick fires (line 259). Every phase advance (line 282) and command fetch (lines 199, 328) waits for tick, so the timing of every line transition depends on these settings: Integrity. They are held between writes and read back (lines 144-145). Both registers store (CLOCKED_BY clk_i at occurrence 3) and have use records (SELECTS, CONSTRAINS). clkgen_i is not listed: its only records GATE clk_gen.cnt and clk_gen.tick (line 257), so it only enables the divider's clock and the clock-enable rule excludes it.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.prsc", "entity": "neorv32_twi", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.cdiv", "entity": "neorv32_twi", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Clock-stretch enable setting -- whether the module holds its bit phases while the clock line reads low",
+   "security objective": "Integrity",
+   "reasoning": "Configure flow: `ctrl.clkstr <= bus_req_i.data(ctrl_clkstr_en_c);` (line 139), read back at line 146. It decides the hold: `clk_gen.halt <= '1' when (io_con.scl_out = '1') and (io_con.scl_in_ff(1) = '0') and (ctrl.clkstr = '1')` (line 296), and phases advance only when halt = '0' (line 282). Integrity: whether line timing waits on the sensed clock line must follow the written setting. The reset arm (lines 122-126) does not assign ctrl.clkstr; the map likewise has no RESET_BY record for it. ctrl.clkstr stores (CLOCKED_BY clk_i at occurrence 2; use record GATES clk_gen.halt).",
+   "related structural assets": [
+    {"asset rtl": "ctrl.clkstr", "entity": "neorv32_twi", "realization": "stores", "occurrence": 2, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Bit-timing tick -- the divider count and the one-cycle tick event that paces command fetch and phase advance",
+   "security objective": "Integrity",
+   "reasoning": "Operate flow (lines 256-262): on a selected prescaler enable, tick is set and cnt cleared when cnt equals ctrl.cdiv, otherwise cnt increments; both are held at zero while disabled (lines 252-254). tick gates the command fetch (line 199, line 328) and phase advance (line 282). Integrity: tick must fire exactly when the counter reaches the configured divider; a wrong count or tick shifts every bit period. Availability is also Established: without tick no command is fetched and no phase advances. clk_gen.cnt is self-updating state and stores (CLOCKED_BY clk_i at occurrence 6, line 262; use record CONSTRAINS clk_gen.tick). clk_gen.tick is an event register and stores, by precedence over computes (CLOCKED_BY clk_i at occurrence 6, line 259; use records GATES fifo.tx_re, clk_gen.phase_gen, engine.state).",
+   "related structural assets": [
+    {"asset rtl": "clk_gen.cnt", "entity": "neorv32_twi", "realization": "stores", "occurrence": 6, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "clk_gen.tick", "entity": "neorv32_twi", "realization": "stores", "occurrence": 6, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Bit phase sequencing -- which of the four phases of a bit period is starting",
+   "security objective": "Integrity",
+   "reasoning": "Operate flow: `clk_gen.phase_gen <= clk_gen.phase_gen(2 downto 0) & clk_gen.phase_gen(3);` rotates on a tick when not halted (lines 282-283) and is forced to 0001 when disabled or idle (lines 280-281); `clk_gen.phase(0) <= clk_gen.phase_gen_ff(0) and (not clk_gen.phase_gen(0));` and lines 290-292 mark each phase start. Every line transition (lines 334-374), the sampling point (lines 377-378), the bit count (lines 381-382) and completion (lines 385-387) are conditioned on clk_gen.phase: Integrity of the line sequence depends on it. clk_gen.phase_gen stores (CLOCKED_BY clk_i at occurrence 5; use record GATES clk_gen.phase); clk_gen.phase computes the phase-start decision (GATED_BY clk_gen.phase_gen at occurrence 2, line 289). clk_gen.phase_gen_ff holds clk_gen.phase_gen one clock later (its only data record is COPIES clk_gen.phase_gen, line 279), so it is a copy and not listed.",
+   "related structural assets": [
+    {"asset rtl": "clk_gen.phase_gen", "entity": "neorv32_twi", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "clk_gen.phase", "entity": "neorv32_twi", "realization": "computes", "occurrence": 2, "edge": {"type": "GATED_BY", "partner": "clk_gen.phase_gen"}}
+   ]
+  },
+  {
+   "concept": "Clock-stretch hold decision -- whether bit phases freeze because the clock line reads low while the module releases it high",
+   "security objective": "Integrity",
+   "reasoning": "twi_scl_i is converted (line 409) and synchronized through io_con.scl_in_ff (line 315); line 296 computes clk_gen.halt from io_con.scl_out, io_con.scl_in_ff(1) and ctrl.clkstr, and line 282 advances phases only when halt = '0'. Integrity: the hold must follow the sensed clock line and the setting. Availability is also Established: a hold that stays set freezes the transfer. The synchronized level is also reported (line 150). twi_scl_i sets the sensed level, read by this entity to store and decide (SOURCES io_con.scl_in at occurrence 2); io_con.scl_in_ff stores it (CLOCKED_BY clk_i at occurrence 5; use record GATES clk_gen.halt; it also names itself, so it is not a copy); clk_gen.halt computes the decision (GATED_BY ctrl.clkstr at occurrence 3). io_con.scl_in only converts the pin value (line 409) on its way to the synchronizer and is not listed.",
+   "related structural assets": [
+    {"asset rtl": "twi_scl_i", "entity": "neorv32_twi", "realization": "sets", "occurrence": 2, "edge": {"type": "SOURCES", "partner": "io_con.scl_in"}},
+    {"asset rtl": "io_con.scl_in_ff", "entity": "neorv32_twi", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "clk_gen.halt", "entity": "neorv32_twi", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "ctrl.clkstr"}}
+   ]
+  },
+  {
+   "concept": "Engine operation state -- which operation the engine executes (waiting for a command, one of two fixed line-level sequences, or a 9-bit data transfer)",
+   "security objective": "Integrity",
+   "reasoning": "`engine.state(2) <= ctrl.enable;` (line 321); in state 100 the low bits are loaded from the command, `engine.state(1 downto 0) <= fifo.tx_rdata(dcmd_cmd_hi_c downto dcmd_cmd_lo_c);` (line 329, when tx_avail and tick, line 328), and each sequence returns them to 00 (lines 344, 353, 387, 394). `case engine.state is` (line 322) selects every line level, shift, count and completion action (SELECTS io_con.sda_out, io_con.scl_out, engine.sreg, engine.bitcnt, engine.done). Integrity: the executed sequence must be the one the fetched command defines. engine.state stores (CLOCKED_BY clk_i at occurrence 5). Its records name ctrl.enable and fifo.tx_rdata, so it is not a copy.",
+   "related structural assets": [
+    {"asset rtl": "engine.state", "entity": "neorv32_twi", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Bit position within a data transfer -- decides the final bit slot and the completion of the word",
+   "security objective": "Integrity",
+   "reasoning": "engine.bitcnt is cleared in state 100 (line 326) and incremented at each phase 3 of a data transfer (lines 381-382). `if (engine.bitcnt = \"1001\") and (clk_gen.phase(0) = '1')` drives the data line low in the final slot (lines 371-372) and sets completion and returns the state (lines 385-387). Integrity: the number of bits shifted and the completion point depend on it. engine.bitcnt is self-updating state and stores (CLOCKED_BY clk_i at occurrence 5; use records GATES engine.done, engine.state, io_con.sda_out).",
+   "related structural assets": [
+    {"asset rtl": "engine.bitcnt", "entity": "neorv32_twi", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Engine busy decision -- whether a command is executing",
+   "security objective": "Integrity",
+   "reasoning": "`engine.busy <= '1' when (engine.state(2) = '1') and (engine.state(1 downto 0) /= \"00\") else '0';` (line 401). It blocks the next command fetch (line 199), resets the phase sequencer when idle (line 280), qualifies the interrupt (line 239) and is reported as busy status (line 154). Integrity: a wrong busy value would fetch a command during a transfer or reset phases mid-transfer. engine.busy computes the decision (GATED_BY engine.state at occurrence 6).",
+   "related structural assets": [
+    {"asset rtl": "engine.busy", "entity": "neorv32_twi", "realization": "computes", "occurrence": 6, "edge": {"type": "GATED_BY", "partner": "engine.state"}}
+   ]
+  },
+  {
+   "concept": "Command fetch decision -- pop the next queued command when the engine is idle, a command is available and a tick occurs",
+   "security objective": "Integrity",
+   "reasoning": "`fifo.tx_re <= '1' when (engine.busy = '0') and (fifo.tx_avail = '1') and (clk_gen.tick = '1') else '0';` (line 199) is wired to tx_fifo_inst.re_i (line 192), whose implementation is not supplied, so the integrity of the delivered pop request is Established at lines 192 and 199; the same condition loads the command into the engine (lines 328-329). fifo.tx_re computes the decision here from a condition (GATED_BY engine.busy at occurrence 3), satisfying the sub-unit wiring exception. fifo.tx_avail brings the queue's availability from tx_fifo_inst.avail_o (line 194) and is tested in when and if conditions (lines 199, 328; also lines 154, 239): it sets the decision (CONNECTS at occurrence 3). A false availability would load command bits from an empty queue (line 329). fifo.tx_rdata only receives the sub-unit's read data and is read as data (lines 327, 329): a carrier, not listed.",
+   "related structural assets": [
+    {"asset rtl": "fifo.tx_re", "entity": "neorv32_twi", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "engine.busy"}},
+    {"asset rtl": "fifo.tx_avail", "entity": "neorv32_twi", "realization": "sets", "occurrence": 3, "edge": {"type": "CONNECTS", "partner": "tx_fifo_inst.avail_o"}}
+   ]
+  },
+  {
+   "concept": "Data-register access decisions -- a bus write to the data register pushes a command; a bus read of it pops a received word",
+   "security objective": "Integrity",
+   "reasoning": "`fifo.tx_we <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '1') else '0';` (line 197) drives tx_fifo_inst.we_i (line 189), and `fifo.rx_re <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(2) = '1') else '0';` (line 230) drives rx_fifo_inst.re_i (line 223). Both sub-units are not supplied, so the integrity of each delivered decision is Established at these lines: a spurious push queues an unintended command, a spurious pop discards a received word. bus_req_i is a transport record and is not reported; the decisions are computed here (GATED_BY bus_req_i.stb at occurrence 3 of each), which satisfies the sub-unit wiring exception. fifo.tx_wdata only passes a slice of bus data to the queue (line 198) and is a carrier.",
+   "related structural assets": [
+    {"asset rtl": "fifo.tx_we", "entity": "neorv32_twi", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "bus_req_i.stb"}},
+    {"asset rtl": "fifo.rx_re", "entity": "neorv32_twi", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "bus_req_i.stb"}}
+   ]
+  },
+  {
+   "concept": "Data line output level -- the level driven on twi_sda_o: fixed-level sequences per engine state and the shifted-out data bits",
+   "security objective": "Integrity",
+   "reasoning": "io_con.sda_out is set to fixed levels by engine state and phase (lines 335, 337, 350, 352, 372, 393) and to the word's top bit `io_con.sda_out <= engine.sreg(8);` (line 374), released high at reset (line 306), and leaves through `twi_sda_o <= io_con.sda_out;` (line 406). The level is delivered through an output port to logic outside this file, so its integrity is Established at lines 374 and 406. io_con.sda_out stores it (CLOCKED_BY clk_i at occurrence 8; use record CARRIES twi_sda_o); twi_sda_o is the exit port (COPIES io_con.sda_out at occurrence 2). engine.sreg, the source of the data bits, is listed under the data word concept.",
+   "related structural assets": [
+    {"asset rtl": "io_con.sda_out", "entity": "neorv32_twi", "realization": "stores", "occurrence": 8, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "twi_sda_o", "entity": "neorv32_twi", "realization": "exit port", "occurrence": 2, "edge": {"type": "COPIES", "partner": "io_con.sda_out"}}
+   ]
+  },
+  {
+   "concept": "Clock line output level -- the level driven on twi_scl_o per engine state and phase",
+   "security objective": "Integrity",
+   "reasoning": "io_con.scl_out is set by engine state and phase (lines 341, 343, 357, 359, 366, 368, 392), released high at reset (line 307), and leaves through `twi_scl_o <= io_con.scl_out;` (line 407); it also enters the hold decision (line 296). The level is delivered through an output port to logic outside this file, so its integrity is Established at line 407. io_con.scl_out stores it (CLOCKED_BY clk_i at occurrence 5; use records CARRIES twi_scl_o, GATES clk_gen.halt); twi_scl_o is the exit port (COPIES io_con.scl_out at occurrence 2).",
+   "related structural assets": [
+    {"asset rtl": "io_con.scl_out", "entity": "neorv32_twi", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "twi_scl_o", "entity": "neorv32_twi", "realization": "exit port", "occurrence": 2, "edge": {"type": "COPIES", "partner": "io_con.scl_out"}}
+   ]
+  },
+  {
+   "concept": "Transfer data word -- the 9-bit word loaded from a command (data byte and inverted acknowledge bit), shifted out bit by bit and filled with bits sampled from the data line for the RX FIFO",
+   "security objective": "Integrity",
+   "reasoning": "`engine.sreg <= fifo.tx_rdata(dcmd_msb_c downto dcmd_lsb_c) & (not fifo.tx_rdata(dcmd_ack_c));` (line 327) forms the outgoing word; during a data transfer `engine.sreg <= engine.sreg(7 downto 0) & io_con.sda_in_ff(1);` (line 378) shifts it while sampling the data line, whose pin value enters at line 408 and is synchronized at line 314; the result is written to the RX FIFO (lines 228, 219) and returned on a data-register read (line 156). Integrity: the word sent and the word received must match the command and the sampled bits. Confidentiality is not established: no line restricts who reads it. twi_sda_i sets the sampled value (SOURCES io_con.sda_in at occurrence 2); io_con.sda_in_ff stores it (CLOCKED_BY clk_i at occurrence 4; use record SOURCES bus_rsp_o.data; it names itself, so it is not a copy); engine.sreg computes the word (DERIVES_FROM io_con.sda_in_ff at occurrence 7; also DERIVES_FROM fifo.tx_rdata at occurrence 5). Not listed: io_con.sda_in only converts the pin value; fifo.rx_wdata only repacks engine.sreg into the RX FIFO write port (line 228) and fifo.rx_rdata only receives its read data (line 224): carriers.",
+   "related structural assets": [
+    {"asset rtl": "twi_sda_i", "entity": "neorv32_twi", "realization": "sets", "occurrence": 2, "edge": {"type": "SOURCES", "partner": "io_con.sda_in"}},
+    {"asset rtl": "io_con.sda_in_ff", "entity": "neorv32_twi", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "engine.sreg", "entity": "neorv32_twi", "realization": "computes", "occurrence": 7, "edge": {"type": "DERIVES_FROM", "partner": "io_con.sda_in_ff"}}
+   ]
+  },
+  {
+   "concept": "Word completion event -- the decision that a data transfer finished, which writes the word into the RX FIFO",
+   "security objective": "Integrity",
+   "reasoning": "`engine.done <= '1';` when `(engine.bitcnt = \"1001\") and (clk_gen.phase(0) = '1')` in a data transfer (lines 385-386), otherwise '0' (line 318); `fifo.rx_we <= engine.done;` (line 229) drives rx_fifo_inst.we_i (line 220), whose implementation is not supplied, so the integrity of the delivered write event is Established at lines 220 and 229: a missing or extra event loses or duplicates a received word. engine.done computes the decision (GATED_BY engine.bitcnt at occurrence 5). fifo.rx_we is a combinational COPIES of engine.done passed unchanged into the sub-unit: a copy and carrier, not listed.",
+   "related structural assets": [
+    {"asset rtl": "engine.done", "entity": "neorv32_twi", "realization": "computes", "occurrence": 5, "edge": {"type": "GATED_BY", "partner": "engine.bitcnt"}}
+   ]
+  },
+  {
+   "concept": "Interrupt request -- raised while the controller is enabled, the command queue is empty and the engine is idle",
+   "security objective": "Integrity",
+   "reasoning": "`irq_o <= ctrl.enable and (not fifo.tx_avail) and (not engine.busy);` (line 239), registered on clk_i and cleared by reset (line 237). The request is delivered through an output port to logic outside this file, so its integrity is Established at line 239. Availability is also Established under these RTL conditions: when enabled, idle and the queue is empty, the request is produced at the next clock edge. irq_o is the exit port, by precedence over its storage (GATED_BY ctrl.enable at occurrence 3).",
+   "related structural assets": [
+    {"asset rtl": "irq_o", "entity": "neorv32_twi", "realization": "exit port", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "ctrl.enable"}}
+   ]
+  }
+ ]
+}

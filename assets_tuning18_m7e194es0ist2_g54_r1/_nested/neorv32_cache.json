@@ -1,0 +1,521 @@
+{
+  "module name": "neorv32_cache",
+  "module purpose": "neorv32_cache accepts host bus transactions, decides whether to serve them from a local cache memory or forward them directly to the external bus, refills cache lines on read misses, and returns responses to the host. It also supports fence-driven cache clearing and invalidates a just-filled line when any refill beat reports an error.",
+  "use-case flows": [
+    {
+      "flow": "start",
+      "value": "pending access or fence indication buffered and turned into lookup or clear sequencing",
+      "lines": [
+        137,
+        138,
+        168,
+        169,
+        170,
+        175,
+        184,
+        220
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "lookup captures address fields, checks the cache hit result, and selects direct response, read-hit acknowledge, write-hit update, or miss refill",
+      "lines": [
+        180,
+        181,
+        182,
+        186,
+        187,
+        188,
+        189,
+        190,
+        191,
+        194,
+        195,
+        196,
+        199,
+        200,
+        202,
+        203,
+        405
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "read-miss refill reconstructs the line address, requests locked bus reads, writes returned words into the cache, accumulates refill errors, and advances the word offset",
+      "lines": [
+        225,
+        226,
+        227,
+        228,
+        229,
+        230,
+        235,
+        236,
+        237,
+        238,
+        239,
+        240,
+        242,
+        243,
+        244,
+        245,
+        246,
+        248,
+        384,
+        385,
+        398,
+        413,
+        414,
+        416,
+        417,
+        419,
+        420,
+        422,
+        423
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "cached word read from the data arrays and acknowledged on a cache read hit",
+      "lines": [
+        156,
+        189,
+        190,
+        191,
+        425,
+        426,
+        427,
+        428
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "external-bus response returned in direct-response state, or refill failure reported with acknowledge and error",
+      "lines": [
+        209,
+        210,
+        211,
+        254,
+        255,
+        256,
+        257,
+        258
+      ]
+    },
+    {
+      "flow": "lock",
+      "value": "refill transaction kept locked while the cache line is being downloaded",
+      "lines": [
+        229,
+        230,
+        238,
+        239,
+        240
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "controller record and cache-valid tracking cleared when rstn_i = '0'",
+      "lines": [
+        116,
+        117,
+        118,
+        119,
+        120,
+        121,
+        122,
+        123,
+        124,
+        376,
+        377,
+        378
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "fence-driven cache clear drops all valid bits and, when READ_ONLY = false, also emits a bus fence",
+      "lines": [
+        168,
+        169,
+        216,
+        217,
+        219,
+        220,
+        221,
+        380,
+        381
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Controller phase for idle, lookup, direct response, clear, and line-download processing",
+      "security objective": "Integrity",
+      "reasoning": "The case on ctrl.state at lines 164-265 selects every major action of the cache. The state field is reset to S_IDLE at line 117, and the relevant store edge is the whole-record update `ctrl <= ctrl_nxt` at line 126, reflected by ctrl's CLOCKED_BY record. Integrity is established because wrong phase state changes which commands and responses are issued, for example clear at line 219, new-line creation at line 226, bus strobe at line 229, and invalidation/error handling at line 255. Availability is also established because the phase is held in ctrl between edges and recomputed by ctrl_nxt.state assignments at lines 169, 175, 188, 192, 196, 200, 203, 211, 221, 231, 246, 248, 258, 260, and 265.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl",
+          "entity": "neorv32_cache",
+          "realization": "stores",
+          "occurrence": 10,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl_nxt.state",
+          "entity": "neorv32_cache",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "SELECTED_BY",
+            "partner": "ctrl.state"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Buffered fence / cache-clear request",
+      "security objective": "Integrity",
+      "reasoning": "The pending-clear bit is reset at line 119, updated by `ctrl_nxt.buf_sync <= ctrl.buf_sync or host_req_i.fence;` at line 138, causes the S_CLEAR transition at line 169, and is cleared again at line 220 when `cache_o.cmd_clr <= '1'` is issued at line 219. In the memory block, clr_i then clears valid_mem at lines 380-381. Integrity is established because corruption can suppress a requested clear or cause a spurious cache clear; availability is established because the request is stored in ctrl by the clocked whole-record assignment at line 126 until S_CLEAR consumes it. The optional bus fence at line 217 is a transport-field effect and is therefore not listed as a structural asset.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl",
+          "entity": "neorv32_cache",
+          "realization": "stores",
+          "occurrence": 10,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl_nxt.buf_sync",
+          "entity": "neorv32_cache",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "host_req_i.fence"
+          }
+        },
+        {
+          "asset rtl": "cache_o.cmd_clr",
+          "entity": "neorv32_cache",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "SELECTED_BY",
+            "partner": "ctrl.state"
+          }
+        },
+        {
+          "asset rtl": "clr_i",
+          "entity": "neorv32_cache_memory",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATES",
+            "partner": "valid_mem"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Decision that the current access must bypass the cache",
+      "security objective": "Integrity",
+      "reasoning": "At lines 171-173 the controller sets ctrl_nxt.buf_dir when the address is in or above UC_BEGIN, or when AMO/debug is asserted. At lines 186-188 the stored decision forces a direct bus transaction instead of cached service; when the bit is not set, lines 189-203 follow the cache-hit or miss paths. Integrity is established because wrong classification changes whether the request bypasses the cache or is treated as a cache lookup. Availability is established because the decision bit is stored in ctrl by the clocked whole-record assignment at line 126 until S_LOOKUP consumes it.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl",
+          "entity": "neorv32_cache",
+          "realization": "stores",
+          "occurrence": 10,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl_nxt.buf_dir",
+          "entity": "neorv32_cache",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "host_req_i.addr"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Captured cache-line address and word-offset context for miss refill",
+      "security objective": "Integrity",
+      "reasoning": "On lookup, lines 180-182 derive and capture tag, index, and a zero word offset from the request address. During refill, lines 225-229 and 235-240 reconstruct the current word address for the cache memory and the external bus, line 244 increments the offset on each acknowledged beat, and line 245 decides when the last word has been reached. Integrity is established because wrong tag/index/offset values would fetch or store the wrong cache line or stop the refill too early or too late. Availability is established because these fields are stored in ctrl by the clocked whole-record assignment at line 126 across S_DOWNLOAD_REQ/S_DOWNLOAD_RSP cycles. The bus_req_o.addr transport exit at lines 227 and 238 is excluded from the structural list.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl",
+          "entity": "neorv32_cache",
+          "realization": "stores",
+          "occurrence": 10,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl_nxt.tag",
+          "entity": "neorv32_cache",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "host_req_i.addr"
+          }
+        },
+        {
+          "asset rtl": "ctrl_nxt.idx",
+          "entity": "neorv32_cache",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "host_req_i.addr"
+          }
+        },
+        {
+          "asset rtl": "ctrl_nxt.ofs",
+          "entity": "neorv32_cache",
+          "realization": "computes",
+          "occurrence": 4,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "ctrl.ofs"
+          }
+        },
+        {
+          "asset rtl": "cache_o.addr",
+          "entity": "neorv32_cache",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "ctrl.tag"
+          }
+        },
+        {
+          "asset rtl": "addr_i",
+          "entity": "neorv32_cache_memory",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "acc_tag"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Accumulated refill-error status for the line being downloaded",
+      "security objective": "Integrity",
+      "reasoning": "The refill-error flag is reset at line 120, cleared for a new lookup at line 183, and accumulated during refill by `ctrl_nxt.buf_err <= ctrl.buf_err or bus_rsp_i.err;` at line 242. At lines 254-257 the stored flag decides whether the filled line is invalidated and an error response is produced. Integrity is established because a wrong error status can leave a bad line valid or falsely invalidate and report an error; availability is established because the flag is stored in ctrl by the whole-record clocked update at line 126 until S_DOWNLOAD_DONE. The host error transport field at line 257 is excluded from the structural list.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl",
+          "entity": "neorv32_cache",
+          "realization": "stores",
+          "occurrence": 10,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl_nxt.buf_err",
+          "entity": "neorv32_cache",
+          "realization": "computes",
+          "occurrence": 4,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "bus_rsp_i.err"
+          }
+        },
+        {
+          "asset rtl": "cache_o.cmd_inv",
+          "entity": "neorv32_cache",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "ctrl.buf_err"
+          }
+        },
+        {
+          "asset rtl": "inv_i",
+          "entity": "neorv32_cache_memory",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATES",
+            "partner": "valid_mem"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Cache-line validity/tag metadata and the resulting hit indication",
+      "security objective": "Integrity",
+      "reasoning": "A new refill starts line installation with `cache_o.cmd_new <= '1'` at line 226. In the memory block, new_i marks the selected line valid at line 385 and writes its tag at line 398; lines 387 and 400 register the selected valid and tag values into valid_mem_rd and tag_mem_rd. The hit indication is then computed at line 405 from `(valid_mem_rd = '1') and (tag_mem_rd = acc_tag)`, and the top entity consumes cache_i.sta_hit in the S_LOOKUP decisions at lines 189-203. Integrity is established because wrong validity/tag metadata or a wrong hit indication changes whether data is acknowledged from the cache or a miss/direct path is taken. Availability is established because the metadata is stored in the memory arrays and refreshed on new/clear/invalidate operations.",
+      "related structural assets": [
+        {
+          "asset rtl": "cache_o.cmd_new",
+          "entity": "neorv32_cache",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "SELECTED_BY",
+            "partner": "ctrl.state"
+          }
+        },
+        {
+          "asset rtl": "new_i",
+          "entity": "neorv32_cache_memory",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATES",
+            "partner": "tag_mem"
+          }
+        },
+        {
+          "asset rtl": "valid_mem",
+          "entity": "neorv32_cache_memory",
+          "realization": "stores",
+          "occurrence": 5,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "valid_mem_rd",
+          "entity": "neorv32_cache_memory",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "tag_mem",
+          "entity": "neorv32_cache_memory",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "tag_mem_rd",
+          "entity": "neorv32_cache_memory",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "hit_o",
+          "entity": "neorv32_cache_memory",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "valid_mem_rd"
+          }
+        },
+        {
+          "asset rtl": "cache_i.sta_hit",
+          "entity": "neorv32_cache",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "CONNECTS",
+            "partner": "neorv32_cache_memory_inst.hit_o"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Cached data payload stored in the cache data arrays",
+      "security objective": "Integrity",
+      "reasoning": "Cached payload data is written into the byte arrays on a write hit or during refill: the top drives cache data and write-enable lines at 151, 194, and 236-237, and the memory writes data_mem_b0..b3 from wdata_i under we_i at lines 413-423. A cached word is read out on lines 425-428, forwarded toward the host at line 156, and acknowledged on a read hit at lines 189-192. Integrity is established because wrong stored or returned bytes corrupt cached reads and write-hit updates. Availability is established because the addressed word is refreshed onto rdata_o every clock edge.",
+      "related structural assets": [
+        {
+          "asset rtl": "wdata_i",
+          "entity": "neorv32_cache_memory",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "data_mem_b0"
+          }
+        },
+        {
+          "asset rtl": "data_mem_b0",
+          "entity": "neorv32_cache_memory",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "data_mem_b1",
+          "entity": "neorv32_cache_memory",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "data_mem_b2",
+          "entity": "neorv32_cache_memory",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "data_mem_b3",
+          "entity": "neorv32_cache_memory",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "rdata_o",
+          "entity": "neorv32_cache_memory",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "data_mem_b0"
+          }
+        }
+      ]
+    }
+  ]
+}

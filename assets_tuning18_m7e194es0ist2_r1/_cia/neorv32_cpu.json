@@ -1,0 +1,179 @@
+{
+ "module name": "neorv32_cpu",
+ "concepts": [
+  {
+   "concept": "Control decisions (the control bus) that determine per-cycle operations of the frontend, register-file, ALU, LSU and PMP",
+   "kind": "decision",
+   "writers": "line 253: driven by neorv32_cpu_control_inst.ctrl_o => ctrl (control sub-unit port map); no other assignment to 'ctrl' in this RTL (the control sub-unit is the sole writer).",
+   "observers": "no direct top-level outputs expose 'ctrl'; it is forwarded only to internal sub-units: frontend.ctrl_i (line 194), counters.ctrl_i (line 297), regfile.ctrl_i (line 321), alu.ctrl_i (line 362), lsu.ctrl_i (line 384), pmp.ctrl_i (line 414).",
+   "what it decides": "steers per-cycle operations of the subunits (which instruction/fetch/execute/writeback actions occur); examples: ctrl.pc_ret appears in rf_wdata composition (line 330), CSR control fields forwarded to ICC (lines 441-444), lsu_wait is observed by control (line 270) to stall operations.",
+   "answers": {
+    "confidentiality": {
+     "answer": "no",
+     "line": 194,
+     "via": null,
+     "reason": "The 'ctrl' bus is only routed to internal sub-units (e.g. frontend ctrl_i at line 194) and is not directly exported on any top-level output port in this RTL."
+    },
+    "integrity": {
+     "answer": "yes-assumed",
+     "line": 253,
+     "via": "neorv32_cpu_control_inst.ctrl_o",
+     "reason": "The control sub-unit drives 'ctrl' (port mapping at line 253); external inputs to that sub-unit can change these control decisions and whether those writers are trusted depends on system integration."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 270,
+     "via": "lsu_wait (neorv32_cpu_lsu_inst.wait_o => lsu_wait, line 390; depends on dbus_rsp_i at line 395)",
+     "reason": "The control unit receives lsu_wait (line 270) driven by the LSU wait_o (line 390) which depends on external DBUS responses (line 395), so external bus behavior can stall/alter control progress."
+    },
+    "undermined behavior": {
+     "answer": "unknown",
+     "line": null,
+     "via": "neorv32_cpu_control_inst",
+     "reason": "Whether a debug/test/override mode inside the control sub-unit can replace or bypass 'ctrl' is determined inside the control entity whose internals are not supplied here."
+    }
+   },
+   "security objective": "Integrity"
+  },
+  {
+   "concept": "Register-file writeback value \u00151 the data selected and presented to the regfile for writing (ALU result, LSU read data, CSR readback or return-PC)",
+   "kind": "data",
+   "writers": "line 330: combinational top-level assignment 'rf_wdata <= alu_res or lsu_rdata or csr_rdata or ctrl.pc_ret' composes rf_wdata from alu_res (driven by ALU res_o at line 369), lsu_rdata (LSU rdata_o at line 388), csr_rdata (control csr_rdata_o at line 263) and ctrl.pc_ret (ctrl field), no other top-level drivers.",
+   "observers": "no direct external observer in this RTL; rf_wdata is fed into the regfile rd_i port (neorv32_cpu_regfile_inst.rd_i at line 323) and consumed internally by the regfile.",
+   "what it decides": "selects the data written into the register-file on writeback (the register file receives rf_wdata at rd_i, line 323), thereby determining subsequent architectural register contents used by the datapath.",
+   "answers": {
+    "confidentiality": {
+     "answer": "no",
+     "line": 323,
+     "via": null,
+     "reason": "rf_wdata is only passed into the internal register-file rd_i (line 323) and is not presented on any top-level output port in this RTL."
+    },
+    "integrity": {
+     "answer": "yes-assumed",
+     "line": 330,
+     "via": "rf_wdata assignment (sources: alu_res, lsu_rdata, csr_rdata, ctrl.pc_ret)",
+     "reason": "rf_wdata is computed at line 330 from sub-unit outputs (ALU, LSU, CSR, control); those source values can be influenced by other sub-units or external inputs, so its integrity depends on integration and the correctness of those writers."
+    },
+    "availability": {
+     "answer": "unknown",
+     "line": null,
+     "via": "neorv32_cpu_control_inst (ctrl.rf_wb_en / writeback gating)",
+     "reason": "Whether an external input can block or freeze the actual register-file writeback (e.g., via ctrl.rf_wb_en) is decided inside the control sub-unit which is not shown in this RTL."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 330,
+     "via": "rf_wdata top-level assignment",
+     "reason": "A single combinational assignment (line 330) composes rf_wdata; no alternate driver or debug/test override is visible at top level."
+    }
+   },
+   "security objective": "Integrity"
+  },
+  {
+   "concept": "Aggregated CSR read value (xcsr_res) assembled from CSR sources and supplied to the control unit",
+   "kind": "data",
+   "writers": "line 279: top-level combinational assignment 'xcsr_res <= xcsr_cnt or xcsr_alu or xcsr_pmp or xcsr_icc'; individual sources are driven by counters rdata_o => xcsr_cnt (line 299) or zero when counters disabled (line 305), ALU csr_o => xcsr_alu (line 371), PMP csr_o => xcsr_pmp (line 416) or zero when PMP disabled (line 426), ICC csr_rdata_o => xcsr_icc (line 445) or zero when ICC disabled (line 454).",
+   "observers": "no direct top-level output: xcsr_res is supplied into the control unit xcsr_rdata_i (neorv32_cpu_control_inst.xcsr_rdata_i at line 264) and consumed internally by the control sub-unit.",
+   "what it decides": "provides aggregate CSR readback and status to the control unit (used at control xcsr_rdata_i, line 264) and therefore influences CSR-based decisions and control behavior.",
+   "answers": {
+    "confidentiality": {
+     "answer": "no",
+     "line": 264,
+     "via": null,
+     "reason": "xcsr_res is routed only into the control unit at line 264 and the RTL does not expose it directly on any top-level output port."
+    },
+    "integrity": {
+     "answer": "yes-assumed",
+     "line": 279,
+     "via": "xcsr_cnt / xcsr_alu / xcsr_pmp / xcsr_icc (the source CSR buses)",
+     "reason": "xcsr_res is formed by OR-ing multiple CSR source buses at line 279 which are driven by different sub-units and configurations, so its integrity depends on the correctness/trustworthiness of those writers."
+    },
+    "availability": {
+     "answer": "no",
+     "line": 279,
+     "via": null,
+     "reason": "The top-level provides an unconditional combinational assignment for xcsr_res (line 279); no runtime-ready/enable signal in this RTL blocks its assembly."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 279,
+     "via": null,
+     "reason": "xcsr_res has a single top-level combinational driver (line 279); the presence or absence of individual source buses is determined by compile-time generates, not by a visible runtime override in this RTL."
+    }
+   },
+   "security objective": "Integrity"
+  },
+  {
+   "concept": "Machine interrupt decision (irq_machine) computed from the interrupt input pins and supplied to control",
+   "kind": "decision",
+   "writers": "line 276: irq_machine <= mti_i & mei_i & msi_i (concatenation of external input pins mti_i (line 77), mei_i (line 76), msi_i (line 75)); no other writers in this RTL.",
+   "observers": "no direct top-level observer of irq_machine; it is passed into the control unit irq_machine_i (neorv32_cpu_control_inst.irq_machine_i at line 267) and consumed internally.",
+   "what it decides": "collects the machine-level interrupt input pins into irq_machine and supplies the control unit (line 267) which uses it to trigger interrupt handling and related control flow.",
+   "answers": {
+    "confidentiality": {
+     "answer": "no",
+     "line": 276,
+     "via": null,
+     "reason": "irq_machine is formed directly from external input pins (lines 75-77); these inputs are set by external agents and the RTL exposes no additional readback beyond those inputs."
+    },
+    "integrity": {
+     "answer": "yes-assumed",
+     "line": 276,
+     "via": "mti_i / mei_i / msi_i (external interrupt input pins)",
+     "reason": "irq_machine is driven from external pins (assignment at line 276), so external agents that drive those pins can change this decision and trust depends on system integration."
+    },
+    "availability": {
+     "answer": "no",
+     "line": 276,
+     "via": null,
+     "reason": "irq_machine is a combinational function of input pins (line 276); there is no RTL-visible enable or stall that an external actor can toggle to freeze the existence of this vector."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 276,
+     "via": null,
+     "reason": "irq_machine has a single combinational driver at line 276 and no alternate/runtime override is present in this RTL."
+    }
+   },
+   "security objective": "Integrity"
+  },
+  {
+   "concept": "PMP fault indication \u00151 the flag that reports a memory access permission fault and gates control/LSU behavior (zero when PMP is disabled)",
+   "kind": "decision",
+   "writers": "when PMP enabled: neorv32_cpu_pmp_inst.fault_o => pmp_fault (port mapping at line 420); when PMP disabled (compile-time generate) the RTL drives pmp_fault <= '0' (line 427) \u2014 the active writer is therefore either the PMP sub-unit or the constant assignment depending on the RISCV_ISA_Smpmp generic.",
+   "observers": "no top-level port exposes pmp_fault directly; it is consumed internally by the control unit (pmp_fault_i at neorv32_cpu_control_inst, line 257) and by the LSU (pmp_fault input to neorv32_cpu_lsu_inst, line 392).",
+   "what it decides": "indicates a PMP permission fault and is used to gate/mutate control and LSU behavior (control receives it at line 257, LSU receives it at line 392); when PMP is disabled the RTL forces the flag to '0' (line 427).",
+   "answers": {
+    "confidentiality": {
+     "answer": "unknown",
+     "line": null,
+     "via": "neorv32_cpu_pmp_inst",
+     "reason": "Whether pmp_fault (which originates inside the PMP sub-unit or is zero when disabled) is observable externally (for example via bus responses or error status exported by other units) depends on PMP/LSU internals not supplied in this RTL."
+    },
+    "integrity": {
+     "answer": "unknown",
+     "line": null,
+     "via": "neorv32_cpu_pmp_inst.fault_o",
+     "reason": "The writer of pmp_fault is inside the PMP sub-unit when enabled (line 420) and the PMP internals (how its registers can be modified or whether the flag can be spoofed) are not visible here, so integrity cannot be determined from this RTL alone."
+    },
+    "availability": {
+     "answer": "unknown",
+     "line": null,
+     "via": "neorv32_cpu_pmp_inst / RISCV_ISA_Smpmp generic",
+     "reason": "Whether external inputs can force, freeze or block pmp_fault (beyond the compile-time disabled case at line 427) depends on the PMP and LSU implementations and on how PMP configuration is performed, which are not shown here."
+    },
+    "undermined behavior": {
+     "answer": "yes-RTL",
+     "line": 427,
+     "via": "RISCV_ISA_Smpmp generate (pmp_disabled branch)",
+     "reason": "The RTL contains a generate that, when RISCV_ISA_Smpmp is false, replaces the PMP-driven fault with a constant '0' assignment (line 427), i.e., configuration selects a different driver for pmp_fault."
+    }
+   },
+   "security objective": "none"
+  }
+ ],
+ "_problems": [
+  "concept answered 0 times: Register-file writeback value \u2014 the data selected and presen",
+  "concept answered 0 times: PMP fault indication \u2014 the flag that reports a memory access"
+ ]
+}

@@ -1,0 +1,145 @@
+{
+  "module name": "neorv32_neoled",
+  "conceptual assets": [
+    {
+      "concept": "Control configuration registers (enable, mode, strobe, clk_prsc, irq_conf, t_total, t0_high, t1_high)",
+      "security objective": "Integrity",
+      "reasoning": "The bus_access process writes these configuration fields from the bus on writes to addr(2) = '0' (e.g. `if (bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '0') then ctrl.enable <= bus_req_i.data(ctrl_en_c); ... ctrl.t1_high <= bus_req_i.data(ctrl_t_1h_4_c downto ctrl_t_1h_0_c);`). These stored fields drive module behaviour: `clkgen_en_o <= ctrl.enable;` `tx_fifo.clear <= not ctrl.enable;` serial_engine samples `ctrl.clk_prsc` to select `clkgen_i(...)` and uses `ctrl.t_total`, `ctrl.t0_high`, `ctrl.t1_high` for timing; irq_generator reads `ctrl.irq_conf`. Corruption or incorrect setting of these stored registers would violate the implemented control, timing and interrupt flows, establishing integrity as a security objective.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.enable",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.mode",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.strobe",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.clk_prsc",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.irq_conf",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.t_total",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.t0_high",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.t1_high",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "clkgen_en_o",
+          "entity": "neorv32_neoled",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Transmit FIFO content and occupancy/status (write data, write/read enables, read data, avail/free/half flags)",
+      "security objective": "Integrity",
+      "reasoning": "FIFO write data and enables are produced inside the block and the FIFO's stored contents and flags are consumed by transmission and interrupt/reporting flows: `tx_fifo.wdata <= ctrl.strobe & ctrl.mode & bus_req_i.data;` and `tx_fifo.we <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '1') else '0';`. The module drives FIFO read enable `tx_fifo.re <= '1' when (serial.state = \"100\") else '0';`. The FIFO instance maps `rdata_o => tx_fifo.rdata`, `avail_o => tx_fifo.avail`, `free_o => tx_fifo.free`, `half_o => tx_fifo.half`. `serial_engine` loads `serial.sreg <= tx_fifo.rdata(31 downto 0)` when state = \"100\"; `bus_access` reads the flags and `irq_generator` uses `tx_fifo.avail`/`tx_fifo.half`. Therefore FIFO contents and flags are stored/produced inside the module and their corruption or incorrect setting would violate transmission, status reporting and interrupt behaviour, establishing Integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "tx_fifo.wdata",
+          "entity": "neorv32_neoled",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "tx_fifo.we",
+          "entity": "neorv32_neoled",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "tx_fifo.re",
+          "entity": "neorv32_neoled",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "tx_fifo.rdata",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tx_fifo.avail",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tx_fifo.free",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tx_fifo.half",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tx_fifo.clear",
+          "entity": "neorv32_neoled",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Interrupt request signal (irq_o) produced by the module",
+      "security objective": "Integrity",
+      "reasoning": "The irq_generator process computes and drives the interrupt output on each clock: `irq_o <= ctrl.enable and (((not ctrl.irq_conf) and (not tx_fifo.avail)) or ((ctrl.irq_conf) and (not tx_fifo.half)));`. irq_o leaves the entity as an output port; incorrect irq_o (or its driving inputs) would violate the implemented interrupt signalling, establishing Integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_o",
+          "entity": "neorv32_neoled",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "LED serial output and the stored transmit shift-register (data actually transmitted)",
+      "security objective": "Integrity",
+      "reasoning": "The serial_engine loads transmit data from the FIFO and controls the LED output: in state \"100\" `serial.sreg <= tx_fifo.rdata(31 downto 0)`; in state \"101\" the code shifts `serial.sreg <= serial.sreg(serial.sreg'left-1 downto 0) & '0'` and drives `neoled_o` (states set `neoled_o <= '0'` or `neoled_o <= '1'` and timing is advanced by pulse_clk and counters using `ctrl.t_total`/`t0_high`/`t1_high`). serial.sreg thus stores the bits to be emitted and neoled_o is the port through which the transmitted waveform leaves the entity; their corruption or incorrect values would violate the implemented transmission, establishing Integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "serial.sreg",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "neoled_o",
+          "entity": "neorv32_neoled",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Clock-generator input vector sample used for pulse timing (clkgen_i)",
+      "security objective": "Integrity",
+      "reasoning": "serial.pulse_clk is driven from the selected bit of the clkgen_i vector: `serial.pulse_clk <= clkgen_i(to_integer(unsigned(ctrl.clk_prsc)));`. serial_engine uses serial.pulse_clk to advance `serial.pulse_cnt` and `serial.strobe_cnt` and to time transitions that drive `neoled_o`. Therefore the sampled clkgen_i bit is an input the module uses to implement timing; its integrity affects output timing and is established by the RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "clkgen_i",
+          "entity": "neorv32_neoled",
+          "realization": "sets"
+        }
+      ]
+    }
+  ]
+}

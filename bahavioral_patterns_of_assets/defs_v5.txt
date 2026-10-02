@@ -1,0 +1,159 @@
+  SOURCES        the element appears on the right-hand side of an assignment to the target,
+                 and is one of the inputs from which the target's value is computed. Inside a
+                 clocked process or outside one -- both count. An element that appears ONLY in
+                 the condition governing the assignment does not SOURCE the target; that is
+                 GATES.
+                 X SOURCES Y.
+
+  CARRIES        the element is the only name on the right-hand side of an assignment made
+                 OUTSIDE a clocked process, and its whole width is used, so the target ends up
+                 holding the same value. Where the right-hand side joins the element to
+                 anything else, or the assignment is made on a clock edge, use SOURCES.
+                 Y <= X;   ->  X CARRIES Y.
+
+  DERIVES_FROM   the element is assigned OUTSIDE a clocked process, and the target appears on
+                 the right-hand side of that assignment. Write this on the element being
+                 ASSIGNED. It is the mirror of SOURCES and CARRIES: one assignment, recorded
+                 once from the driving end and once from the receiving end.
+                 X <= Y and Z;   ->  X DERIVES_FROM Y, and X DERIVES_FROM Z.
+
+  CAPTURES       the element is assigned ON A CLOCK EDGE, and the target appears on the
+                 right-hand side of that assignment. Write this on the element being ASSIGNED.
+                 The value stays put until the next edge. The clock edge is the whole
+                 difference between this and DERIVES_FROM.
+                 if rising_edge(clk_i) then X <= Y and Z;
+                 ->  X CAPTURES Y, and X CAPTURES Z.
+
+  REFLECTS       every value the element takes is a literal or a named constant, and which one
+                 it takes is decided by a comparison or a reduction of the target. The element
+                 therefore shows a property of the target without holding the target's value.
+                 Two shapes count:
+                   the target is compared, and every arm is a literal
+                     X <= '0' when (Y = "00") else '1';
+                   the target is reduced to fewer bits
+                     X <= and_reduce_f(Y);
+                 Where an arm names another element instead of a literal, this does not apply.
+                 X REFLECTS Y.
+
+  GATES          the element appears in the condition that decides WHETHER the target is
+                 assigned, or WHICH of the alternative values it takes, and the element is
+                 used bare or tested against a literal or a named constant. The condition can
+                 be an `if`, an `elsif`, or the condition of a `when ... else`.
+                 if (X = '1') then Y <= ...;   ->  X GATES Y.
+
+  SELECTS        the element is the case selector, or an index worked out while the design is
+                 running that chooses which part of an array is read or written. A case CHOICE
+                 is always a literal or a named constant, never an element, so a choice never
+                 carries an edge -- only the selector does. An index fixed before the design
+                 runs is not SELECTS; put it in `bits`.
+                 case X is ...      ->  X SELECTS Y, for each Y assigned inside the case.
+                 Y <= REG(to_integer(unsigned(X)));   ->  X SELECTS Y.
+
+  CONSTRAINS     the element is one of TWO ELEMENTS compared against each other, and the
+                 result of that comparison decides the target. BOTH elements in the comparison
+                 carry this edge. Where the element is compared against a literal or a named
+                 constant instead, that is GATES.
+                 Y <= '1' when (REG < X) else '0';
+                 ->  X CONSTRAINS Y, and REG CONSTRAINS Y.
+
+  OVERRIDES      the design already computes a value for the target, and the element causes a
+                 different value to be used in its place. There have to be two paths: the
+                 ordinary one and the substitute. Where taking the element away would leave
+                 the target with no value at all rather than a different one, that is GATES.
+                 Y <= (not X) and fail;   ->  X OVERRIDES Y.
+
+  GOVERNED_BY    the target decides whether the element is assigned, which of several values
+                 it takes, or whether its enable is on. Write this on the element being
+                 CONTROLLED, and quote the test in `guard`. It is the mirror of GATES,
+                 SELECTS, CONSTRAINS, OVERRIDES and RESETS: wherever one of those is recorded
+                 on one element, this is recorded on the other. SEQUENCES is NOT mirrored --
+                 a register does not record its own clock this way.
+                 if (Y = '1') then X <= ...;   ->  X GOVERNED_BY Y.
+
+  SEQUENCES      the element is the clock whose edge lets the assignment to the target happen.
+                 A clock enters the process from outside it. An element that is assigned
+                 inside the process never sequences its own clock. A reset is not a clock and
+                 never SEQUENCES anything.
+                 if rising_edge(X) then Y <= ...;   ->  X SEQUENCES Y.
+
+  RESETS         the element is the reset tested in a reset branch, and that branch forces the
+                 target to a fixed value in place of whatever the clocked logic would assign.
+                 Synchronous or asynchronous, both count.
+                 if (X = '0') then Y <= '0';   ->  X RESETS Y.
+
+  EXPORTS        the element is declared as an OUTPUT port of this entity, and something
+                 inside the entity drives it. Empty target list. An input port never EXPORTS --
+                 an input arrives, it does not leave. Every output port carries this edge, on
+                 top of whatever else it carries.
+                 X EXPORTS.
+
+  ISOLATED       no coupling can be substantiated anywhere in this entity. Empty target list.
+                 An element whose fields are named individually is coupled through them and is
+                 not isolated, even where its own bare name never appears.
+                 X ISOLATED.
+
+WHEN MORE THAN ONE TYPE FITS
+
+Two types sometimes fit the same element AND the same target at the same place in the source.
+Where that happens the MORE SPECIFIC one wins, and the other is not recorded.
+
+This never affects pairing. An edge written from the driving end and its mirror written from
+the receiving end are two separate records, and both are still required. The ladders below
+order the types within one end; they never make one end stand in for the other.
+
+An element that governs ITSELF is normal and is not an error. Both records then land on the
+same element and name the same target, and both are still kept: one from the driving end and
+one from the receiving end. A stored bit that blocks writes to its own register is written
+exactly that way. The rule above collapses two types only where they compete at the SAME end.
+
+  Driving end -- the element acts on, or decides something about, the target.
+  Use the FIRST that applies:
+     SEQUENCES     the element is the clock of the process
+     RESETS        the element is the reset tested in a reset branch
+     SELECTS       case selector, or an index worked out while the design is running
+     CONSTRAINS    compared against another element
+     OVERRIDES     substitutes for a value the design already computes
+     GATES         any other appearance in a governing condition
+     CARRIES       alone, whole width, outside a clocked process
+     SOURCES       any other appearance on the right-hand side
+
+  Receiving end -- the element is the one being assigned.
+  Use the FIRST that applies:
+     REFLECTS      every arm is a literal, chosen by a comparison or reduction of the target
+     GOVERNED_BY   the target decides whether the element is assigned, or which value it takes
+     CAPTURES      assigned on a clock edge
+     DERIVES_FROM  assigned outside a clocked process
+
+Where REFLECTS applies it stands as the receiving-end mirror, in place of GOVERNED_BY.
+
+EXPORTS and ISOLATED sit outside both ladders. EXPORTS is added to every output port whatever
+else that port carries. ISOLATED is recorded only where the element has no coupling at all, so
+nothing else can apply.
+
+HOW TO WRITE A TARGET
+
+Name the declared element, spelled exactly as it was given to you. Where the coupling is to
+one element of an array, name the ARRAY, never an indexed or sliced expression, and put the
+index in `bits`. Write `cmp_lt`, not `cmp_lt(r)`. Where the counterpart is a port of an
+instance, write it as `instance.port`. Where the counterpart is not a declared element at
+all -- a constant, a generic, a literal -- leave it out of `targets` and describe it in
+`evidence` instead.
+
+FIELDS THAT GO WITH AN EDGE
+
+  `guard`  REQUIRED on GATES, SELECTS, CONSTRAINS, OVERRIDES, RESETS and GOVERNED_BY, and left
+           out on every other type. Quote the test as the source writes it, close to verbatim:
+           the branch test, the case choice, the enable term. Write "always" only where the
+           governing element has no further qualifier.
+
+  `bits`   Give this where the coupling uses part of a width rather than the whole of it, at
+           either end. Quote the indexed or joined expression exactly as the source writes it,
+           INCLUDING the name it belongs to -- the name is what tells a reader which end the
+           range applies to. Leave it out where the whole width at both ends is involved.
+             rx_fifo.wdata <= rx_engine.sreg(7 downto 0);
+                bits: "rx_engine.sreg(7 downto 0)"     part of the element is used
+             bus_rsp_o.data(ctrl_en_c) <= ctrl.enable;
+                bits: "bus_rsp_o.data(ctrl_en_c)"      part of the target is written
+             tx_engine.sreg <= tx_fifo.rdata & '0';
+                bits: "tx_fifo.rdata & '0'"            the element is joined with something
+           Never work out a bit position the source does not write. Copy what is there.

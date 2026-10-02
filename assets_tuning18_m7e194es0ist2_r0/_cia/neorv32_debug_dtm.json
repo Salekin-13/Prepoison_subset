@@ -1,0 +1,204 @@
+{
+ "module name": "neorv32_debug_dtm",
+ "concepts": [
+  {
+   "concept": "Instruction register value that selects which Data Register (IDCODE, DTMCS, DMI, bypass) is accessed",
+   "kind": "configuration",
+   "writers": "reg_access process: reset sets tap_reg.ireg <= (others => '0') when rstn_i = '0' (line 169); on LOGIC_RESET or IR_CAPTURE tap_reg.ireg <= addr_idcode_c (line 179); in IR_SHIFT the serial TDI path shifts new bits into tap_reg.ireg: tap_reg.ireg <= tap_sync.tdi & tap_reg.ireg(... ) when tap_ctrl_state = IR_SHIFT and tap_sync.tck_rising = '1' (line 181).",
+   "observers": "jtag_tdo_o outputs the IR during IR_SHIFT (jtag_tdo_o <= tap_reg.ireg(0) at line 204) and jtag_tdo_o is selected by tap_reg.ireg to drive TDO for DRs (lines 207-210).",
+   "answers": {
+    "confidentiality": {
+     "answer": "no",
+     "line": 204,
+     "via": "jtag_tdo_o",
+     "reason": "The IR is shifted out on TDO during IR_SHIFT (jtag_tdo_o <= tap_reg.ireg(0) at line 204), so the JTAG host that wrote it can read it back and it does not reveal new secrets to other parties."
+    },
+    "integrity": {
+     "answer": "yes-assumed",
+     "line": 181,
+     "via": "jtag_tdi_i",
+     "reason": "The IR is written bit-serial from TDI when the TAP is in IR_SHIFT (assignment at line 181), so an external JTAG writer can change which DR is selected; whether that writer is trusted depends on integration."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 181,
+     "via": "tap_ctrl_state",
+     "reason": "IR only updates when the TAP is in IR_SHIFT on a TCK rising edge (guard at line 181), so external TAP control (tap_ctrl_state driven via jtag_tms/jtag_tck) can prevent or force IR changes and thereby freeze selection."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 181,
+     "via": null,
+     "reason": "The IR is driven only by reset/IR_CAPTURE forcing and by the serial IR_SHIFT write (drivers at lines 169, 179 and 181) and there is no separate debug/test override path in the RTL."
+    }
+   },
+   "security objective": "Integrity"
+  },
+  {
+   "concept": "Assembled DMI request (address, operation, write-data) that the module issues to the DMI consumer",
+   "kind": "event",
+   "writers": "dmi_controller process: reset initializes dmi_ctrl.* (lines 237-244); every cycle default dmi_ctrl.op <= dmi_req_nop_c (line 263); when dmi_ctrl.busy = '0' and dmi_ctrl.dmihardreset = '0' and dr_trigger.valid = '1' and tap_reg.ireg = addr_dmi_c then dmi_ctrl.addr <= tap_reg.dmi(40 downto 34) (line 266), dmi_ctrl.wdata <= tap_reg.dmi(33 downto 02) (line 267), if tap_reg.dmi(1 downto 0) indicates RD/WR then dmi_ctrl.op <= tap_reg.dmi(1 downto 0) and dmi_ctrl.busy <= '1' (lines 268-271); when busy = '1' the process captures response dmi_ctrl.rdata <= dmi_rsp_i.data (line 274) and clears busy on dmi_rsp_i.ack (line 276).",
+   "observers": "External DMI consumer sees the request on the port copies: dmi_req_o.op (line 283), dmi_req_o.data (line 284), dmi_req_o.addr (line 285).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 283,
+     "via": "dmi_req_o",
+     "reason": "The assembled request fields are copied to the external dmi_req_o port (dmi_req_o.op/data/addr <= dmi_ctrl.* at lines 283-285), exposing address/operation/data outside the module; whether these are treated as secret depends on integration."
+    },
+    "integrity": {
+     "answer": "yes-assumed",
+     "line": 266,
+     "via": "tap_reg.dmi",
+     "reason": "dmi_ctrl.addr/op/wdata are loaded from the DMI DR captured in tap_reg.dmi when not busy and on DR-UPDATE (assignments at lines 266-271), so external JTAG-provided DMI DR content can change issued requests and must be trusted by the integrator."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 276,
+     "via": "dmi_rsp_i.ack",
+     "reason": "dmi_ctrl.busy is cleared only when the external dmi_rsp_i.ack = '1' (line 276), so an external DMI peer can withhold ack and keep busy set, blocking subsequent requests and stalling progress."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 283,
+     "via": null,
+     "reason": "The external request outputs are direct copies from dmi_ctrl registers (lines 283-285) and the RTL provides no alternate debug/test override that substitutes a different driver for the request fields."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "DMI read-response data held for readback and returned over JTAG",
+   "kind": "data",
+   "writers": "dmi_controller process: reset clears dmi_ctrl.rdata <= (others => '0') (line 242); when handling responses (busy path) dmi_ctrl.rdata <= dmi_rsp_i.data (line 274); combinationally tap_reg.dmi_nxt is assembled from dmi_ctrl.addr & dmi_ctrl.rdata & replicate_f(dmi_ctrl.err,2) (line 229); tap_reg.dmi is loaded from tap_reg.dmi_nxt on DR_CAPTURE (tap_reg.dmi <= tap_reg.dmi_nxt at line 189) and can be shifted by TDI in DR_SHIFT (line 196).",
+   "observers": "Readback is driven out over JTAG: when the DMI DR is selected jtag_tdo_o <= tap_reg.dmi(0) (line 209) and the DR is shifted out bit-serially via TDO (lines 194-209).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 209,
+     "via": "jtag_tdo_o",
+     "reason": "Response data from dmi_rsp_i is captured into dmi_ctrl.rdata (line 274), composed into the DMI DR (tap_reg.dmi_nxt at line 229) and shifted out on TDO when the DMI DR is selected (jtag_tdo_o <= tap_reg.dmi(0) at line 209), so response contents are externally observable."
+    },
+    "integrity": {
+     "answer": "yes-assumed",
+     "line": 274,
+     "via": "dmi_rsp_i.data",
+     "reason": "dmi_ctrl.rdata is loaded directly from the external dmi_rsp_i.data (line 274), so the DMI peer controls the returned read data; the module does not further authenticate it."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 276,
+     "via": "dmi_rsp_i.ack",
+     "reason": "Progress and clearing of dmi_ctrl.busy (which enables subsequent responses and readback capture) depends on external dmi_rsp_i.ack = '1' (line 276), so an external peer can withhold ack and block readback availability."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 229,
+     "via": null,
+     "reason": "The read-response path is direct: external dmi_rsp_i.data -> dmi_ctrl.rdata -> tap_reg.dmi_nxt (lines 274,229) and then to TAP/JTAG; there is no alternate test override or bypass in the RTL."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "DTM control register content (DTMCS) that sets dmireset/dmihardreset and advertises fixed fields",
+   "kind": "configuration",
+   "writers": "tap_reg.dtmcs is reset to zeros on rstn_i = '0' (line 171); tap_reg.dtmcs is updated from tap_reg.dtmcs_nxt on DR_CAPTURE (tap_reg.dtmcs <= tap_reg.dtmcs_nxt at line 188); it is also shift-written bit-serial from TDI in DR_SHIFT (tap_reg.dtmcs <= tap_sync.tdi & tap_reg.dtmcs(...) at line 195); tap_reg.dtmcs_nxt is assembled combinationally from dmi_ctrl.dmihardreset/dmireset and fixed/advertised fields (lines 219-226, specifically lines 220-221 copy dmi_ctrl.dmihardreset/dmi_ctrl.dmireset into dtmcs_nxt).",
+   "observers": "DTMCS bits are read out over JTAG via the DTMCS DR: jtag_tdo_o <= tap_reg.dtmcs(0) when the DTMCS DR is selected (line 208) and successive bits are shifted out (lines 194-209).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 208,
+     "via": "jtag_tdo_o",
+     "reason": "DTMCS contains control/status bits (including bits reflecting dmireset/dmihardreset) and those bits are driven out on TDO when the DTMCS DR is read (jtag_tdo_o <= tap_reg.dtmcs(0) at line 208), exposing internal control state outside the module."
+    },
+    "integrity": {
+     "answer": "yes-assumed",
+     "line": 195,
+     "via": "jtag_tdi_i",
+     "reason": "tap_reg.dtmcs can be written bit-serial via TDI during DR_SHIFT (tap_reg.dtmcs <= tap_sync.tdi & tap_reg.dtmcs(...) at line 195) and those captured bits are used to set dmi_ctrl.dmireset/dmihardreset (line 248), so external JTAG can change DTMCS fields; trust in the writer is integration-dependent."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 265,
+     "via": "dmi_ctrl.dmihardreset",
+     "reason": "The DMI controller will not start requests while dmi_ctrl.dmihardreset = '1' (guard includes dmi_ctrl.dmihardreset = '0' at line 265), and dmihardreset is derived from DTMCS, so external writes to DTMCS can force/reset that bit and block DMI operation."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 195,
+     "via": null,
+     "reason": "DTMCS is produced only by the DR write/capture semantics (DR_SHIFT/DR_CAPTURE drivers at lines 195 and 188 and the combinational dtmcs_nxt assembly at lines 219-226); there is no separate debug/test override path in the RTL that substitutes a different driver."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "DR-UPDATE event (dr_trigger.valid) that authorises capture/update actions and DMI request issuance",
+   "kind": "event",
+   "writers": "update_trigger process: reset sets dr_trigger.sreg <= \"00\" when rstn_i = '0' (line 149); on clock dr_trigger.sreg(0) <= '1' when tap_ctrl_state = DR_UPDATE else '0' (lines 151-154) and dr_trigger.sreg(1) <= dr_trigger.sreg(0) (line 156); dr_trigger.valid is derived combinationally from dr_trigger.sreg == \"01\" (line 161).",
+   "observers": "No direct external readback signal; the event is observable indirectly because it gates actions that produce external effects (it is used as a guard in dmi_controller at lines 247, 258, 265 which in turn affect dmi_req_o at lines 283-285 and JTAG DR capture/outputs at lines 186-211).",
+   "answers": {
+    "confidentiality": {
+     "answer": "no",
+     "line": 161,
+     "via": "dr_trigger.sreg",
+     "reason": "dr_trigger.valid is derived from TAP-driven state transitions (dr_trigger.sreg -> line 161) caused by the JTAG host, so the host already knows when it occurs and it does not expose additional secret information."
+    },
+    "integrity": {
+     "answer": "yes-assumed",
+     "line": 151,
+     "via": "tap_ctrl_state",
+     "reason": "dr_trigger.sreg is set when tap_ctrl_state = DR_UPDATE (assignment at line 151) and TAP state is driven by external JTAG signals, so an untrusted JTAG can assert or suppress the DR-UPDATE event and thereby affect authorised captures and DMI issuance."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 151,
+     "via": "tap_ctrl_state",
+     "reason": "The two-stage update trigger only asserts when the TAP reaches DR_UPDATE (guard at line 151), so external TAP control via jtag_tms/jtag_tck can prevent or force DR-UPDATE and block or enable authorised actions."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 151,
+     "via": null,
+     "reason": "dr_trigger.valid is solely derived from the two-stage sreg updated in update_trigger (lines 151-156) with no alternate override or test-mode path presented in the RTL."
+    }
+   },
+   "security objective": "Integrity"
+  },
+  {
+   "concept": "Device IDCODE value reported via the IDCODE DR",
+   "kind": "data",
+   "writers": "reg_access process: reset sets tap_reg.idcode <= (others => '0') when rstn_i = '0' (line 170); in DR_CAPTURE the IDCODE register is loaded from generics: tap_reg.idcode <= IDCODE_VERSION & IDCODE_PARTID & IDCODE_MANID & '1' when addr_idcode_c (line 187); in DR_SHIFT the IDCODE register is shift-writeable from TDI (tap_reg.idcode <= tap_sync.tdi & tap_reg.idcode(...) when tap_ctrl_state = DR_SHIFT and tap_sync.tck_rising = '1' at line 194).",
+   "observers": "IDCODE is driven to TDO when the IDCODE DR is selected (jtag_tdo_o <= tap_reg.idcode(0) at line 207) and is shifted out bit-serially on TDO (lines 194-207).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 207,
+     "via": "jtag_tdo_o",
+     "reason": "The IDCODE is loaded from generics on DR_CAPTURE (line 187) and driven out on TDO when the IDCODE DR is selected (jtag_tdo_o <= tap_reg.idcode(0) at line 207), so its contents are externally observable and may be sensitive depending on integration."
+    },
+    "integrity": {
+     "answer": "yes-assumed",
+     "line": 194,
+     "via": "jtag_tdi_i",
+     "reason": "Although the IDCODE is loaded from constants on DR_CAPTURE (line 187), the register is also shift-updateable from TDI in DR_SHIFT (line 194), so an external JTAG writer can alter the visible IDCODE between captures and integrity depends on trusting that writer."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 187,
+     "via": "tap_ctrl_state",
+     "reason": "The IDCODE is captured from constants only in DR_CAPTURE (line 187) and readout depends on TAP state transitions, so external JTAG-controlled TAP state/TCK can block or freeze IDCODE availability."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 187,
+     "via": null,
+     "reason": "IDCODE is driven only by reset and DR_CAPTURE/DR_SHIFT semantics (lines 170, 187, 194); there is no separate debug/test override path in the RTL that substitutes a different driver."
+    }
+   },
+   "security objective": "Confidentiality"
+  }
+ ],
+ "_problems": []
+}

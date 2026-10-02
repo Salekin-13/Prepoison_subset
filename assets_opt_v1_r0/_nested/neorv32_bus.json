@@ -1,0 +1,315 @@
+{
+ "module name": "neorv32_bus",
+ "module purpose": "The file holds six bus entities: neorv32_bus_switch arbitrates two host request ports onto one device port (grant state, pending-request flags, bus lock, routing select and issued strobe); neorv32_bus_reg passes requests and responses through, optionally registered; neorv32_bus_gateway decodes the request address to one of four device ports and runs a monitor that ends an unanswered access with ack and err; neorv32_bus_io_switch registers the main request and decodes it to 32 device ports; neorv32_bus_amo_rmw performs atomic read-modify-write operations; neorv32_bus_amo_rvs tracks load-reserved/store-conditional reservations and reports a failed store-conditional.",
+ "use-case flows": [
+  {
+   "flow": "start",
+   "value": "host A and host B request strobes captured as pending flags until that host is granted (neorv32_bus_switch)",
+   "lines": [58, 59, 60, 61, 63, 64, 65, 66]
+  },
+  {
+   "flow": "operate",
+   "value": "grant of the shared device port to host A or host B, routing of the granted host's request fields and issue of the device strobe (neorv32_bus_switch)",
+   "lines": [55, 56, 77, 79, 80, 83, 85, 87, 93, 94, 97, 99, 105, 106, 109, 112, 113, 114, 115, 116, 117, 118, 119, 120, 122, 123, 124, 125, 126, 127, 128, 129, 130, 140, 141, 142, 143, 144, 145, 146, 147, 148, 150, 151, 152, 154, 155, 156, 158]
+  },
+  {
+   "flow": "lock",
+   "value": "lock bits sampled at grant and held, keeping the grant and passing only the owner's strobe until the owner releases its lock (neorv32_bus_switch)",
+   "lines": [57, 78, 88, 89, 90, 91, 100, 101, 102, 103, 111]
+  },
+  {
+   "flow": "report",
+   "value": "device acknowledge and error routed to the granted host; device read data passed to both hosts (neorv32_bus_switch)",
+   "lines": [163, 164, 165, 167, 168, 169]
+  },
+  {
+   "flow": "operate",
+   "value": "request and response passed through, registered when REQ_REG_EN / RSP_REG_EN are true (neorv32_bus_reg)",
+   "lines": [215, 221, 222, 224, 225, 226, 232, 233, 240, 246, 252, 253]
+  },
+  {
+   "flow": "operate",
+   "value": "request address decoded to port A, B, C or the default X port; strobe passed only to the selected enabled port; port responses OR-merged (neorv32_bus_gateway)",
+   "lines": [356, 357, 358, 361, 366, 367, 368, 369, 375, 376, 377, 378, 387, 389, 390, 391, 392, 395, 399]
+  },
+  {
+   "flow": "report",
+   "value": "bus timeout: an outstanding access not answered before the counter top bit sets (and not to port X) is ended with ack and err to the requester (neorv32_bus_gateway)",
+   "lines": [400, 401, 415, 416, 417, 418, 419, 420, 422, 423, 424, 425, 426, 427]
+  },
+  {
+   "flow": "operate",
+   "value": "main request registered through neorv32_bus_reg_inst, decoded by address to 32 device ports, device responses OR-merged (neorv32_bus_io_switch)",
+   "lines": [598, 600, 601, 608, 609, 610, 611, 617, 648, 657, 660, 661, 662, 664, 671, 682, 684, 685, 686, 687, 690]
+  },
+  {
+   "flow": "start",
+   "value": "atomic read-modify-write accepted: operation code and write operand captured (neorv32_bus_amo_rmw)",
+   "lines": [777, 778, 779, 780]
+  },
+  {
+   "flow": "operate",
+   "value": "read, execute and write-back sequence; result computed from the read word and the write operand and written to memory (neorv32_bus_amo_rmw)",
+   "lines": [763, 773, 785, 786, 787, 792, 796, 800, 801, 812, 813, 815, 816, 838, 839, 840, 841, 842, 843, 844, 850, 851, 852, 853]
+  },
+  {
+   "flow": "read out",
+   "value": "original memory word returned to the core; core acknowledge and error held back until the write-back phase (neorv32_bus_amo_rmw)",
+   "lines": [826, 827, 828]
+  },
+  {
+   "flow": "operate",
+   "value": "reservation set by a load-reserved access, cleared by any other write or after the store-conditional completes; store-conditional strobe passed only with a valid reservation (neorv32_bus_amo_rvs)",
+   "lines": [906, 910, 911, 912, 914, 920, 921, 926, 927, 935, 942, 943, 944, 946]
+  },
+  {
+   "flow": "report",
+   "value": "store-conditional failure registered and reported as an acknowledge and data bit 0 (neorv32_bus_amo_rvs)",
+   "lines": [957, 962, 963, 964]
+  },
+  {
+   "flow": "reset",
+   "value": "arbiter state, pending flags, lock bits, monitor state, atomic-unit state and result, reservation state and failure flag forced to their reset constants while rstn_i is low",
+   "lines": [48, 49, 50, 51, 52, 53, 218, 219, 243, 244, 408, 409, 410, 411, 412, 413, 757, 758, 759, 760, 761, 835, 836, 903, 904, 954, 955]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Bus grant -- which host port (A or B) currently owns the shared device port of the switch",
+   "security objective": "Integrity",
+   "reasoning": "The arbitration flow registers the grant with `state <= state_nxt;` (line 55, CLOCKED_BY clk_i at occurrence 3) and decodes it in `case state is` (line 83): S_BUSY_A drives `sel <= '0';` (line 87), S_BUSY_B drives `sel <= '1';` (line 99), and S_IDLE grants from the pending requests (lines 112-131). sel picks whose request reaches the device, as in `x_req_o.addr <= a_req_i.addr when (sel = '0') else b_req_i.addr;` (line 140, likewise lines 141-147, 152, 156), and which host gets the device answer, `a_rsp_o.ack <= x_rsp_i.ack when (sel = '0') else '0';` (line 164, likewise 165, 168, 169). These values leave the entity toward consumers that are not supplied, so Integrity is Established: the device must receive exactly the granted host's request, and only the granted host may receive the acknowledge and error. Availability is also Established under the RTL conditions: an unlocked grant returns to S_IDLE on x_rsp_i.ack (lines 93-94, 105-106). Confidentiality is not claimed: read data goes to both hosts whatever sel is (lines 163, 167). state stores the grant (its SELECTS records on sel, state_nxt and stb at occurrence 8, line 83, show the use); sel computes the routing decision (SELECTED_BY state, occurrence 4, line 87). Not listed: state_nxt is a combinational copy of state (COPIES state, line 77) that carries its next value; sel_q COPIES sel (line 56), so it holds the listed sel one clock later, and its only use is the round-robin test of line 112, which is constant true under the default ROUND_ROBIN_EN = false; x_req_o, a_rsp_o and b_rsp_o are transport records.",
+   "related structural assets": [
+    {
+     "asset rtl": "state",
+     "entity": "neorv32_bus_switch",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "sel",
+     "entity": "neorv32_bus_switch",
+     "realization": "computes",
+     "occurrence": 4,
+     "edge": {"type": "SELECTED_BY", "partner": "state"}
+    }
+   ]
+  },
+  {
+   "concept": "Pending access requests -- per-host flags that remember a request strobe until that host is granted",
+   "security objective": "Integrity",
+   "reasoning": "`a_req <= a_req or a_req_i.stb;` (line 61) accumulates host A's strobe while state is not S_BUSY_A, and `a_req <= '0';` (line 59) clears it once A is granted; b_req does the same for host B (lines 63-66). The grant decision reads them in `if (a_req_i.stb = '1') or (a_req = '1') then` (line 113) and at lines 117, 123 and 127, which set sel, stb and state_nxt. Integrity is Established: a pending flag that does not match an issued strobe starts a device transfer (`stb <= '1';`, line 115) that no host requested, or drops one that was requested. Availability is Established under the implemented conditions: a strobe seen while the other host is served is kept until the grant arms of lines 113-130 are taken. a_req and b_req store the flags (CLOCKED_BY clk_i, occurrence 4, lines 61 and 66), and their GATES records on sel, state_nxt and stb (occurrences 7-8) show the local use.",
+   "related structural assets": [
+    {
+     "asset rtl": "a_req",
+     "entity": "neorv32_bus_switch",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "b_req",
+     "entity": "neorv32_bus_switch",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Bus lock hold -- whether the granted host has locked the switch, so that its grant persists until it releases the lock",
+   "security objective": "Integrity",
+   "reasoning": "In S_IDLE the switch samples both lock requests, `locked_nxt <= b_req_i.lock & a_req_i.lock;` (line 111), and registers them with `locked <= locked_nxt;` (line 57). In S_BUSY_A, `if (locked(0) = '1') then` (line 88) passes only the owner's strobe, `stb <= a_req_i.stb;` (line 89), and leaves the grant only on `if (a_req_i.lock = '0') then` (line 90); otherwise the grant ends on x_rsp_i.ack (lines 93-94). S_BUSY_B repeats this with locked(1) (lines 100-106). Integrity is Established: the stored bit decides whether the grant can end on an acknowledge or only on lock release, so a corrupted value either breaks the owner's exclusive sequence or keeps the other host locked out, which is also an Availability effect on the other host. locked stores the value (CLOCKED_BY clk_i, occurrence 3, line 57) and GATES state_nxt and stb (occurrences 6-7, lines 88 and 100). locked_nxt is a combinational copy of locked (COPIES locked, line 78) and is not listed.",
+   "related structural assets": [
+    {
+     "asset rtl": "locked",
+     "entity": "neorv32_bus_switch",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Device transfer start -- the request strobe the switch issues on its device port",
+   "security objective": "Integrity",
+   "reasoning": "stb defaults to '0' (line 80), is set to '1' when a host is granted from S_IDLE (lines 115, 119, 125, 129), and copies the owner's strobe while a lock is held (lines 89, 101); `x_req_o.stb <= stb;` (line 158) delivers it to the device, which is not supplied. Integrity is Established from these lines: the device must see a transfer start exactly when the arbitration flow grants a host or a locked owner strobes. stb computes this decision (SELECTED_BY state, occurrence 5, line 115; GATED_BY a_req, sel_q and locked on the same assignments). x_req_o is a transport record, so no exit is reported.",
+   "related structural assets": [
+    {
+     "asset rtl": "stb",
+     "entity": "neorv32_bus_switch",
+     "realization": "computes",
+     "occurrence": 5,
+     "edge": {"type": "SELECTED_BY", "partner": "state"}
+    }
+   ]
+  },
+  {
+   "concept": "Device port selection in the gateway -- which of ports A, B, C or the default X port an access is steered to",
+   "security objective": "Integrity",
+   "reasoning": "`port_sel(0) <= '1' when A_EN and (req_i.addr(31 downto a_lo_c) = A_BASE(31 downto a_lo_c)) else '0';` (line 356) and lines 357-358 compare the request address with each configured window; `port_sel(3) <= '1' when X_EN and (port_sel(2 downto 0) = \"000\") else '0';` (line 361) picks the default port when none matches. `port_req(i).stb <= port_sel(i) and req_i.stb;` (line 378) passes the strobe only to the selected, enabled port (line 376), and port_sel(3) also sets keeper.halt (line 416). The strobe leaves through a_req_o, b_req_o, c_req_o and x_req_o (lines 366-369) toward devices that are not supplied, so Integrity is Established: each device must receive the strobe exactly when the address decode selects it. Each term exists only when its generic A_EN, B_EN, C_EN or X_EN is true. port_sel computes the decision (GATED_BY req_i.addr, occurrence 2, line 356); req_i and the port_req array are transport records.",
+   "related structural assets": [
+    {
+     "asset rtl": "port_sel",
+     "entity": "neorv32_bus_gateway",
+     "realization": "computes",
+     "occurrence": 2,
+     "edge": {"type": "GATED_BY", "partner": "req_i.addr"}
+    }
+   ]
+  },
+  {
+   "concept": "Bus access supervision state -- whether an access is outstanding, how many cycles it has waited, whether it is locked, and whether the timeout is suspended for the default port",
+   "security objective": "Integrity",
+   "reasoning": "The monitor process (lines 406-431) sets `keeper.busy <= req_i.stb;` and `keeper.lock <= req_i.lock;` while idle (lines 419-420), counts `keeper.cnt <= std_ulogic_vector(unsigned(keeper.cnt) + 1);` while busy (line 422), samples `keeper.halt <= port_sel(port_sel'left);` (line 416), and ends the access on `if ((keeper.cnt(keeper.cnt'left) = '1') and (keeper.halt = '0')) then` (line 423) or `elsif (int_rsp.ack = '1') or ((keeper.lock = '1') and (req_i.lock = '0')) then` (line 426). Integrity is Established: these held values decide when the access ends and whether a timeout fires (lines 423-427). Availability is Established under the RTL conditions: an access to ports A-C that gets no ack is ended once the counter's top bit sets, so the requester is answered (lines 423-425, 400-401); an access to port X is exempt through halt. keeper.busy (occurrence 4, line 419), keeper.cnt (occurrence 4, line 422), keeper.lock (occurrence 3, line 420) and keeper.halt (occurrence 3, line 416) store these values (CLOCKED_BY clk_i), and each GATES keeper.busy, keeper.cnt or keeper.err (lines 417, 423, 426). keeper.halt holds port_sel(3) one cycle later; port_sel is not listed for this concept. The width of keeper.cnt follows the generic TIMEOUT (line 346). int_rsp is a transport record.",
+   "related structural assets": [
+    {
+     "asset rtl": "keeper.busy",
+     "entity": "neorv32_bus_gateway",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "keeper.cnt",
+     "entity": "neorv32_bus_gateway",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "keeper.lock",
+     "entity": "neorv32_bus_gateway",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "keeper.halt",
+     "entity": "neorv32_bus_gateway",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Bus timeout error -- the error event the gateway raises for an access that was not answered in time",
+   "security objective": "Integrity",
+   "reasoning": "`keeper.err <= '1';` (line 424) is set under the timeout condition of line 423 and cleared on every other cycle (line 415); `rsp_o.ack <= int_rsp.ack or keeper.err;` (line 400) and `rsp_o.err <= int_rsp.err or keeper.err;` (line 401) deliver it to the requester, which is outside this file. Integrity is Established: the requester must receive ack and err exactly when the timeout fires. Availability is also Established: this event is what ends a hung access. keeper.err stores the event (CLOCKED_BY clk_i, occurrence 6, line 424) and GATES rsp_o.ack and rsp_o.err (occurrences 2-3). rsp_o is a transport record, so no exit is reported.",
+   "related structural assets": [
+    {
+     "asset rtl": "keeper.err",
+     "entity": "neorv32_bus_gateway",
+     "realization": "stores",
+     "occurrence": 6,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Device selection in the I/O switch -- which of the 32 device ports receives the request strobe",
+   "security objective": "Integrity",
+   "reasoning": "`if (main_req.addr(addr_hi_c downto addr_lo_c) = dev_base_list_c(i)(addr_hi_c downto addr_lo_c)) then` (line 661) gives `dev_req(i).stb <= main_req.stb;` (line 662) or `dev_req(i).stb <= '0';` (line 664) for each device enabled by dev_en_list_c(i) (line 657), and lines 617-648 drive dev_00_req_o to dev_31_req_o from dev_req. Integrity is Established: only the device whose address window matches may receive the strobe. Mapping limitation: the decision exists only as a field of dev_req, and dev_req, main_req (driven by neorv32_bus_reg_inst, line 610), main_rsp, dev_rsp and every port are bus_req_t or bus_rsp_t transport records, so no eligible declaration remains.",
+   "related structural assets": []
+  },
+  {
+   "concept": "Atomic operation sequencing state -- the phase of an atomic read-modify-write (idle, read wait, execute, write, write wait)",
+   "security objective": "Integrity",
+   "reasoning": "`case arbiter.state is` (line 773) moves S_IDLE to S_READ_WAIT on an accepted atomic request (lines 777, 780), to S_EXECUTE on the read acknowledge (lines 786-787), then to S_WRITE, S_WRITE_WAIT and back to S_IDLE on the write acknowledge (lines 792, 796, 800-801). The phase triggers the write-back, `sys_req_o.stb <= '1' when (arbiter.state = S_WRITE) else core_req_i.stb;` (line 815, with lines 813 and 816), and holds back the core's answer, `core_rsp_o.ack <= sys_rsp_i.ack when (arbiter.state = S_IDLE) or (arbiter.state = S_WRITE_WAIT) else '0';` (line 828, also lines 826-827). Integrity is Established: the read and the single write-back must occur in this order, and the core must be answered only after the write. arbiter.state stores the phase: the RTL registers it through `arbiter <= arbiter_nxt;` on the rising edge (line 763), but the map puts CLOCKED_BY only on the whole record arbiter and gives the field storage none, so this reference cites the field's reset occurrence in the same clocked process (occurrence 2, line 758) with a null edge; its SELECTS and GATES records (occurrences 3-13) show the use. arbiter_nxt.state only carries the next value and is not listed.",
+   "related structural assets": [
+    {
+     "asset rtl": "arbiter.state",
+     "entity": "neorv32_bus_amo_rmw",
+     "realization": "stores",
+     "occurrence": 2,
+     "edge": null
+    }
+   ]
+  },
+  {
+   "concept": "Atomic operation code -- the captured operation that selects how the read word and the write operand are combined",
+   "security objective": "Integrity",
+   "reasoning": "`arbiter_nxt.cmd <= core_req_i.amoop;` (line 778) captures the code when `(core_req_i.stb = '1') and (core_req_i.amo = '1') and (core_req_i.amoop(3 downto 2) /= \"10\")` holds (line 777). It is registered by line 763 and selects the operation in `case arbiter.cmd(2 downto 0) is` (line 838, arms 839-844); cmd(3) selects signed comparison (lines 850-851) and cmd(0) selects min or max (line 853). Integrity is Established: a different code writes a different value back to memory (line 813). arbiter.cmd stores it; the map missed the field-level CLOCKED_BY of line 763 (only the whole record arbiter has one), so the reset occurrence (occurrence 2, line 759) is cited with a null edge; its SELECTS alu_res record (occurrence 3, line 838) shows the use. arbiter_nxt.cmd only carries the next value.",
+   "related structural assets": [
+    {
+     "asset rtl": "arbiter.cmd",
+     "entity": "neorv32_bus_amo_rmw",
+     "realization": "stores",
+     "occurrence": 2,
+     "edge": null
+    }
+   ]
+  },
+  {
+   "concept": "Original memory word of an atomic access -- the value read before modification, returned to the core and used as an operand",
+   "security objective": "Integrity",
+   "reasoning": "`arbiter_nxt.rdata <= sys_rsp_i.data;` (line 785) in S_READ_WAIT is registered by line 763, returned by `core_rsp_o.data <= sys_rsp_i.data when (arbiter.state = S_IDLE) else arbiter.rdata;` (line 826), and feeds the operation (lines 840-843, 850). The core is outside this file, so Integrity is Established: it must receive exactly the word read from memory, and the written result depends on it. arbiter.rdata stores it (SOURCES core_rsp_o.data, occurrence 3, line 826); the map missed the field-level CLOCKED_BY of line 763, so the reset occurrence (occurrence 2, line 760) is cited with a null edge.",
+   "related structural assets": [
+    {
+     "asset rtl": "arbiter.rdata",
+     "entity": "neorv32_bus_amo_rmw",
+     "realization": "stores",
+     "occurrence": 2,
+     "edge": null
+    }
+   ]
+  },
+  {
+   "concept": "Atomic operation result -- the value computed from the read word and the write operand and written back to memory",
+   "security objective": "Integrity",
+   "reasoning": "`alu_res <= std_ulogic_vector(unsigned(arbiter.rdata) + unsigned(arbiter.wdata));` (line 840) and the arms of lines 839 and 841-844 compute the result on the clock edge, and `sys_req_o.data <= alu_res when (arbiter.state = S_WRITE) or (arbiter.state = S_WRITE_WAIT) else core_req_i.data;` (line 813) writes it to memory, which is not supplied. Integrity is Established: memory must receive exactly the result the selected operation defines. alu_res stores it (CLOCKED_BY clk_i, occurrence 5, line 840; SOURCES sys_req_o.data, occurrence 2). Not listed: arbiter.wdata holds the core operand captured at line 779, but its records show only data passed to internal elements (alu_res, cmp_opb), so it is secondary; cmp_opa, cmp_opb, cmp_less and cmp_res (lines 850-853) are steps of the min/max computation whose result alu_res stores (COPIES cmp_res, line 844).",
+   "related structural assets": [
+    {
+     "asset rtl": "alu_res",
+     "entity": "neorv32_bus_amo_rmw",
+     "realization": "stores",
+     "occurrence": 5,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Load-reserved reservation state -- whether a reservation is valid and whether a store-conditional write is in flight",
+   "security objective": "Integrity",
+   "reasoning": "`case state is` (line 906): from idle, a read with rvso sets `state <= \"10\";` (lines 926-927); a write while reserved goes to \"11\" when rvso is set and to \"00\" otherwise (lines 910-914); \"11\" returns to \"00\" on the acknowledge (lines 920-921). `sys_req_o.stb <= core_req_i.stb and state(1);` (line 944) lets a store-conditional write reach memory only while state(1) is set, and `(not state(1))` feeds the failure flag (line 957). Integrity is Established: a store-conditional may succeed only when no other write came after the load-reserved (lines 910-914, 943-944). state stores the value (CLOCKED_BY clk_i, occurrence 7, line 927) and GATES sys_req_o.stb and sc_fail (occurrences 9-10).",
+   "related structural assets": [
+    {
+     "asset rtl": "state",
+     "entity": "neorv32_bus_amo_rvs",
+     "realization": "stores",
+     "occurrence": 7,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Reservation-access classification -- whether the current access is a load-reserved/store-conditional operation",
+   "security objective": "Integrity",
+   "reasoning": "`rvso <= '1' when (core_req_i.amo = '1') and (core_req_i.amoop(3 downto 2) = \"10\") else '0';` (line 935) decides whether a read sets the reservation (line 926), whether a write keeps or clears it (line 911), whether the write strobe is checked against the reservation (`if (rvso = '1') and (core_req_i.rw = '1') then`, line 943), and whether a failure is flagged (line 957). Integrity is Established: a wrong classification lets a store-conditional bypass the reservation check, or blocks an ordinary write (lines 943-946). rvso computes the decision (GATED_BY core_req_i.amo, occurrence 4, line 935).",
+   "related structural assets": [
+    {
+     "asset rtl": "rvso",
+     "entity": "neorv32_bus_amo_rvs",
+     "realization": "computes",
+     "occurrence": 4,
+     "edge": {"type": "GATED_BY", "partner": "core_req_i.amo"}
+    }
+   ]
+  },
+  {
+   "concept": "Store-conditional failure result -- the event that a store-conditional was attempted without a valid reservation",
+   "security objective": "Integrity",
+   "reasoning": "`sc_fail <= rvso and core_req_i.stb and core_req_i.rw and (not state(1));` (line 957) registers the failure, which is reported by `core_rsp_o.ack <= sys_rsp_i.ack or sc_fail;` (line 963) and `core_rsp_o.data <= sys_rsp_i.data(31 downto 1) & (sys_rsp_i.data(0) or sc_fail);` (line 964), while line 944 keeps the write from memory. The core is outside this file, so Integrity is Established: it must receive the acknowledge and the failure bit exactly when the store-conditional failed. Availability also applies: the forced acknowledge answers an access that memory never sees. sc_fail stores the event (CLOCKED_BY clk_i, occurrence 3, line 957) and GATES core_rsp_o.ack (occurrence 4).",
+   "related structural assets": [
+    {
+     "asset rtl": "sc_fail",
+     "entity": "neorv32_bus_amo_rvs",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  }
+ ]
+}

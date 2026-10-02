@@ -1,0 +1,83 @@
+{"module name":"neorv32_wdt","conceptual assets":[
+  {"concept":"WDT enable configuration (whether the watchdog is enabled)",
+   "security objective":"Integrity",
+   "reasoning":"The enable bit is stored in ctrl.enable (cleared on rstn_sys_i = '0') and written by bus_access: `ctrl.enable <= bus_req_i.data(ctrl_enable_c)` when a bus write and ctrl.lock = '0'. ctrl.enable gates counter start (`cnt_started <= ctrl.enable and (cnt_started or prsc_tick)`) and is exported to the clock generator (`clkgen_en_o <= ctrl.enable`). Corrupting this stored bit would violate the implemented start/export behavior.",
+   "related structural assets":[
+     {"asset rtl":"ctrl.enable","entity":"neorv32_wdt","realization":"stores"},
+     {"asset rtl":"clkgen_en_o","entity":"neorv32_wdt","realization":"exit port"}
+   ]},
+  {"concept":"WDT lock configuration (write-protect lock bit)",
+   "security objective":"Integrity",
+   "reasoning":"The lock bit is stored in ctrl.lock (reset cleared) and set on bus writes by `ctrl.lock <= bus_req_i.data(ctrl_lock_c) and ctrl.enable`. bus_access tests `if (ctrl.lock = '0') then ... else reset_force <= '1'`, so ctrl.lock implements write-protection semantics; its integrity determines whether configuration writes are accepted or turned into a forced-reset signal.",
+   "related structural assets":[
+     {"asset rtl":"ctrl.lock","entity":"neorv32_wdt","realization":"stores"}
+   ]},
+  {"concept":"WDT strict-mode configuration (whether access-induced resets are enabled)",
+   "security objective":"Integrity",
+   "reasoning":"The strict flag is stored in ctrl.strict and written on bus writes (`ctrl.strict <= bus_req_i.data(ctrl_strict_c)`). It is used in reset generation (`hw_rst_access <= ctrl.enable and ctrl.strict and reset_force`); corrupting strict would change whether a detected access fault produces a hardware reset.",
+   "related structural assets":[
+     {"asset rtl":"ctrl.strict","entity":"neorv32_wdt","realization":"stores"}
+   ]},
+  {"concept":"Timeout configuration (the programmed watchdog timeout value)",
+   "security objective":"Integrity",
+   "reasoning":"The 24-bit timeout is stored in ctrl.timeout (reset cleared) and written on bus writes: `ctrl.timeout <= bus_req_i.data(ctrl_timeout_msb_c downto ctrl_timeout_lsb_c)`. The concurrent compare `cnt_timeout <= '1' when (cnt_started = '1') and (cnt = ctrl.timeout) else '0'` uses this value to detect timeouts; its integrity is required for correct timeout detection.",
+   "related structural assets":[
+     {"asset rtl":"ctrl.timeout","entity":"neorv32_wdt","realization":"stores"}
+   ]},
+  {"concept":"Prescaler tick source (the selected bit of clkgen_i that drives timing)",
+   "security objective":"Integrity",
+   "reasoning":"The prescaler tick is computed as `prsc_tick <= clkgen_i(clk_div4096_c)` and is used to advance the counter (`cnt_inc <= prsc_tick and cnt_started`) and to qualify timeout/reset events (`hw_rst_timeout <= ctrl.enable and cnt_timeout and prsc_tick`). The computed tick and its input source must be correct for the implemented timekeeping and timeout behavior.",
+   "related structural assets":[
+     {"asset rtl":"prsc_tick","entity":"neorv32_wdt","realization":"computes"},
+     {"asset rtl":"clkgen_i","entity":"neorv32_wdt","realization":"sets"}
+   ]},
+  {"concept":"Watchdog counter state (current count and started flag)",
+   "security objective":"Integrity",
+   "reasoning":"The counter value `cnt` and the start flag `cnt_started` are stored and updated in the wdt_counter process (reset cleared on rstn_sys_i = '0'); `cnt` increments when `cnt_inc = prsc_tick and cnt_started` and is cleared when `ctrl.enable = '0'` or `reset_wdt = '1'`. These stored elements determine timeout progression; their integrity is necessary for correct timeout behavior.",
+   "related structural assets":[
+     {"asset rtl":"cnt","entity":"neorv32_wdt","realization":"stores"},
+     {"asset rtl":"cnt_started","entity":"neorv32_wdt","realization":"stores"}
+   ]},
+  {"concept":"Timeout detection decision (the equality that declares the counter reached the programmed timeout)",
+   "security objective":"Integrity",
+   "reasoning":"The timeout decision is computed by `cnt_timeout <= '1' when (cnt_started = '1') and (cnt = ctrl.timeout) else '0'`. This computed boolean is then used by reset generation; its correctness is required to produce the intended timeout-triggered reset.",
+   "related structural assets":[
+     {"asset rtl":"cnt_timeout","entity":"neorv32_wdt","realization":"computes"}
+   ]},
+  {"concept":"Timeout-based hardware reset trigger",
+   "security objective":"Integrity",
+   "reasoning":"The timeout reset event is registered as `hw_rst_timeout` by the reset_generator process (`hw_rst_timeout <= ctrl.enable and cnt_timeout and prsc_tick`) and contributes to the module reset output (`rstn_o <= not (hw_rst_timeout or hw_rst_access)`). Integrity of this stored trigger is required so the external reset output reflects the implemented timeout condition.",
+   "related structural assets":[
+     {"asset rtl":"hw_rst_timeout","entity":"neorv32_wdt","realization":"stores"}
+   ]},
+  {"concept":"Access-induced hardware reset trigger (reset due to invalid/locked bus access)",
+   "security objective":"Integrity",
+   "reasoning":"The access-reset event is stored as `hw_rst_access` (`hw_rst_access <= ctrl.enable and ctrl.strict and reset_force`) and also drives the external reset (`rstn_o <= not (hw_rst_timeout or hw_rst_access)`). Integrity of this signal is required so the module asserts reset when the implemented access-fault condition occurs.",
+   "related structural assets":[
+     {"asset rtl":"hw_rst_access","entity":"neorv32_wdt","realization":"stores"}
+   ]},
+  {"concept":"Password-triggered watchdog reset event (bus write with matching password that clears counter)",
+   "security objective":"Integrity",
+   "reasoning":"On a bus write to the password address the process sets `reset_wdt <= '1'` when `bus_req_i.data(31 downto 0) = reset_pwd_c`; wdt_counter clears `cnt` when `reset_wdt = '1'`. The stored event reset_wdt is the implemented mechanism by which a correct password write clears the counter; its integrity is required for that behavior.",
+   "related structural assets":[
+     {"asset rtl":"reset_wdt","entity":"neorv32_wdt","realization":"stores"}
+   ]},
+  {"concept":"Forced-reset-or-fault indicator produced by invalid/locked writes",
+   "security objective":"Integrity",
+   "reasoning":"The bus_access process sets `reset_force <= '1'` when a write is attempted while `ctrl.lock = '1'` or when a password write does not match; `reset_force` is used to generate `hw_rst_access` (`hw_rst_access <= ctrl.enable and ctrl.strict and reset_force`). The stored `reset_force` decision therefore directly determines access-induced reset behavior and must be correct.",
+   "related structural assets":[
+     {"asset rtl":"reset_force","entity":"neorv32_wdt","realization":"stores"}
+   ]},
+  {"concept":"Module reset output (the external active-low reset produced by the WDT)",
+   "security objective":"Integrity",
+   "reasoning":"The reset output is driven as `rstn_o <= not (hw_rst_timeout or hw_rst_access)`. The output leaving the entity is the implemented reset signal; its integrity (that it reflects the implemented hw_rst_timeout/hw_rst_access conditions) is required for correct external reset behavior.",
+   "related structural assets":[
+     {"asset rtl":"rstn_o","entity":"neorv32_wdt","realization":"exit port"}
+   ]},
+  {"concept":"Reset cause register (the stored 2-bit code recording the last reset cause)",
+   "security objective":"Integrity",
+   "reasoning":"reset_cause is stored and initialized on external reset (`if (rstn_ext_i = '0') then reset_cause <= \"00\"`) and updated on rising edges to \"01\" if `rstn_dbg_i = '0'`, \"10\" if `hw_rst_timeout = '1'`, or \"11\" if `hw_rst_access = '1'`. It is exported on reads (`bus_rsp_o.data(ctrl_rcause_hi_c downto ctrl_rcause_lo_c) <= reset_cause`), so integrity of this stored field is required for correct reporting of reset origin.",
+   "related structural assets":[
+     {"asset rtl":"reset_cause","entity":"neorv32_wdt","realization":"stores"}
+   ]}
+]}

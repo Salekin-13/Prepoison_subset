@@ -1,0 +1,155 @@
+{
+ "module name": "neorv32_cpu",
+ "module purpose": "neorv32_cpu is a structural top that instantiates the frontend, control, register-file, ALU and load/store units, plus counter, PMP and inter-core-communication units selected by generics (lines 284-306, 401-428, 433-456); locally it only packs the machine interrupt inputs into irq_machine (line 276), ORs the extension units' CSR read data into xcsr_res (line 279) and ORs the result sources into the register write-back value rf_wdata (line 330), while the instruction bus, data bus and ICC link are driven by sub-units.",
+ "use-case flows": [
+  {
+   "flow": "operate",
+   "value": "instruction fetch: the frontend unit drives the instruction-bus request, reads the response and hands the fetched-instruction record (frontend) to the control unit",
+   "lines": [192, 193, 194, 196, 197, 199, 255]
+  },
+  {
+   "flow": "operate",
+   "value": "control bus ctrl driven by the control unit and distributed to the frontend, counter, register-file, ALU, LSU and PMP units",
+   "lines": [194, 253, 297, 321, 362, 384, 414]
+  },
+  {
+   "flow": "operate",
+   "value": "register operands rs1, rs2 and rs3 read from the register file into the ALU, the control unit (rs1) and the LSU store-data input (rs2)",
+   "lines": [262, 315, 324, 325, 326, 364, 365, 366, 387]
+  },
+  {
+   "flow": "operate",
+   "value": "ALU adder result alu_add used as the access address by the LSU, by the PMP check and by the control unit",
+   "lines": [261, 370, 386, 418]
+  },
+  {
+   "flow": "operate",
+   "value": "memory-protection fault decision from the PMP unit to the control unit and the LSU, tied to '0' when the PMP is not built",
+   "lines": [257, 392, 402, 420, 425, 427]
+  },
+  {
+   "flow": "operate",
+   "value": "data-bus access performed by the LSU from the address and store data it receives, returning load data",
+   "lines": [386, 387, 388, 394, 395]
+  },
+  {
+   "flow": "operate",
+   "value": "register write-back value rf_wdata formed from the ALU result, load data, CSR read data and ctrl.pc_ret and written into the register file",
+   "lines": [263, 323, 330, 369, 388]
+  },
+  {
+   "flow": "read out",
+   "value": "CSR read data of the counter, ALU, PMP and ICC units OR-ed into xcsr_res and returned to the control unit; zero for a unit that is not built",
+   "lines": [264, 279, 285, 299, 304, 305, 371, 416, 426, 445, 454]
+  },
+  {
+   "flow": "operate",
+   "value": "interrupt and debug request inputs delivered to the control unit: msi_i, mei_i and mti_i packed into irq_machine, firq_i and dbi_i wired directly",
+   "lines": [266, 267, 268, 276]
+  },
+  {
+   "flow": "report",
+   "value": "execution status from the ALU and LSU to the control unit: comparison result, co-processor done, LSU wait, LSU error flags and LSU access address",
+   "lines": [259, 260, 270, 271, 272, 368, 373, 389, 390, 391]
+  },
+  {
+   "flow": "configure",
+   "value": "CSR write/read strobes, address and write data passed from the control bus to the ICC unit",
+   "lines": [441, 442, 443, 444]
+  },
+  {
+   "flow": "operate",
+   "value": "inter-core link: the ICC unit drives icc_tx_o and reads icc_rx_i; icc_tx_o is tied to icc_terminate_c when ICC is not built",
+   "lines": [434, 447, 448, 453, 455]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Interrupt and debug-entry requests -- the machine software/external/timer, fast and debug request inputs as presented to the control unit",
+   "security objective": "Integrity",
+   "reasoning": "`irq_machine <= mti_i & mei_i & msi_i;` (line 276) packs the three machine request inputs and delivers them to neorv32_cpu_control_inst.irq_machine_i (line 267); firq_i is wired to irq_fast_i (line 268) and dbi_i to irq_dbg_i (line 266). The control unit is not supplied, so its integrity property is that it receives exactly these input values: Established from lines 266-268 and 276. msi_i, mei_i and mti_i set the concept because this entity reads them to form the value it wires into the unsupplied control unit (SOURCES irq_machine, occurrence 2, line 276); firq_i and dbi_i set it through their mode-in connections (occurrence 2). irq_machine only concatenates the three bits unchanged (DERIVES_FROM mei_i, msi_i, mti_i at line 276), so it carries the value and is not listed. Availability: the continuous assignment and port map present the requests at all times in this entity. No line restricts observation, so Confidentiality is not established.",
+   "related structural assets": [
+    {"asset rtl": "msi_i", "entity": "neorv32_cpu", "realization": "sets", "occurrence": 2, "edge": {"type": "SOURCES", "partner": "irq_machine"}},
+    {"asset rtl": "mei_i", "entity": "neorv32_cpu", "realization": "sets", "occurrence": 2, "edge": {"type": "SOURCES", "partner": "irq_machine"}},
+    {"asset rtl": "mti_i", "entity": "neorv32_cpu", "realization": "sets", "occurrence": 2, "edge": {"type": "SOURCES", "partner": "irq_machine"}},
+    {"asset rtl": "firq_i", "entity": "neorv32_cpu", "realization": "sets", "occurrence": 2, "edge": {"type": "CONNECTS", "partner": "neorv32_cpu_control_inst.irq_fast_i"}},
+    {"asset rtl": "dbi_i", "entity": "neorv32_cpu", "realization": "sets", "occurrence": 2, "edge": {"type": "CONNECTS", "partner": "neorv32_cpu_control_inst.irq_dbg_i"}}
+   ]
+  },
+  {
+   "concept": "Memory-protection fault decision -- the PMP unit's verdict on a load/store access, as received by the control unit and the LSU",
+   "security objective": "Integrity",
+   "reasoning": "In builds with RISCV_ISA_Smpmp (line 402) pmp_fault is driven by neorv32_cpu_pmp_inst.fault_o (line 420); otherwise `pmp_fault <= '0';` (line 427, configuration not RISCV_ISA_Smpmp) and no fault is ever reported. The decision is delivered to the control unit (pmp_fault_i, line 257) and to the LSU (pmp_fault_i, line 392), neither supplied, so the integrity property that both consumers receive exactly the PMP unit's decision is Established from lines 257, 392 and 420. pmp_fault computes the concept: it is the plain signal through which the sub-unit delivers the decision it computes (CONNECTS neorv32_cpu_pmp_inst.fault_o, occurrence 4). alu_add and ctrl are operands of the check (lines 414, 418), not its result, and are not listed here. The PMP internals are not supplied, so no claim is made about how the fault is computed.",
+   "related structural assets": [
+    {"asset rtl": "pmp_fault", "entity": "neorv32_cpu", "realization": "computes", "occurrence": 4, "edge": {"type": "CONNECTS", "partner": "neorv32_cpu_pmp_inst.fault_o"}}
+   ]
+  },
+  {
+   "concept": "Load/store access address -- the ALU adder result used as the address the LSU accesses and the PMP checks",
+   "security objective": "Integrity",
+   "reasoning": "alu_add is driven by neorv32_cpu_alu_inst.add_o (line 370) and the same signal is delivered to the LSU address input addr_i (line 386), the PMP address input addr_ls_i (line 418, Smpmp builds) and the control unit's alu_add_i (line 261). The RTL therefore makes the checked address and the accessed address one value; integrity requires each unsupplied consumer to receive exactly the address the ALU produced, Established from lines 261, 370, 386 and 418. alu_add computes the concept (CONNECTS neorv32_cpu_alu_inst.add_o, occurrence 3). dbus_req_o and dbus_rsp_i are records carrying complete bus transactions (addr, data, ben, stb, rw / ack, err, data) driven inside the LSU (lines 394-395): transport, not listed. clk_i and rstn_i are wired to every sub-unit's clock and reset (lines 192-193 and onward) and are excluded.",
+   "related structural assets": [
+    {"asset rtl": "alu_add", "entity": "neorv32_cpu", "realization": "computes", "occurrence": 3, "edge": {"type": "CONNECTS", "partner": "neorv32_cpu_alu_inst.add_o"}}
+   ]
+  },
+  {
+   "concept": "Register operand values -- source register contents read from the register file, including the store data",
+   "security objective": "Integrity",
+   "reasoning": "The register file drives rs1, rs2 and rs3 (rs1_o, rs2_o, rs3_o, lines 324-326); rs1 goes to the control unit (rf_rs1_i, line 262) and the ALU (rs1_i, line 364), rs2 to the ALU (rs2_i, line 365) and to the LSU store-data input (wdata_i, line 387), rs3 to the ALU (rs3_i, line 366), with the register file's third read port enabled by RS3_EN => rf_rs3_en_c (lines 95, 315). All producers and consumers are unsupplied sub-units, so the integrity property that each consumer receives exactly the operand the register file delivers is Established from these lines. Each signal computes the concept through the CONNECTS edge of mode out from the register file (occurrences 3, 2 and 2). No line restricts who receives these values, so Confidentiality is not established.",
+   "related structural assets": [
+    {"asset rtl": "rs1", "entity": "neorv32_cpu", "realization": "computes", "occurrence": 3, "edge": {"type": "CONNECTS", "partner": "neorv32_cpu_regfile_inst.rs1_o"}},
+    {"asset rtl": "rs2", "entity": "neorv32_cpu", "realization": "computes", "occurrence": 2, "edge": {"type": "CONNECTS", "partner": "neorv32_cpu_regfile_inst.rs2_o"}},
+    {"asset rtl": "rs3", "entity": "neorv32_cpu", "realization": "computes", "occurrence": 2, "edge": {"type": "CONNECTS", "partner": "neorv32_cpu_regfile_inst.rs3_o"}}
+   ]
+  },
+  {
+   "concept": "Register write-back result -- the instruction result (ALU result, load data or CSR read data) written into the register file",
+   "security objective": "Integrity",
+   "reasoning": "`rf_wdata <= alu_res or lsu_rdata or csr_rdata or ctrl.pc_ret;` (line 330) forms the write-back value in this entity and delivers it to the register file's rd_i (line 323). Integrity requires the unsupplied register file to receive exactly this combination: Established from lines 323 and 330. rf_wdata computes it (DERIVES_FROM alu_res, occurrence 3, line 330). Its sources are values computed by unsupplied units and exist in this entity only on their signals: alu_res from neorv32_cpu_alu_inst.res_o (line 369), lsu_rdata from neorv32_cpu_lsu_inst.rdata_o (line 388) and csr_rdata from neorv32_cpu_control_inst.csr_rdata_o (line 263); each computes through its CONNECTS edge of mode out. ctrl.pc_ret is a field of the sub-unit-wired record ctrl that this entity only reads as data (SOURCES rf_wdata, line 330), so it is a carrier and is not listed; the whole record ctrl is not listed either, since its fields are all carriers or unused here. Which source is non-zero at a given time is decided inside the sub-units and is not claimed.",
+   "related structural assets": [
+    {"asset rtl": "rf_wdata", "entity": "neorv32_cpu", "realization": "computes", "occurrence": 3, "edge": {"type": "DERIVES_FROM", "partner": "alu_res"}},
+    {"asset rtl": "alu_res", "entity": "neorv32_cpu", "realization": "computes", "occurrence": 3, "edge": {"type": "CONNECTS", "partner": "neorv32_cpu_alu_inst.res_o"}},
+    {"asset rtl": "lsu_rdata", "entity": "neorv32_cpu", "realization": "computes", "occurrence": 3, "edge": {"type": "CONNECTS", "partner": "neorv32_cpu_lsu_inst.rdata_o"}},
+    {"asset rtl": "csr_rdata", "entity": "neorv32_cpu", "realization": "computes", "occurrence": 2, "edge": {"type": "CONNECTS", "partner": "neorv32_cpu_control_inst.csr_rdata_o"}}
+   ]
+  },
+  {
+   "concept": "Extension-unit CSR read data -- the counter, ALU, PMP and ICC register values returned to the control unit",
+   "security objective": "Integrity",
+   "reasoning": "`xcsr_res <= xcsr_cnt or xcsr_alu or xcsr_pmp or xcsr_icc;` (line 279) combines the read data and delivers it to neorv32_cpu_control_inst.xcsr_rdata_i (line 264). Integrity requires the unsupplied control unit to receive exactly this combination of the units' read data: Established from lines 264 and 279. xcsr_res computes it (DERIVES_FROM xcsr_cnt, occurrence 3). The contributions are computed by unsupplied units: xcsr_cnt by neorv32_cpu_counters_inst.rdata_o (line 299) when RISCV_ISA_Zicntr or RISCV_ISA_Zihpm (line 285), otherwise zero (line 305); xcsr_alu by neorv32_cpu_alu_inst.csr_o (line 371); xcsr_pmp by neorv32_cpu_pmp_inst.csr_o (line 416) when RISCV_ISA_Smpmp, otherwise zero (line 426); xcsr_icc by neorv32_cpu_icc_inst.csr_rdata_o (line 445) when ICC_EN, otherwise zero (line 454). Each computes through its CONNECTS edge of mode out in builds where its unit exists. The CSR command fields ctrl.csr_we, ctrl.csr_re, ctrl.csr_addr and ctrl.csr_wdata only pass unchanged into the ICC unit (lines 441-444) and are carriers. icc_tx_o and icc_rx_i are records carrying complete link transfers (rdy, ack, dat) handled inside the ICC unit (lines 447-448): treated as transport and not listed.",
+   "related structural assets": [
+    {"asset rtl": "xcsr_res", "entity": "neorv32_cpu", "realization": "computes", "occurrence": 3, "edge": {"type": "DERIVES_FROM", "partner": "xcsr_cnt"}},
+    {"asset rtl": "xcsr_cnt", "entity": "neorv32_cpu", "realization": "computes", "occurrence": 3, "edge": {"type": "CONNECTS", "partner": "neorv32_cpu_counters_inst.rdata_o"}},
+    {"asset rtl": "xcsr_alu", "entity": "neorv32_cpu", "realization": "computes", "occurrence": 3, "edge": {"type": "CONNECTS", "partner": "neorv32_cpu_alu_inst.csr_o"}},
+    {"asset rtl": "xcsr_pmp", "entity": "neorv32_cpu", "realization": "computes", "occurrence": 3, "edge": {"type": "CONNECTS", "partner": "neorv32_cpu_pmp_inst.csr_o"}},
+    {"asset rtl": "xcsr_icc", "entity": "neorv32_cpu", "realization": "computes", "occurrence": 3, "edge": {"type": "CONNECTS", "partner": "neorv32_cpu_icc_inst.csr_rdata_o"}}
+   ]
+  },
+  {
+   "concept": "ALU comparison result -- the compare decision the ALU reports to the control unit",
+   "security objective": "Integrity",
+   "reasoning": "alu_cmp is driven by neorv32_cpu_alu_inst.cmp_o (line 368) and delivered to neorv32_cpu_control_inst.alu_cmp_i (line 260). Both units are unsupplied, so the integrity property that the control unit receives exactly the comparison result the ALU produces is Established from lines 260 and 368. alu_cmp is a decision value and computes it through the CONNECTS edge of mode out (occurrence 3). What the control unit does with it is not visible and is not claimed.",
+   "related structural assets": [
+    {"asset rtl": "alu_cmp", "entity": "neorv32_cpu", "realization": "computes", "occurrence": 3, "edge": {"type": "CONNECTS", "partner": "neorv32_cpu_alu_inst.cmp_o"}}
+   ]
+  },
+  {
+   "concept": "Load/store fault report -- the LSU error flags and the access address it reports to the control unit",
+   "security objective": "Integrity",
+   "reasoning": "lsu_err is driven by neorv32_cpu_lsu_inst.err_o (line 391) and delivered to the control unit's lsu_err_i (line 272); lsu_mar is driven by neorv32_cpu_lsu_inst.mar_o (line 389) and delivered to lsu_mar_i (line 271). Both ends are unsupplied, so the integrity property that the control unit receives exactly the error flags and access address the LSU reports is Established from lines 271-272 and 389-391. Each computes through its CONNECTS edge of mode out (occurrence 3). The meaning of individual error bits lies inside the LSU and is not claimed.",
+   "related structural assets": [
+    {"asset rtl": "lsu_err", "entity": "neorv32_cpu", "realization": "computes", "occurrence": 3, "edge": {"type": "CONNECTS", "partner": "neorv32_cpu_lsu_inst.err_o"}},
+    {"asset rtl": "lsu_mar", "entity": "neorv32_cpu", "realization": "computes", "occurrence": 3, "edge": {"type": "CONNECTS", "partner": "neorv32_cpu_lsu_inst.mar_o"}}
+   ]
+  },
+  {
+   "concept": "Multi-cycle operation progress -- the ALU co-processor completion event and the LSU wait status reported to the control unit",
+   "security objective": "Integrity",
+   "reasoning": "alu_cp_done is driven by neorv32_cpu_alu_inst.done_o (line 373) and delivered to alu_cp_done_i (line 259); lsu_wait is driven by neorv32_cpu_lsu_inst.wait_o (line 390) and delivered to lsu_wait_i (line 270). The control unit is unsupplied, so the integrity property that it receives exactly the event and status the ALU and LSU produce is Established from lines 259, 270, 373 and 390. Each computes through its CONNECTS edge of mode out (occurrence 3). Availability is not claimed: when these are produced depends on sub-unit behavior that is not supplied.",
+   "related structural assets": [
+    {"asset rtl": "alu_cp_done", "entity": "neorv32_cpu", "realization": "computes", "occurrence": 3, "edge": {"type": "CONNECTS", "partner": "neorv32_cpu_alu_inst.done_o"}},
+    {"asset rtl": "lsu_wait", "entity": "neorv32_cpu", "realization": "computes", "occurrence": 3, "edge": {"type": "CONNECTS", "partner": "neorv32_cpu_lsu_inst.wait_o"}}
+   ]
+  }
+ ]
+}

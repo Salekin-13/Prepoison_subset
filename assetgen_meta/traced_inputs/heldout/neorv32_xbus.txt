@@ -1,0 +1,317 @@
+TARGET IP MODULE: neorv32_xbus
+
+=== RTL (comments removed, blank lines left out; each line starts with its line number in the source file) ===
+   21 | entity neorv32_xbus is
+   22 |   generic (
+   23 |     TIMEOUT_VAL : natural;
+   24 |     REGSTAGE_EN : boolean
+   25 |   );
+   26 |   port (
+   27 |     clk_i      : in  std_ulogic;
+   28 |     rstn_i     : in  std_ulogic;
+   29 |     bus_req_i  : in  bus_req_t;
+   30 |     bus_rsp_o  : out bus_rsp_t;
+   31 |     xbus_adr_o : out std_ulogic_vector(31 downto 0);
+   32 |     xbus_dat_i : in  std_ulogic_vector(31 downto 0);
+   33 |     xbus_dat_o : out std_ulogic_vector(31 downto 0);
+   34 |     xbus_tag_o : out std_ulogic_vector(2 downto 0);
+   35 |     xbus_we_o  : out std_ulogic;
+   36 |     xbus_sel_o : out std_ulogic_vector(3 downto 0);
+   37 |     xbus_stb_o : out std_ulogic;
+   38 |     xbus_cyc_o : out std_ulogic;
+   39 |     xbus_ack_i : in  std_ulogic;
+   40 |     xbus_err_i : in  std_ulogic
+   41 |   );
+   42 | end neorv32_xbus;
+
+   44 | architecture neorv32_xbus_rtl of neorv32_xbus is
+   47 |   signal bus_req : bus_req_t;
+   48 |   signal bus_rsp : bus_rsp_t;
+   51 |   signal pending : std_ulogic;
+   52 |   signal locked  : std_ulogic;
+   55 |   signal timeout : std_ulogic;
+   56 |   signal timecnt : std_ulogic_vector(index_size_f(TIMEOUT_VAL)-1 downto 0);
+   57 |   constant timeout_c : std_ulogic_vector(index_size_f(TIMEOUT_VAL)-1 downto 0) :=
+   58 |                        std_ulogic_vector(to_unsigned(TIMEOUT_VAL-1, index_size_f(TIMEOUT_VAL)));
+   60 | begin
+   64 |   reg_stage_inst: entity neorv32.neorv32_bus_reg
+   65 |   generic map (
+   66 |     REQ_REG_EN => REGSTAGE_EN,
+   67 |     RSP_REG_EN => REGSTAGE_EN
+   68 |   )
+   69 |   port map (
+   70 |     clk_i        => clk_i,
+   71 |     rstn_i       => rstn_i,
+   72 |     host_req_i   => bus_req_i,
+   73 |     host_rsp_o   => bus_rsp_o,
+   74 |     device_req_o => bus_req,
+   75 |     device_rsp_i => bus_rsp
+   76 |   );
+   81 |   arbiter: process(rstn_i, clk_i)
+   82 |   begin
+   83 |     if (rstn_i = '0') then
+   84 |       locked  <= '0';
+   85 |       pending <= '0';
+   86 |     elsif rising_edge(clk_i) then
+   87 |       if (pending = '0') then
+   88 |         locked  <= bus_req.stb and bus_req.lock;
+   89 |         pending <= bus_req.stb;
+   90 |       else
+   91 |         if (locked = '0') then
+   92 |           if (timeout = '1') or (xbus_err_i = '1') or (xbus_ack_i = '1') then
+   93 |             pending <= '0';
+   94 |           end if;
+   95 |         else
+   96 |           if (timeout = '1') or (bus_req.lock = '0') then
+   97 |             pending <= '0';
+   98 |           end if;
+   99 |         end if;
+  100 |       end if;
+  101 |     end if;
+  102 |   end process arbiter;
+  107 |   timeout_enabled:
+  108 |   if TIMEOUT_VAL /= 0 generate
+  109 |     timeout_counter: process(rstn_i, clk_i)
+  110 |     begin
+  111 |       if (rstn_i = '0') then
+  112 |         timecnt <= (others => '0');
+  113 |         timeout <= '0';
+  114 |       elsif rising_edge(clk_i) then
+  115 |         if (pending = '0') then
+  116 |           timecnt <= timeout_c;
+  117 |           timeout <= '0';
+  118 |         else
+  119 |           if (or_reduce_f(timecnt) = '1') then
+  120 |             timecnt <= std_ulogic_vector(unsigned(timecnt) - 1);
+  121 |           else
+  122 |             timeout <= '1';
+  123 |           end if;
+  124 |         end if;
+  125 |       end if;
+  126 |     end process timeout_counter;
+  127 |   end generate;
+  129 |   timeout_disabled:
+  130 |   if TIMEOUT_VAL = 0 generate
+  131 |     timecnt <= (others => '0');
+  132 |     timeout <= '0';
+  133 |   end generate;
+  136 |   assert not (TIMEOUT_VAL = 0) report "[NEORV32] XBUS: no bus-timeout configured!" severity warning;
+  141 |   xbus_adr_o <= bus_req.addr;
+  142 |   xbus_dat_o <= bus_req.data;
+  143 |   xbus_we_o  <= bus_req.rw;
+  144 |   xbus_sel_o <= bus_req.ben;
+  145 |   xbus_stb_o <= bus_req.stb;
+  146 |   xbus_cyc_o <= bus_req.stb or pending;
+  149 |   xbus_tag_o(2) <= bus_req.src;
+  150 |   xbus_tag_o(1) <= '0';
+  151 |   xbus_tag_o(0) <= bus_req.priv or bus_req.debug;
+  154 |   bus_rsp.data <= xbus_dat_i when (pending = '1') else (others => '0');
+  155 |   bus_rsp.ack  <= pending and (timeout or xbus_err_i or xbus_ack_i);
+  156 |   bus_rsp.err  <= pending and (timeout or xbus_err_i);
+  159 | end neorv32_xbus_rtl;
+
+=== RELATIONSHIP MAP: ELEMENTS AND RECORDS ===
+PORT {"name":"clk_i","entity":"neorv32_xbus","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":27},{"id":2,"line":70},{"id":3,"line":81},{"id":4,"line":86},{"id":5,"line":109},{"id":6,"line":114}]}
+    {"connections":[{"at":2,"instance":"reg_stage_inst","formal":"clk_i","mode":null,"lines":[70]}]}
+    {"type":"SEQUENCES","at":[4],"lines":[86],"targets":["locked","pending"]}
+    {"type":"SEQUENCES","at":[6],"lines":[114],"targets":["timecnt","timeout"]}
+PORT {"name":"rstn_i","entity":"neorv32_xbus","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":28},{"id":2,"line":71},{"id":3,"line":81},{"id":4,"line":83},{"id":5,"line":109},{"id":6,"line":111}]}
+    {"connections":[{"at":2,"instance":"reg_stage_inst","formal":"rstn_i","mode":null,"lines":[71]}]}
+    {"type":"RESETS","at":[4],"lines":[83],"targets":["locked","pending"]}
+    {"type":"RESETS","at":[6],"lines":[111],"targets":["timecnt","timeout"]}
+PORT {"name":"bus_req_i","entity":"neorv32_xbus","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29},{"id":2,"line":72}]}
+    {"connections":[{"at":2,"instance":"reg_stage_inst","formal":"host_req_i","mode":null,"lines":[72]}]}
+PORT {"name":"bus_req_i.addr","entity":"neorv32_xbus","handling":["FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"bus_req_i.data","entity":"neorv32_xbus","handling":["FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"bus_req_i.ben","entity":"neorv32_xbus","handling":["FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"bus_req_i.stb","entity":"neorv32_xbus","handling":["FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"bus_req_i.rw","entity":"neorv32_xbus","handling":["FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"bus_req_i.src","entity":"neorv32_xbus","handling":["FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"bus_req_i.priv","entity":"neorv32_xbus","handling":["FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"bus_req_i.debug","entity":"neorv32_xbus","handling":["FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"bus_req_i.amo","entity":"neorv32_xbus","handling":["FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"bus_req_i.amoop","entity":"neorv32_xbus","handling":["FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"bus_req_i.lock","entity":"neorv32_xbus","handling":["FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"bus_req_i.fence","entity":"neorv32_xbus","handling":["FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29}]}
+PORT {"name":"bus_rsp_o","entity":"neorv32_xbus","boundary":{"mode":"out","drive":"undriven"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":30},{"id":2,"line":73}]}
+    {"connections":[{"at":2,"instance":"reg_stage_inst","formal":"host_rsp_o","mode":null,"lines":[73]}]}
+PORT {"name":"bus_rsp_o.ack","entity":"neorv32_xbus","handling":["FORWARDS"],"boundary":{"mode":"out","drive":"undriven"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":30}]}
+PORT {"name":"bus_rsp_o.err","entity":"neorv32_xbus","handling":["FORWARDS"],"boundary":{"mode":"out","drive":"undriven"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":30}]}
+PORT {"name":"bus_rsp_o.data","entity":"neorv32_xbus","handling":["FORWARDS"],"boundary":{"mode":"out","drive":"undriven"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":30}]}
+PORT {"name":"xbus_adr_o","entity":"neorv32_xbus","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":31},{"id":2,"line":141}]}
+    {"type":"COPIES","at":[2],"lines":[141],"targets":["bus_req.addr"]}
+PORT {"name":"xbus_dat_i","entity":"neorv32_xbus","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":32},{"id":2,"line":154}]}
+    {"type":"SOURCES","at":[2],"lines":[154],"targets":["bus_rsp.data"]}
+PORT {"name":"xbus_dat_o","entity":"neorv32_xbus","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":33},{"id":2,"line":142}]}
+    {"type":"COPIES","at":[2],"lines":[142],"targets":["bus_req.data"]}
+PORT {"name":"xbus_tag_o","entity":"neorv32_xbus","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":34},{"id":2,"line":149},{"id":3,"line":150},{"id":4,"line":151}]}
+    {"constant_drivers":[{"at":3,"value":"'0'","lines":[150]}]}
+    {"type":"GATED_BY","at":[4],"guard":"bus_req.priv or bus_req.debug","lines":[151],"targets":["bus_req.debug","bus_req.priv"]}
+    {"type":"COPIES","at":[2],"lines":[149],"targets":["bus_req.src"]}
+PORT {"name":"xbus_we_o","entity":"neorv32_xbus","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":35},{"id":2,"line":143}]}
+    {"type":"COPIES","at":[2],"lines":[143],"targets":["bus_req.rw"]}
+PORT {"name":"xbus_sel_o","entity":"neorv32_xbus","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":36},{"id":2,"line":144}]}
+    {"type":"COPIES","at":[2],"lines":[144],"targets":["bus_req.ben"]}
+PORT {"name":"xbus_stb_o","entity":"neorv32_xbus","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":37},{"id":2,"line":145}]}
+    {"type":"COPIES","at":[2],"lines":[145],"targets":["bus_req.stb"]}
+PORT {"name":"xbus_cyc_o","entity":"neorv32_xbus","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":38},{"id":2,"line":146}]}
+    {"type":"GATED_BY","at":[2],"guard":"bus_req.stb or pending","lines":[146],"targets":["bus_req.stb","pending"]}
+PORT {"name":"xbus_ack_i","entity":"neorv32_xbus","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":39},{"id":2,"line":92},{"id":3,"line":155}]}
+    {"type":"GATES","at":[2],"guard":"(timeout = '1') or (xbus_err_i = '1') or (xbus_ack_i = '1')","lines":[92],"targets":["pending"]}
+    {"type":"SOURCES","at":[3],"lines":[155],"targets":["bus_rsp.ack"]}
+PORT {"name":"xbus_err_i","entity":"neorv32_xbus","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":40},{"id":2,"line":92},{"id":3,"line":155},{"id":4,"line":156}]}
+    {"type":"GATES","at":[2],"guard":"(timeout = '1') or (xbus_err_i = '1') or (xbus_ack_i = '1')","lines":[92],"targets":["pending"]}
+    {"type":"SOURCES","at":[3],"lines":[155],"targets":["bus_rsp.ack"]}
+    {"type":"SOURCES","at":[4],"lines":[156],"targets":["bus_rsp.err"]}
+SIGNAL {"name":"bus_req","entity":"neorv32_xbus","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":47},{"id":2,"line":74},{"id":3,"line":88},{"id":4,"line":88},{"id":5,"line":89},{"id":6,"line":96},{"id":7,"line":141},{"id":8,"line":142},{"id":9,"line":143},{"id":10,"line":144},{"id":11,"line":145},{"id":12,"line":146},{"id":13,"line":149},{"id":14,"line":151},{"id":15,"line":151}]}
+    {"connections":[{"at":2,"instance":"reg_stage_inst","formal":"device_req_o","mode":null,"lines":[74]}]}
+SIGNAL {"name":"bus_req.addr","entity":"neorv32_xbus","kind":"signal","handling":["FORWARDS"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":47},{"id":2,"line":141}]}
+    {"type":"CARRIES","at":[2],"lines":[141],"targets":["xbus_adr_o"]}
+SIGNAL {"name":"bus_req.data","entity":"neorv32_xbus","kind":"signal","handling":["FORWARDS"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":47},{"id":2,"line":142}]}
+    {"type":"CARRIES","at":[2],"lines":[142],"targets":["xbus_dat_o"]}
+SIGNAL {"name":"bus_req.ben","entity":"neorv32_xbus","kind":"signal","handling":["FORWARDS"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":47},{"id":2,"line":144}]}
+    {"type":"CARRIES","at":[2],"lines":[144],"targets":["xbus_sel_o"]}
+SIGNAL {"name":"bus_req.stb","entity":"neorv32_xbus","kind":"signal","handling":["CONSUMES","FORWARDS"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":47},{"id":2,"line":88},{"id":3,"line":89},{"id":4,"line":145},{"id":5,"line":146}]}
+    {"type":"GATES","at":[2],"guard":"bus_req.stb and bus_req.lock","lines":[88],"targets":["locked"]}
+    {"type":"GATES","at":[5],"guard":"bus_req.stb or pending","lines":[146],"targets":["xbus_cyc_o"]}
+    {"type":"CARRIES","at":[3],"lines":[89],"targets":["pending"]}
+    {"type":"CARRIES","at":[4],"lines":[145],"targets":["xbus_stb_o"]}
+SIGNAL {"name":"bus_req.rw","entity":"neorv32_xbus","kind":"signal","handling":["FORWARDS"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":47},{"id":2,"line":143}]}
+    {"type":"CARRIES","at":[2],"lines":[143],"targets":["xbus_we_o"]}
+SIGNAL {"name":"bus_req.src","entity":"neorv32_xbus","kind":"signal","handling":["FORWARDS"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":47},{"id":2,"line":149}]}
+    {"type":"CARRIES","at":[2],"lines":[149],"targets":["xbus_tag_o"]}
+SIGNAL {"name":"bus_req.priv","entity":"neorv32_xbus","kind":"signal","handling":["CONSUMES","FORWARDS"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":47},{"id":2,"line":151}]}
+    {"type":"GATES","at":[2],"guard":"bus_req.priv or bus_req.debug","lines":[151],"targets":["xbus_tag_o"]}
+SIGNAL {"name":"bus_req.debug","entity":"neorv32_xbus","kind":"signal","handling":["CONSUMES","FORWARDS"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":47},{"id":2,"line":151}]}
+    {"type":"GATES","at":[2],"guard":"bus_req.priv or bus_req.debug","lines":[151],"targets":["xbus_tag_o"]}
+SIGNAL {"name":"bus_req.amo","entity":"neorv32_xbus","kind":"signal","handling":["FORWARDS"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":47}]}
+SIGNAL {"name":"bus_req.amoop","entity":"neorv32_xbus","kind":"signal","handling":["FORWARDS"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":47}]}
+SIGNAL {"name":"bus_req.lock","entity":"neorv32_xbus","kind":"signal","handling":["CONSUMES","FORWARDS"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":47},{"id":2,"line":88},{"id":3,"line":96}]}
+    {"type":"GATES","at":[2],"guard":"bus_req.stb and bus_req.lock","lines":[88],"targets":["locked"]}
+    {"type":"GATES","at":[3],"guard":"(timeout = '1') or (bus_req.lock = '0')","lines":[96],"targets":["pending"]}
+SIGNAL {"name":"bus_req.fence","entity":"neorv32_xbus","kind":"signal","handling":["FORWARDS"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":47}]}
+SIGNAL {"name":"bus_rsp","entity":"neorv32_xbus","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":48},{"id":2,"line":75},{"id":3,"line":154},{"id":4,"line":155},{"id":5,"line":156}]}
+    {"connections":[{"at":2,"instance":"reg_stage_inst","formal":"device_rsp_i","mode":null,"lines":[75]}]}
+SIGNAL {"name":"bus_rsp.ack","entity":"neorv32_xbus","kind":"signal","handling":["ORIGINATES","FORWARDS"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":48},{"id":2,"line":155}]}
+    {"type":"GATED_BY","at":[2],"guard":"pending and (timeout or xbus_err_i or xbus_ack_i)","lines":[155],"targets":["pending"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[155],"targets":["timeout","xbus_ack_i","xbus_err_i"]}
+SIGNAL {"name":"bus_rsp.err","entity":"neorv32_xbus","kind":"signal","handling":["ORIGINATES","FORWARDS"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":48},{"id":2,"line":156}]}
+    {"type":"GATED_BY","at":[2],"guard":"pending and (timeout or xbus_err_i)","lines":[156],"targets":["pending"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[156],"targets":["timeout","xbus_err_i"]}
+SIGNAL {"name":"bus_rsp.data","entity":"neorv32_xbus","kind":"signal","handling":["ORIGINATES","FORWARDS"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":48},{"id":2,"line":154}]}
+    {"type":"GATED_BY","at":[2],"guard":"(pending = '1')","lines":[154],"targets":["pending"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[154],"targets":["xbus_dat_i"]}
+SIGNAL {"name":"pending","entity":"neorv32_xbus","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":51},{"id":2,"line":85},{"id":3,"line":87},{"id":4,"line":89},{"id":5,"line":93},{"id":6,"line":97},{"id":7,"line":115},{"id":8,"line":146},{"id":9,"line":154},{"id":10,"line":155},{"id":11,"line":156}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[85]},{"at":5,"value":"'0'","lines":[93]},{"at":6,"value":"'0'","lines":[97]}]}
+    {"type":"GATES","at":[10],"guard":"pending and (timeout or xbus_err_i or xbus_ack_i)","lines":[155],"targets":["bus_rsp.ack"]}
+    {"type":"GATES","at":[11],"guard":"pending and (timeout or xbus_err_i)","lines":[156],"targets":["bus_rsp.err"]}
+    {"type":"GATES","at":[3],"guard":"pending = '0'","lines":[87],"targets":["locked"]}
+    {"type":"GATES","at":[3],"guard":"not (pending = '0') | pending = '0'","lines":[87],"targets":["pending"]}
+    {"type":"GATES","at":[7],"guard":"not (pending = '0') | pending = '0'","lines":[115],"targets":["timecnt","timeout"]}
+    {"type":"GATES","at":[8],"guard":"bus_req.stb or pending","lines":[146],"targets":["xbus_cyc_o"]}
+    {"type":"GATES","at":[9],"guard":"(pending = '1')","lines":[154],"targets":["bus_rsp.data"]}
+    {"type":"CLOCKED_BY","at":[4,5,6],"lines":[89,93,97],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[85],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[4],"guard":"pending = '0'","lines":[89],"targets":["pending"]}
+    {"type":"GATED_BY","at":[5],"guard":"locked = '0'","lines":[93],"targets":["locked"]}
+    {"type":"GATED_BY","at":[5,6],"guard":"not (pending = '0')","lines":[93,97],"targets":["pending"]}
+    {"type":"GATED_BY","at":[5],"guard":"(timeout = '1') or (xbus_err_i = '1') or (xbus_ack_i = '1')","lines":[93],"targets":["timeout","xbus_ack_i","xbus_err_i"]}
+    {"type":"GATED_BY","at":[6],"guard":"(timeout = '1') or (bus_req.lock = '0')","lines":[97],"targets":["bus_req.lock","timeout"]}
+    {"type":"GATED_BY","at":[6],"guard":"not (locked = '0')","lines":[97],"targets":["locked"]}
+    {"type":"COPIES","at":[4],"lines":[89],"targets":["bus_req.stb"]}
+SIGNAL {"name":"locked","entity":"neorv32_xbus","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":52},{"id":2,"line":84},{"id":3,"line":88},{"id":4,"line":91}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[84]}]}
+    {"type":"GATES","at":[4],"guard":"locked = '0' | not (locked = '0')","lines":[91],"targets":["pending"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[88],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[84],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req.stb and bus_req.lock","lines":[88],"targets":["bus_req.lock","bus_req.stb"]}
+    {"type":"GATED_BY","at":[3],"guard":"pending = '0'","lines":[88],"targets":["pending"]}
+SIGNAL {"name":"timeout","entity":"neorv32_xbus","kind":"register","storage":"mixed"}
+    {"occurrences":[{"id":1,"line":55},{"id":2,"line":92},{"id":3,"line":96},{"id":4,"line":113},{"id":5,"line":117},{"id":6,"line":122},{"id":7,"line":132},{"id":8,"line":136},{"id":9,"line":155},{"id":10,"line":156}]}
+    {"constant_drivers":[{"at":4,"value":"'0'","lines":[113]},{"at":5,"value":"'0'","lines":[117]},{"at":6,"value":"'1'","lines":[122]},{"at":7,"value":"'0'","lines":[132]}]}
+    {"configuration":[{"condition":"[generic] TIMEOUT_VAL /= 0","at":[4,5,6],"lines":[113,117,122]},{"condition":"[generic] TIMEOUT_VAL = 0","at":[7],"lines":[132]}]}
+    {"type":"GATES","at":[2],"guard":"(timeout = '1') or (xbus_err_i = '1') or (xbus_ack_i = '1')","lines":[92],"targets":["pending"]}
+    {"type":"GATES","at":[3],"guard":"(timeout = '1') or (bus_req.lock = '0')","lines":[96],"targets":["pending"]}
+    {"type":"SOURCES","at":[9],"lines":[155],"targets":["bus_rsp.ack"]}
+    {"type":"SOURCES","at":[10],"lines":[156],"targets":["bus_rsp.err"]}
+    {"type":"CLOCKED_BY","at":[5,6],"lines":[117,122],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[4],"lines":[113],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[5],"guard":"pending = '0'","lines":[117],"targets":["pending"]}
+    {"type":"GATED_BY","at":[6],"guard":"not (pending = '0')","lines":[122],"targets":["pending"]}
+    {"type":"GATED_BY","at":[6],"guard":"not (or_reduce_f(timecnt) = '1')","lines":[122],"targets":["timecnt"]}
+SIGNAL {"name":"timecnt","entity":"neorv32_xbus","kind":"register","storage":"mixed"}
+    {"occurrences":[{"id":1,"line":56},{"id":2,"line":112},{"id":3,"line":116},{"id":4,"line":119},{"id":5,"line":120},{"id":6,"line":120},{"id":7,"line":131}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[112]},{"at":3,"value":"timeout_c","lines":[116]},{"at":7,"value":"(others => '0')","lines":[131]}]}
+    {"configuration":[{"condition":"[generic] TIMEOUT_VAL /= 0","at":[2,3,5],"lines":[112,116,120]},{"condition":"[generic] TIMEOUT_VAL = 0","at":[7],"lines":[131]}]}
+    {"type":"GATES","at":[4],"guard":"or_reduce_f(timecnt) = '1'","lines":[119],"targets":["timecnt"]}
+    {"type":"GATES","at":[4],"guard":"not (or_reduce_f(timecnt) = '1')","lines":[119],"targets":["timeout"]}
+    {"type":"SOURCES","at":[6],"lines":[120],"targets":["timecnt"]}
+    {"type":"CLOCKED_BY","at":[3,5],"lines":[116,120],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[112],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"pending = '0'","lines":[116],"targets":["pending"]}
+    {"type":"GATED_BY","at":[5],"guard":"not (pending = '0')","lines":[120],"targets":["pending"]}
+    {"type":"GATED_BY","at":[5],"guard":"or_reduce_f(timecnt) = '1'","lines":[120],"targets":["timecnt"]}
+    {"type":"DERIVES_FROM","at":[5],"lines":[120],"targets":["timecnt"]}
+
+=== RELATIONSHIP MAP: FLOW GRAPH (computed by a program from the records above) ===
+MAP CHECK {"elements":50,"driving records":42,"receiving records":42,"driving without receiving":0,"receiving without driving":0}
+    {"clock or reset (drive SEQUENCES / RESETS)":["clk_i","rstn_i"]}
+    {"whole records (their fields carry the records)":["bus_req","bus_req_i","bus_rsp","bus_rsp_o"]}
+    {"self-updating (X is computed from X: counters, state registers)":["timecnt"]}
+CONTROL-ONLY {"from":"locked","source":"constant-valued","gates or selects":["pending"]}
+CONTROL-ONLY {"from":"timecnt","source":"constant-valued","gates or selects":["timecnt","timeout"]}
+CONTROL-ONLY {"from":"timeout","source":"constant-valued","gates or selects":["pending"]}
+CONTROL-ONLY {"from":"xbus_ack_i","source":"input","gates or selects":["pending"]}
+CONTROL-ONLY {"from":"xbus_err_i","source":"input","gates or selects":["pending"]}
+    {"no local use (no relationship, connection or constant driver)":["bus_req.amo","bus_req.amoop","bus_req.fence","bus_req_i.addr","bus_req_i.amo","bus_req_i.amoop","bus_req_i.ben","bus_req_i.data","bus_req_i.debug","bus_req_i.fence","bus_req_i.lock","bus_req_i.priv","bus_req_i.rw","bus_req_i.src","bus_req_i.stb","bus_rsp_o.ack","bus_rsp_o.data","bus_rsp_o.err"]}
+    {"not reached from an input or constant-valued element":["bus_req.addr","bus_req.ben","bus_req.data","bus_req.debug","bus_req.lock","bus_req.priv","bus_req.rw","bus_req.src","bus_req.stb","pending","xbus_adr_o","xbus_cyc_o","xbus_dat_o","xbus_sel_o","xbus_stb_o","xbus_tag_o","xbus_we_o"]}
+
+Identify the primary security assets for 'neorv32_xbus' and return the JSON object per the contract.

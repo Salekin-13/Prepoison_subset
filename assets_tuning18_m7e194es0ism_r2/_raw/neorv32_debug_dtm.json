@@ -1,0 +1,159 @@
+{
+  "module name": "neorv32_debug_dtm",
+  "conceptual assets": [
+    {
+      "concept": "TAP controller state (TAP state machine)",
+      "security objective": "Integrity",
+      "reasoning": "The tap_control process updates the TAP state on detected JTAG TCK rising edges (`if (tap_sync.tck_rising = '1') then case tap_ctrl_state is ... end case;`). Other flows (reg_access, update_trigger) test tap_ctrl_state (e.g. `if (tap_ctrl_state = DR_UPDATE)` in update_trigger; reg_access tests IR_SHIFT, DR_CAPTURE, DR_SHIFT, DR_UPDATE) to enable instruction shifting, data-register capture/shift/update and TDO output. Therefore the correct value of tap_ctrl_state determines which register operations occur; corrupting it would enable or suppress those operations, so integrity of tap_ctrl_state is required. Realized by the stored signal tap_ctrl_state.",
+      "related structural assets": [
+        {
+          "asset rtl": "tap_ctrl_state",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Instruction register (IREG) that selects the active data register",
+      "security objective": "Integrity",
+      "reasoning": "reg_access sets and shifts the IR: on reset/IR_CAPTURE `tap_reg.ireg <= addr_idcode_c;` and on IR_SHIFT (with TCK rising) `tap_reg.ireg <= tap_sync.tdi & tap_reg.ireg(...);`. tap_reg.ireg is used as the selector in DR_CAPTURE/DR_SHIFT and is tested by dmi_controller (`if (tap_reg.ireg = addr_dtmcs_c)` / `addr_dmi_c`) to route DR updates into DTMCS/DMI handling. Corrupting ireg changes which DR is accessed, so its integrity is required. Realized by the stored instruction register and set by the JTAG input stream.",
+      "related structural assets": [
+        {
+          "asset rtl": "tap_reg.ireg",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "jtag_tdi_i",
+          "entity": "neorv32_debug_dtm",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "DR_UPDATE event detection (the DR update pulse that latches DR contents into controller logic)",
+      "security objective": "Integrity",
+      "reasoning": "update_trigger sets a two-bit shift `dr_trigger.sreg` when tap_ctrl_state = DR_UPDATE (`dr_trigger.sreg(0) <= '1'` when DR_UPDATE; `dr_trigger.sreg(1) <= dr_trigger.sreg(0)`), and `dr_trigger.valid` is driven `'1'` when `dr_trigger.sreg = \"01\"`. dmi_controller and other logic use dr_trigger.valid to latch DTMCS/DMI fields and to initiate or reject DMI operations (`if (dr_trigger.valid = '1') and (tap_reg.ireg = addr_dtmcs_c) then ...`; `if (dr_trigger.valid = '1') and (tap_reg.ireg = addr_dmi_c) then ...`). The correct single-cycle DR_UPDATE detection is required to ensure DR captures and command initiations occur only on intended updates; integrity of this event is therefore required. Realized by the stored shift register and the computed valid pulse.",
+      "related structural assets": [
+        {
+          "asset rtl": "dr_trigger.sreg",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "dr_trigger.valid",
+          "entity": "neorv32_debug_dtm",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "IDCODE register value produced for readout",
+      "security objective": "Integrity",
+      "reasoning": "In reg_access, during DR_CAPTURE when `tap_reg.ireg = addr_idcode_c` the RTL sets `tap_reg.idcode <= IDCODE_VERSION & IDCODE_PARTID & IDCODE_MANID & '1'`. The same process shifts idcode in DR_SHIFT and, on TCK falling, selects `tap_reg.idcode(0)` for jtag_tdo_o when the IDCODE DR is active. The module's readout behavior depends on this stored idcode, so its integrity is required. Realized by the idcode register and presented via the jtag_tdo_o exit.",
+      "related structural assets": [
+        {
+          "asset rtl": "tap_reg.idcode",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "jtag_tdo_o",
+          "entity": "neorv32_debug_dtm",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "DTMCS register bits and derived DMI-reset control flags",
+      "security objective": "Integrity",
+      "reasoning": "tap_reg.dtmcs_nxt is built from dmi_ctrl reset flags (`tap_reg.dtmcs_nxt(17) <= dmi_ctrl.dmihardreset; tap_reg.dtmcs_nxt(16) <= dmi_ctrl.dmireset; ...`) and, on DR_CAPTURE, `tap_reg.dtmcs <= tap_reg.dtmcs_nxt`. Conversely dmi_controller samples DTMCS on an update: `if (dr_trigger.valid = '1') and (tap_reg.ireg = addr_dtmcs_c) then dmi_ctrl.dmireset <= tap_reg.dtmcs(16); dmi_ctrl.dmihardreset <= tap_reg.dtmcs(17);`. dmi_controller uses these reset flags to clear err and to gate transaction acceptance. Therefore the stored DTMCS bits and the resulting dmi_ctrl reset flags determine DMI controller behavior; their integrity is required. Realized by the DTMCS register and the stored dmi_ctrl reset fields, and read back via jtag_tdo_o.",
+      "related structural assets": [
+        {
+          "asset rtl": "tap_reg.dtmcs",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "dmi_ctrl.dmireset",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "dmi_ctrl.dmihardreset",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "jtag_tdo_o",
+          "entity": "neorv32_debug_dtm",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "DMI request initiation (DMI command fields and controller-op/busy state taken from the DMI DR)",
+      "security objective": "Integrity",
+      "reasoning": "When the controller is idle and an update occurs to the DMI data register (`if (dmi_ctrl.busy = '0') then if (dmi_ctrl.dmihardreset = '0') and (dr_trigger.valid = '1') and (tap_reg.ireg = addr_dmi_c) then dmi_ctrl.addr <= tap_reg.dmi(40 downto 34); dmi_ctrl.wdata <= tap_reg.dmi(33 downto 02); if (tap_reg.dmi(1 downto 0) = dmi_req_rd_c) or (dmi_req_wr_c) then dmi_ctrl.op <= tap_reg.dmi(1 downto 0); dmi_ctrl.busy <= '1'; end if; end if;`), the DMI request fields and busy flag are set and the block drives the external request. Corruption of the DMI DR or the internal dmi_ctrl fields would change the operation/address/data/busy decision, so their integrity is required. Realized by the stored DMI DR and the dmi_ctrl fields that hold addr, wdata, op and busy.",
+      "related structural assets": [
+        {
+          "asset rtl": "tap_reg.dmi",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "dmi_ctrl.addr",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "dmi_ctrl.wdata",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "dmi_ctrl.op",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "dmi_ctrl.busy",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "dmi_ctrl.err",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "DMI response data and its readback into the DMI DR for JTAG readout",
+      "security objective": "Integrity",
+      "reasoning": "When a DMI transaction is outstanding the controller captures the response (`else dmi_ctrl.rdata <= dmi_rsp_i.data; if (dmi_rsp_i.ack = '1') then dmi_ctrl.busy <= '0'; end if;`). The module composes the DMI readback word `tap_reg.dmi_nxt <= dmi_ctrl.addr & dmi_ctrl.rdata & replicate_f(dmi_ctrl.err, 2);` and, on DR_CAPTURE for the DMI DR, `tap_reg.dmi <= tap_reg.dmi_nxt;` so the response and err bits are returned via the DMI register and shifted out on TDO. The correctness of rdata and its capture therefore matters; integrity of the stored response and readback path is required. Realized by the stored response and DR readback signals and presented via jtag_tdo_o.",
+      "related structural assets": [
+        {
+          "asset rtl": "dmi_ctrl.rdata",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tap_reg.dmi_nxt",
+          "entity": "neorv32_debug_dtm",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "tap_reg.dmi",
+          "entity": "neorv32_debug_dtm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "jtag_tdo_o",
+          "entity": "neorv32_debug_dtm",
+          "realization": "exit port"
+        }
+      ]
+    }
+  ]
+}

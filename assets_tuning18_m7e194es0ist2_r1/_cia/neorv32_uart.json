@@ -1,0 +1,270 @@
+{
+ "module name": "neorv32_uart",
+ "concepts": [
+  {
+   "concept": "Module enable flag (ctrl.enable) that gates operation, FIFO clears, IRQs and clkgen enable",
+   "kind": "configuration",
+   "writers": "Written by bus write: bus_access sets ctrl.enable <= bus_req_i.data(ctrl_en_c) when (bus_req_i.stb='1') and (bus_req_i.rw='1') and (bus_req_i.addr(2)='0') (line 179). Also reset assigns ctrl.enable <= '0' in bus_access reset branch (line 156).",
+   "observers": "Readable on bus readback: bus_rsp_o.data(ctrl_en_c) <= ctrl.enable (line 195); exported on clkgen_en_o <= ctrl.enable (line 228); affects externally visible IRQ outputs irq_tx_o (line 270) and irq_rx_o (line 315); affects uart_rtsn_o via rtr_control (lines 472-477) and can change uart_txd_o behavior via engine state (lines 344, 392).",
+   "answers": {
+    "confidentiality": {
+     "answer": "no",
+     "line": 195,
+     "via": "bus_rsp_o.data",
+     "reason": "The module returns ctrl.enable on the bus at bus_rsp_o.data(ctrl_en_c) <= ctrl.enable (line 195), so the writer/master can read it back and it is not hidden by the RTL."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 179,
+     "via": "bus_req_i.data",
+     "reason": "A bus write at line 179 (ctrl.enable <= bus_req_i.data(...)) can change ctrl.enable while the TX/RX engines use it (e.g. tx_engine.state(2) <= ctrl.enable at line 344 and rx_engine.state(1) <= ctrl.enable at line 417) and there is no RTL guard preventing such runtime writes."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 179,
+     "via": "bus_req_i",
+     "reason": "An external bus master can clear or set ctrl.enable via the write at line 179, and ctrl.enable gates operation and IRQ generation (e.g. clkgen_en_o at line 228 and irq processes at lines 270 and 315), so an external write can stop module progress."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 179,
+     "via": "bus_req_i",
+     "reason": "ctrl.enable has a single software driver in the RTL (bus write at line 179 and reset at line 156); there is no debug/test override or secondary assignment in the supplied RTL."
+    }
+   },
+   "security objective": "Integrity"
+  },
+  {
+   "concept": "Baud-rate configuration (ctrl.baud) that sets TX and RX timing counters",
+   "kind": "configuration",
+   "writers": "Written by bus write: bus_access sets ctrl.baud <= bus_req_i.data(ctrl_baud9_c downto ctrl_baud0_c) when (bus_req_i.stb='1') and (bus_req_i.rw='1') and (bus_req_i.addr(2)='0') (line 183). Also reset assigns ctrl.baud <= (others => '0') (line 160).",
+   "observers": "Readable on bus readback: bus_rsp_o.data(ctrl_baud9_c downto ctrl_baud0_c) <= ctrl.baud (line 199); affects observable UART timing (copied into tx_engine.baudcnt at lines 349/368 and into rx_engine.baudcnt at line 432), which in turn affects uart_txd_o timing (line 392).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 199,
+     "via": "bus_rsp_o.data",
+     "reason": "ctrl.baud is returned on the bus at line 199 and also determines UART timing (copied into TX/RX baud counters at lines 349 and 432), so the value and its effects are observable and may be treated as sensitive by an integrator."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 183,
+     "via": "bus_req_i.data",
+     "reason": "A bus write at line 183 updates ctrl.baud and there is no RTL protection against changing it while it is being copied into tx_engine.baudcnt and rx_engine.baudcnt (lines 349, 368, 432), so the timing configuration can be altered during operation."
+    },
+    "availability": {
+     "answer": "no",
+     "line": 183,
+     "via": "bus_req_i.data",
+     "reason": "ctrl.baud is updated only by the bus write at line 183 and reset at line 160; there is no external gate that freezes or prevents its update (clock/reset aside)."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 183,
+     "via": "bus_req_i.data",
+     "reason": "ctrl.baud has a single RTL driver path (bus write at line 183 and reset at line 160); no debug/test override assignment is present in the supplied RTL."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "UART prescaler selection (ctrl.prsc) that chooses which clkgen_i bit forms uart_clk",
+   "kind": "configuration",
+   "writers": "Written by bus write: bus_access sets ctrl.prsc <= bus_req_i.data(ctrl_prsc2_c downto ctrl_prsc0_c) when (bus_req_i.stb='1') and (bus_req_i.rw='1') and (bus_req_i.addr(2)='0') (line 182). Also reset assigns ctrl.prsc <= (others => '0') (line 159).",
+   "observers": "Readable on bus readback: bus_rsp_o.data(ctrl_prsc2_c downto ctrl_prsc0_c) <= ctrl.prsc (line 198); selects uart_clk <= clkgen_i(to_integer(unsigned(ctrl.prsc))) at line 229 so selection effects are visible via UART timing/behavior (e.g. uart_txd_o at line 392).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 198,
+     "via": "bus_rsp_o.data",
+     "reason": "ctrl.prsc is returned on the bus at line 198 and it selects clkgen_i bits for uart_clk at line 229, so its setting and effects are observable and may be treated as confidential."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 182,
+     "via": "bus_req_i.data",
+     "reason": "A bus write at line 182 updates ctrl.prsc and there is no RTL guard preventing changes while uart_clk is selected/used (selection occurs at line 229), so the prescaler can be altered during operation."
+    },
+    "availability": {
+     "answer": "no",
+     "line": 182,
+     "via": "bus_req_i.data",
+     "reason": "ctrl.prsc updates only via the bus write at line 182 and reset at line 159; there is no external gate that freezes its updates apart from reset."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 182,
+     "via": "bus_req_i.data",
+     "reason": "ctrl.prsc has only the bus write and reset drivers in the RTL; no alternate/test mode assignment is present."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Hardware flow-control enable (ctrl.hwfc_en) that affects CTS/RTS gating and transmitter behavior",
+   "kind": "configuration",
+   "writers": "Written by bus write: bus_access sets ctrl.hwfc_en <= bus_req_i.data(ctrl_hwfc_en_c) when (bus_req_i.stb='1') and (bus_req_i.rw='1') and (bus_req_i.addr(2)='0') (line 181). Also reset assigns ctrl.hwfc_en <= '0' (line 158).",
+   "observers": "Readable on bus readback: bus_rsp_o.data(ctrl_hwfc_en_c) <= ctrl.hwfc_en (line 197); affects transmitter gating (check at lines 358-360/359) and rtr_control that drives uart_rtsn_o (lines 472-477) which are externally observable.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 197,
+     "via": "bus_rsp_o.data",
+     "reason": "ctrl.hwfc_en is returned on the bus at line 197 and it drives external handshake signals (uart_rtsn_o) and transmitter gating, so its value and effects are externally observable and may be treated as confidential."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 181,
+     "via": "bus_req_i.data",
+     "reason": "A bus write at line 181 updates ctrl.hwfc_en and the transmitter and rtr_control use it (e.g. transmitter gating at line 359 and uart_rtsn_o control at lines 472-477) with no RTL protection preventing runtime changes."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 181,
+     "via": "bus_req_i.data",
+     "reason": "An external bus write at line 181 can enable or disable hardware flow control and thereby cause rtr_control to assert/deassert RTS (lines 472-476) or cause the transmitter to be gated (line 359), which can stop or resume data flow."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 181,
+     "via": "bus_req_i.data",
+     "reason": "ctrl.hwfc_en is driven only by the bus write at line 181 and reset at line 158; no alternate debug/test override exists in the supplied RTL."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Serial transmit bit-stream (uart_txd_o) produced by the TX engine",
+   "kind": "data",
+   "writers": "Driven by internal register tx_engine.txd, which is set in the transmitter process (reset/default at lines 334 and 341; assigned from the shift register in state \"111\" at line 365). The port uart_txd_o is assigned from tx_engine.txd at line 392.",
+   "observers": "Externally observable on output port uart_txd_o (port declaration line 38; assignment at line 392). Also simulation path logs writes in sim_mode (simulation_transmitter process, lines 499-512) which can expose the same data to a file.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 392,
+     "via": "uart_txd_o",
+     "reason": "The serial bit-stream is driven out on the uart_txd_o port at line 392 (tx_engine.txd -> uart_txd_o), so transmitted data are observable outside the module and may be considered confidential depending on integration."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 261,
+     "via": "bus_req_i.data",
+     "reason": "Bus writes assert tx_fifo.we and supply tx_fifo.wdata at lines 260-261 and those writes are not blocked while the TX engine reads tx_fifo.rdata (used at line 351), allowing external bus activity to change the queued transmit data during operation."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 259,
+     "via": "ctrl.sim_mode",
+     "reason": "tx_fifo.clear is asserted when (ctrl.enable='0') or (ctrl.sim_mode='1') or (ctrl.clr_tx='1') (line 259), and this clears queued TX data and prevents transmission; additionally CTS (uart_ctsn_i -> tx_engine.cts at line 337 and gating at 359) can pause transmission."
+    },
+    "undermined behavior": {
+     "answer": "yes-RTL",
+     "line": 499,
+     "via": "ctrl.sim_mode",
+     "reason": "When simulation mode is enabled the RTL includes a simulation_transmitter process that logs bus writes (condition checked at line 499) and tx_fifo.clear is asserted in sim mode (line 259), redirecting transmitted data to a file and bypassing the physical UART output."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Received bytes and RX-FIFO occupancy (data stored by RX FIFO and its avail/half/free indicators)",
+   "kind": "data",
+   "writers": "Bytes assembled by the receiver are written into the RX FIFO: rx_engine.sreg is updated in the receiver state machine (e.g. shift into sreg when baudcnt expires at line 434); rx_fifo.wdata <= rx_engine.sreg(7 downto 0) (line 305) and rx_fifo.we <= rx_engine.done (line 306). The FIFO instance drives rx_fifo.avail/half/free/rdata via its port map (connections around lines 291-301). rx_fifo.clear is driven at line 304 (cleared when ctrl.enable='0' or ctrl.sim_mode='1' or ctrl.clr_rx='1').",
+   "observers": "Received byte data are returned to bus reads at bus_rsp_o.data(data_rtx_msb downto data_rtx_lsb) <= rx_fifo.rdata (line 217); FIFO occupancy flags are returned on bus reads (rx_fifo.avail at line 201, rx_fifo.half at line 202, rx_fifo.free at line 203) and also drive irq_rx_o (line 315) and uart_rtsn_o decisions (rtr_control uses rx_fifo.half at lines 472-476). rx_engine.over is returned at bus_rsp_o.data(ctrl_rx_over_c) <= rx_engine.over (line 214).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 217,
+     "via": "bus_rsp_o.data",
+     "reason": "RX FIFO data (rx_fifo.rdata) are returned on the bus at line 217 and occupancy/status also appear on bus reads and IRQ outputs (lines 201-203 and 315), so received contents and status are observable outside the module."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 304,
+     "via": "ctrl.clr_rx",
+     "reason": "rx_fifo.clear is asserted when ctrl.clr_rx='1' (written by the bus at line 190) or ctrl.sim_mode etc (line 304), and this clear can occur while the receiver writes into the FIFO (rx_fifo.we <= rx_engine.done at line 306), enabling an external bus write to lose or modify stored received data."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 307,
+     "via": "bus_req_i.stb",
+     "reason": "rx_fifo.re is asserted only when the bus issues a read ((bus_req_i.stb='1') and (bus_req_i.rw='0') and (bus_req_i.addr(2)='1')) at line 307, so an external master that does not read can cause the FIFO to fill and eventually block reception (overrun)."
+    },
+    "undermined behavior": {
+     "answer": "yes-RTL",
+     "line": 304,
+     "via": "ctrl.sim_mode",
+     "reason": "rx_fifo.clear is controlled not only by clr_rx but also by ctrl.sim_mode (rx_fifo.clear <= '1' when ctrl.sim_mode='1' at line 304), so simulation/test mode or the clear control can bypass normal FIFO contents and behavior."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "TX FIFO queued bytes (data written by bus writes and later consumed by the TX engine)",
+   "kind": "data",
+   "writers": "Written from bus: tx_fifo.wdata <= bus_req_i.data(data_rtx_msb_c downto data_rtx_lsb_c) (line 260) and tx_fifo.we <= '1' when (bus_req_i.stb='1') and (bus_req_i.rw='1') and (bus_req_i.addr(2)='1') (line 261). tx_fifo.clear is asserted at line 259 when (ctrl.enable='0') or (ctrl.sim_mode='1') or (ctrl.clr_tx='1'). The FIFO instance provides tx_fifo.rdata/avail/half/free via its port map (lines 244-256).",
+   "observers": "Queued TX bytes appear on the UART output when transmitted (uart_txd_o driven from tx_engine.txd at line 392); FIFO status is readable on the bus (tx_fifo.avail/hafl/free appear in bus_rsp_o.data at lines 204-206) and influence irq_tx_o (line 270). Simulation logging in sim_mode (lines 499-512) can also expose written bytes to a file.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 392,
+     "via": "uart_txd_o",
+     "reason": "Bytes written to the TX FIFO will be emitted on the uart_txd_o pin (assignment at line 392), and the bus writer also supplies them (line 260), so their contents are externally observable and may be sensitive."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 261,
+     "via": "bus_req_i.data",
+     "reason": "Bus writes set tx_fifo.we and tx_fifo.wdata at line 261/260 and such writes are not prevented while the TX engine reads tx_fifo.rdata (used at line 351), allowing concurrent writes to alter queued transmit data."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 259,
+     "via": "ctrl.sim_mode",
+     "reason": "tx_fifo.clear is asserted when ctrl.enable='0' or ctrl.sim_mode='1' or ctrl.clr_tx='1' (line 259), any of which (controllable via bus or sim mode) will clear the FIFO and prevent transmission progress."
+    },
+    "undermined behavior": {
+     "answer": "yes-RTL",
+     "line": 259,
+     "via": "ctrl.sim_mode",
+     "reason": "Simulation mode (ctrl.sim_mode) and tx_fifo.clear at line 259 (plus the sim_tx logging at line 499) provide an alternate path that redirects or suppresses normal TX behavior, effectively bypassing the physical TX FIFO -> UART output path."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "IRQ-generation policy and outputs (irq_rx_o / irq_tx_o and their selecting control bits)",
+   "kind": "decision",
+   "writers": "Control bits are written by bus_access: ctrl.irq_rx_nempty <= bus_req_i.data(ctrl_irq_rx_nempty_c) (line 185), ctrl.irq_rx_half <= bus_req_i.data(ctrl_irq_rx_half_c) (line 186), ctrl.irq_rx_full <= bus_req_i.data(ctrl_irq_rx_full_c) (line 187), ctrl.irq_tx_empty <= bus_req_i.data(ctrl_irq_tx_empty_c) (line 188), ctrl.irq_tx_nhalf <= bus_req_i.data(ctrl_irq_tx_nhalf_c) (line 189). irq outputs are driven in processes: irq_tx_o reset at line 268 and assigned in tx_irq_generator at line 270; irq_rx_o reset at line 313 and assigned in rx_irq_generator at line 315.",
+   "observers": "Control bits readable via bus_rsp_o.data(ctrl_irq_... ) <= ctrl.irq_* (lines 208-212). IRQ outputs observable externally: irq_tx_o and irq_rx_o driven by processes at lines 270 and 315 respectively.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 208,
+     "via": "bus_rsp_o.data",
+     "reason": "The IRQ control bits are returned on the bus (lines 208-212) and the IRQ outputs themselves (lines 270/315) reveal module status, so their values and implications are externally observable and may be sensitive."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 185,
+     "via": "bus_req_i.data",
+     "reason": "Bus writes at lines 185-189 update the irq-select control bits and those bits are used directly by the IRQ generation logic at lines 270 and 315 with no RTL protection to prevent changes during operation, allowing the IRQ policy to be altered at runtime."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 270,
+     "via": "ctrl.enable",
+     "reason": "Both IRQ outputs are gated by ctrl.enable in their generator processes (e.g. irq_tx_o assigned under ctrl.enable at line 270 and irq_rx_o at line 315), so clearing ctrl.enable from the bus will suppress IRQs and stop interrupt notifications."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 270,
+     "via": "irq_tx_o",
+     "reason": "The IRQ outputs are driven only by the IRQ generator processes (lines 270 and 315) and the supplied RTL contains no alternate debug/test override path that selects a different driver for these outputs."
+    }
+   },
+   "security objective": "Confidentiality"
+  }
+ ],
+ "_problems": []
+}

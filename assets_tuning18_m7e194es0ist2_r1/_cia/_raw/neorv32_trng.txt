@@ -1,0 +1,170 @@
+{
+  "module name": "neorv32_trng",
+  "concepts": [
+    {
+      "concept": "Sampling enable setting that gates TRNG sampling",
+      "kind": "configuration",
+      "writers": "Reset assigns enable <= '0' in bus_access process when rstn_i = '0' (line 95). A bus write assigns enable <= bus_req_i.data(ctrl_en_c) in the bus_access process (line 105), guarded by bus_req_i.stb='1' and bus_req_i.rw='1' (lines 103-106). No other drivers are present in the supplied RTL.",
+      "observers": "Direct read-back: bus_rsp_o.data(ctrl_en_c) <= enable at line 109 (bus read path). Indirect observation via FIFO state and data: bus_rsp_o.data(ctrl_avail_c) <= fifo.avail at line 112 and data-return paths bus_rsp_o.data(...) <= (others => '0') or fifo.rdata at lines 115 and 117 reflect enable through fifo.clear (line 170) and FIFO behaviour (rnd_pool_fifo_inst outputs).",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 109,
+          "via": "bus_rsp_o.data",
+          "reason": "The enable bit is returned on a bus read at bus_rsp_o.data(ctrl_en_c) (line 109), so an external master can learn the stored setting and the integrator may treat it as secret."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 105,
+          "via": "bus_req_i.data",
+          "reason": "enable is written by a bus write at line 105 (bus_req_i.data under bus_req_i.stb/rw) and that write can occur while sampling is active (enable fed into neoTRNG at line 137 and sampled into sample_en at line 354), so external writes can change it during operation."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 170,
+          "via": "bus_req_i.data",
+          "reason": "enable is used in the combinational clear expression fifo.clear <= '1' when (enable = '0') or (fifo_clr = '1') else '0' (line 170), so an external master that can set enable (via bus_req_i) can force FIFO clear and prevent progress."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 105,
+          "via": "bus_req_i.data",
+          "reason": "enable has a single runtime driver from the bus write at line 105 (plus reset at line 95) and there is no debug/test override or alternate driver in the RTL."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "FIFO-clear control decision that empties the FIFO (clear asserted when enable='0' or fifo_clr='1')",
+      "kind": "decision",
+      "writers": "The combinational assignment fifo.clear <= '1' when (enable = '0') or (fifo_clr = '1') else '0' drives fifo.clear (line 170) from signals enable and fifo_clr. fifo_clr itself is written by reset (fifo_clr <= '0' at line 94) and by a bus write fifo_clr <= bus_req_i.data(ctrl_fifo_clr_c) at line 106 (guarded by bus_req_i.stb/rw in the bus_access process). enable is written as described in concept 1 (lines 95 and 105).",
+      "observers": "fifo.clear connects to the FIFO clear input rnd_pool_fifo_inst.clear_i (line 157); the effect is observable externally as FIFO availability and read results: bus_rsp_o.data(ctrl_avail_c) <= fifo.avail at line 112 and the data-return path bus_rsp_o.data(...)= (others=>'0') or fifo.rdata at lines 115/117 reflect clearing of buffered entropy.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 112,
+          "via": "bus_rsp_o.data",
+          "reason": "The FIFO-clear decision affects FIFO availability which is reported at bus_rsp_o.data(ctrl_avail_c) (line 112) and thus an external master can learn when the FIFO has been cleared."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 106,
+          "via": "bus_req_i.data",
+          "reason": "fifo_clr is written by a bus write at line 106 (bus_req_i.data) and fifo.clear is combinationally derived at line 170, so an external write can assert clear and remove buffered entropy (connected to FIFO at line 157)."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 170,
+          "via": "bus_req_i.data",
+          "reason": "The condition that drives FIFO clear is explicit at line 170 (fifo.clear asserted when enable='0' or fifo_clr='1') and both sources are controllable from the bus, so an external master can force or block FIFO availability."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 170,
+          "via": "fifo.clear",
+          "reason": "fifo.clear is driven by a single combinational expression at line 170 and the RTL contains no alternate debug/test override or secondary driver for this signal."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Random sample bytes (entropy) produced by neoTRNG and delivered through the FIFO to bus reads",
+      "kind": "data",
+      "writers": "Inside neoTRNG the sample shift register is written/reset by sampling_control: reset to zeros at line 352, cleared at line 357 when sample_en='0' or sample_cnt MSB='1', and updated (new byte shift-in) at line 360 under the guard debias_valid='1' (sampling_control lines 353-361). data_o <= sample_sreg exposes the sampled byte at line 366; that is connected into the top-level FIFO wdata via the instance port mapping (neoTRNG_inst.data_o -> fifo.wdata at lines 139 and 161) and the FIFO instance writes the value into its storage when its we_i (fifo.we) is asserted (fifo.we driven by neoTRNG_inst.valid_o at lines 138 and 162).",
+      "observers": "External observation is via bus reads of the FIFO: bus_access returns zeros or fifo.rdata depending on fifo.avail at lines 114-117 (data returned on bus_rsp_o.data at line 117 when fifo.avail='1'); FIFO rdata originates from rnd_pool_fifo_inst.rdata_o (line 166) and is copied into bus response at line 117.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 117,
+          "via": "bus_rsp_o.data",
+          "reason": "The sampled bytes are propagated to the FIFO and returned to an external master on bus reads at bus_rsp_o.data when fifo.avail='1' (line 117), so external parties can learn these bytes and they may be considered confidential."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 106,
+          "via": "bus_req_i.data",
+          "reason": "An external bus write sets fifo_clr at line 106 (bus_req_i.data) and fifo.clear (line 170) is connected to the FIFO clear input (line 157), allowing an external master to remove or alter buffered bytes produced by the TRNG at runtime."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 170,
+          "via": "bus_req_i.data",
+          "reason": "fifo.clear is asserted at line 170 when enable='0' or fifo_clr='1' (both controllable from the bus), which clears the FIFO (connected at line 157) and so an external actor can prevent bytes from being available to consumers."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 360,
+          "via": "sample_sreg",
+          "reason": "Sample bytes are produced by the sample_sreg update and passed to the FIFO (sample_sreg update at line 360 and data_o at line 366) and the RTL contains no alternate debug/test bypass that substitutes or redirects the produced bytes at runtime."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "FIFO availability flag indicating whether buffered random bytes exist",
+      "kind": "state",
+      "writers": "fifo.avail is produced by the FIFO instance output rnd_pool_fifo_inst.avail_o which is connected into the top-level signal at line 167; fifo.avail therefore depends on the internal FIFO implementation and on FIFO operations (writes from fifo.wdata/we at lines 161/162 and clears from fifo.clear at line 157, the latter driven by line 170).",
+      "observers": "The availability flag is exposed to the bus as bus_rsp_o.data(ctrl_avail_c) <= fifo.avail at line 112; it also gates the returned data path (the selection between zeros and fifo.rdata at lines 115-117) so external masters can infer availability from reads and from the returned data.",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 112,
+          "via": "bus_rsp_o.data",
+          "reason": "fifo.avail is reported to an external master at bus_rsp_o.data(ctrl_avail_c) (line 112) and thus external observers can learn whether buffered bytes exist."
+        },
+        "integrity": {
+          "answer": "unknown",
+          "line": 167,
+          "via": "rnd_pool_fifo_inst.avail_o",
+          "reason": "fifo.avail is driven by the FIFO sub-unit's avail_o (line 167) whose internal implementation is not supplied, so whether and how an external actor can improperly alter avail depends on the FIFO internals and is unknown from the RTL given."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 170,
+          "via": "fifo.clear",
+          "reason": "fifo.clear is asserted by (enable='0') or (fifo_clr='1') at line 170 and is connected to the FIFO clear input at line 157, so external writes to fifo_clr or clearing via enable can force availability low and prevent progress."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 167,
+          "via": "rnd_pool_fifo_inst.avail_o",
+          "reason": "fifo.avail is sourced solely from the FIFO instance output avail_o (line 167) and the RTL contains no runtime debug/test override that replaces this signal."
+        }
+      },
+      "security objective": "Confidentiality"
+    },
+    {
+      "concept": "Data-ready indicator (valid) produced by neoTRNG that triggers FIFO writes",
+      "kind": "event",
+      "writers": "valid_o is assigned inside neoTRNG as valid_o <= sample_cnt(sample_cnt'left) at line 367 (derived from the sample counter). sample_cnt is reset at lines 351/356 and incremented at line 359 when debias_valid='1' (sampling_control lines 353-361), and sample_en (line 354) influences whether the counter runs.",
+      "observers": "valid_o is connected to the top-level FIFO write enable (neoTRNG_inst.valid_o -> fifo.we) via the instance mapping (lines 138 and 162) and its effect (FIFO writes and subsequent FIFO contents) can be observed externally by bus reads that return fifo.rdata when fifo.avail='1' (bus response at line 117).",
+      "answers": {
+        "confidentiality": {
+          "answer": "yes-assumed",
+          "line": 117,
+          "via": "bus_rsp_o.data",
+          "reason": "valid_o causes FIFO writes (mapped at line 162) and those writes result in data visible to an external master on bus reads (bus_rsp_o.data at line 117), so the timing/occurrence of valid events can be inferred externally."
+        },
+        "integrity": {
+          "answer": "yes-RTL",
+          "line": 105,
+          "via": "bus_req_i.data",
+          "reason": "An external bus write can change enable (line 105), sample_en is assigned from enable at line 354 and the sampling logic resets sample_cnt when sample_en='0' (lines 355-357), so external writes can change valid_o (line 367) while the TRNG operates."
+        },
+        "availability": {
+          "answer": "yes-RTL",
+          "line": 355,
+          "via": "sample_en / bus_req_i.data",
+          "reason": "The sampling_control clears sample_cnt and sample_sreg when sample_en='0' (the condition at line 355), and sample_en is driven from enable (line 354) which is controllable via bus writes, so an external actor can stop valid events and block FIFO writes."
+        },
+        "undermined behavior": {
+          "answer": "no",
+          "line": 367,
+          "via": "valid_o",
+          "reason": "valid_o is driven directly from the sample counter at line 367 and there is no alternate debug/test assignment to substitute or bypass this indicator in the RTL."
+        }
+      },
+      "security objective": "Confidentiality"
+    }
+  ]
+}

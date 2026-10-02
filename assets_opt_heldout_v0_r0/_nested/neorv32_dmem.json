@@ -1,0 +1,90 @@
+{
+ "module name": "neorv32_dmem",
+ "module purpose": "neorv32_dmem is a byte-lane data memory: on a strobed write it stores the enabled bytes of the request data into four byte arrays at the word index taken from the request address; on every clock edge it captures the addressed word into rdata, drives it on the response data only in the cycle after a read request (zero otherwise), acknowledges every strobe one cycle later, and ties the error response to zero.",
+ "use-case flows": [
+  {
+   "flow": "operate",
+   "value": "write: the byte lanes of the request data whose byte enables are set, stored into the addressed word of mem_ram_b0..mem_ram_b3 when the request is strobed and marked as a write",
+   "lines": [57, 60, 61, 62, 63, 65, 66, 68, 69, 71, 72, 113]
+  },
+  {
+   "flow": "read out",
+   "value": "the stored word at the addressed index, captured into rdata on each clock edge and returned on the response data in the cycle after a strobed read, zero otherwise",
+   "lines": [75, 76, 77, 78, 113, 124, 129]
+  },
+  {
+   "flow": "report",
+   "value": "acknowledge raised one cycle after each strobe; error response tied to zero",
+   "lines": [123, 125, 130]
+  },
+  {
+   "flow": "reset",
+   "value": "read-response qualification (rden) and acknowledge cleared to '0' while rstn_i is low; the memory arrays and rdata have no reset arm",
+   "lines": [120, 121, 122]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Data memory contents -- the bytes held in the memory arrays, as written by qualified write requests and returned to the requester on reads",
+   "security objective": "Integrity",
+   "reasoning": "Write flow: `mem_ram_b0(to_integer(addr)) <= bus_req_i.data(7 downto 0);` (line 63) executes only under `(bus_req_i.stb = '1') and (bus_req_i.rw = '1')` (line 61) and `bus_req_i.ben(0) = '1'` (line 62); lanes 1-3 repeat at lines 65-72, with the word index from line 113. Read flow: `rdata(7 downto 0) <= mem_ram_b0(to_integer(addr));` (line 75, lanes 1-3 at lines 76-78) and `bus_rsp_o.data <= rdata when (rden = '1') else (others => '0');` (line 129). Integrity is Established: each stored byte must change only by this update rule (strobe, write, its own byte enable, addressed word), and the word returned must be exactly the stored word at the addressed index; that word leaves the entity through an output port to a requester not supplied here. Availability is also Established: the arrays have no reset arm and hold their bytes between writes (storage edge), and the addressed word is captured on every rising edge of clk_i (line 60). Confidentiality is not established: no line restricts which requester may read (bus_req_i.priv, bus_req_i.src and bus_req_i.debug have no local use). mem_ram_b0..mem_ram_b3 store the contents (CLOCKED_BY clk_i, occurrence 2, lines 63, 66, 69, 72); rdata stores the read word, an unchanged capture that still stores (CLOCKED_BY clk_i, occurrence 2, line 75). Build condition: alt_style_c is a constant false (line 36), so only dmem_ram_default (lines 57-82) elaborates; the map's '[generic] alt_style_c' entries (lines 85-110) never build, and rdata's 'mixed' storage comes only from merging both branches. Not reported: bus_req_i and bus_rsp_o are transport records carrying complete transactions (address, data, byte enables, strobe, read/write; response data, acknowledge, error), so they are neither the write-setting point nor the readback exit; addr is a type-converted slice of bus_req_i.addr (DERIVES_FROM, line 113) whose only roles are SELECTS on the arrays and rdata, so it only selects; addr_ff is tied to zero in the elaborated build (line 81) and is read only in the non-elaborated branch (lines 106-109). The write-qualification predicate (line 61-62) is held by no declared element: its operands are all transport fields.",
+   "related structural assets": [
+    {
+     "asset rtl": "mem_ram_b0",
+     "entity": "neorv32_dmem",
+     "realization": "stores",
+     "occurrence": 2,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "mem_ram_b1",
+     "entity": "neorv32_dmem",
+     "realization": "stores",
+     "occurrence": 2,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "mem_ram_b2",
+     "entity": "neorv32_dmem",
+     "realization": "stores",
+     "occurrence": 2,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "mem_ram_b3",
+     "entity": "neorv32_dmem",
+     "realization": "stores",
+     "occurrence": 2,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "rdata",
+     "entity": "neorv32_dmem",
+     "realization": "stores",
+     "occurrence": 2,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Read-response qualification -- the registered decision that the current response carries memory data because a strobed read was requested in the previous cycle",
+   "security objective": "Integrity",
+   "reasoning": "`rden <= bus_req_i.stb and (not bus_req_i.rw);` (line 124) registers the decision on the rising edge of clk_i (line 123), `rden <= '0';` (line 121) clears it while rstn_i is low (line 120), and `bus_rsp_o.data <= rdata when (rden = '1') else (others => '0');` (line 129) uses it to choose between the read word and zero. Integrity is Established: the requester must receive rdata exactly in the cycle after a strobed read and zero in every other cycle; rdata samples the addressed word on every clock edge, also on write and idle cycles (lines 75-78), so a wrong decision either drops a read result or drives a stored word that no read requested. The decided value leaves through an output port to a consumer not supplied here. Availability: the decision is produced on every rising edge while rstn_i is high. rden stores the decision (CLOCKED_BY clk_i, occurrence 3, line 124); it also computes it (GATED_BY bus_req_i.stb and bus_req_i.rw at the same occurrence), and 'stores' takes precedence. Its operands bus_req_i.stb and bus_req_i.rw are fields of the transport port bus_req_i and are not reported.",
+   "related structural assets": [
+    {
+     "asset rtl": "rden",
+     "entity": "neorv32_dmem",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Transfer acknowledgment -- the response event that completes each strobed access one cycle later",
+   "security objective": "Integrity",
+   "reasoning": "`bus_rsp_o.ack <= bus_req_i.stb;` (line 125) registers the acknowledge on the rising edge of clk_i (line 123) and `bus_rsp_o.ack <= '0';` (line 122) clears it in reset; `bus_rsp_o.err <= '0';` (line 130) is a constant. Integrity is Established because the acknowledge is delivered through an output port to a requester not supplied here and must follow each strobe exactly one cycle later; availability holds on every rising edge while rstn_i is high. Mapping limitation: the only element that stores or delivers this event is bus_rsp_o.ack, a field of the transport record port bus_rsp_o; port fields are never reported and transport records are excluded whole and by field, and no internal signal holds the acknowledge, so the reference list is empty.",
+   "related structural assets": []
+  }
+ ]
+}

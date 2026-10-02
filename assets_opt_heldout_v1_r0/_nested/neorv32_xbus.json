@@ -1,0 +1,204 @@
+{
+ "module name": "neorv32_xbus",
+ "module purpose": "neorv32_xbus passes host bus requests (bus_req_i) through a register stage (reg_stage_inst, not supplied) onto external bus ports (address, write data, direction, byte enables, strobe, cycle, tag), tracks the outstanding access (pending) and whether it is locked (locked), ends it on external acknowledge, external error or an optional timeout counter (timecnt, timeout, present when TIMEOUT_VAL /= 0), and returns acknowledge, error and read data to the host through the register stage.",
+ "use-case flows": [
+  {
+   "flow": "start",
+   "value": "a host request strobe that opens an external access when none is outstanding",
+   "lines": [87, 88, 89, 145, 146]
+  },
+  {
+   "flow": "operate",
+   "value": "the host request (address, write data, direction, byte enables, attribute tag) presented on the external bus",
+   "lines": [74, 141, 142, 143, 144, 149, 150, 151]
+  },
+  {
+   "flow": "operate",
+   "value": "timeout counting of an outstanding access (only when TIMEOUT_VAL /= 0)",
+   "lines": [108, 115, 116, 117, 119, 120, 122, 131, 132]
+  },
+  {
+   "flow": "report",
+   "value": "access completion and error status returned to the host, and the end of the outstanding access",
+   "lines": [91, 92, 93, 155, 156, 75]
+  },
+  {
+   "flow": "read out",
+   "value": "external read data returned to the host while an access is outstanding",
+   "lines": [154, 75]
+  },
+  {
+   "flow": "lock",
+   "value": "a locked access that keeps the external cycle held until the host releases lock or the timeout expires",
+   "lines": [88, 91, 96, 97, 146]
+  },
+  {
+   "flow": "reset",
+   "value": "pending, locked, timecnt and timeout cleared to zero while rstn_i is '0'",
+   "lines": [83, 84, 85, 111, 112, 113]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Outstanding external access state -- whether an accepted host access is still awaiting its external completion, which holds the external bus cycle and qualifies every response",
+   "security objective": "Integrity",
+   "reasoning": "Start flow: when idle (`if (pending = '0') then`, line 87) the request strobe is captured by `pending <= bus_req.stb;` (line 89, CLOCKED_BY clk_i at occurrence 4). Report flow: an unlocked access ends with `if (timeout = '1') or (xbus_err_i = '1') or (xbus_ack_i = '1') then` / `pending <= '0';` (lines 92-93), a locked one at lines 96-97. Its value qualifies the response, `bus_rsp.ack <= pending and (timeout or xbus_err_i or xbus_ack_i);` (line 155), the error (line 156) and the read data (line 154), gates the timeout counter (lines 115-120) and holds the external cycle, `xbus_cyc_o <= bus_req.stb or pending;` (line 146). Integrity is Established: a wrong pending value produces acknowledge, error or data for no access, or drops the response and the cycle of a waiting access (lines 146, 154-156). Availability is Established under the implemented conditions: pending clears and the response is produced on external acknowledge, external error or timeout (lines 92-93, 155); the timeout bound exists only when TIMEOUT_VAL /= 0 (lines 108-126), otherwise timeout is tied to '0' (line 132). pending stores it (CLOCKED_BY clk_i; GATES bus_rsp.ack, bus_rsp.err, bus_rsp.data and xbus_cyc_o). xbus_cyc_o is the exit port of the cycle-active value (GATED_BY pending, line 146). xbus_ack_i and xbus_err_i are input ports this entity reads to decide the end of the access (GATES pending, line 92), so they set it. bus_req.stb also writes pending (CARRIES, line 89) but is a field of the transport record bus_req, which only receives the reg_stage_inst output (line 74): excluded. locked and timeout also gate pending; they realize their own concepts below. No line restricts who observes the value, so confidentiality is not established.",
+   "related structural assets": [
+    {
+     "asset rtl": "pending",
+     "entity": "neorv32_xbus",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "xbus_cyc_o",
+     "entity": "neorv32_xbus",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "GATED_BY", "partner": "pending"}
+    },
+    {
+     "asset rtl": "xbus_ack_i",
+     "entity": "neorv32_xbus",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "GATES", "partner": "pending"}
+    },
+    {
+     "asset rtl": "xbus_err_i",
+     "entity": "neorv32_xbus",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "GATES", "partner": "pending"}
+    }
+   ]
+  },
+  {
+   "concept": "Locked-access state -- whether the outstanding access was opened as a locked access, which changes the rule that ends the external cycle",
+   "security objective": "Integrity",
+   "reasoning": "Lock flow: when idle, `locked <= bus_req.stb and bus_req.lock;` (line 88, CLOCKED_BY clk_i at occurrence 3) records whether the new access is locked. While pending, `if (locked = '0') then` (line 91) chooses between two completion rules: an unlocked access ends on timeout, external error or external acknowledge (lines 92-93); a locked one ignores the external acknowledge and error and ends only on timeout or `bus_req.lock = '0'` (lines 96-97). Meanwhile pending keeps xbus_cyc_o asserted (line 146). Integrity is Established: a corrupted locked value ends a locked access's cycle at the first acknowledge, or holds the cycle of an unlocked access past its acknowledge (lines 91-97, 146). Availability is Established conditionally: a set locked value holds the external cycle until the host releases lock or, only when TIMEOUT_VAL /= 0, until timeout (lines 96-97, 122). locked stores it: CLOCKED_BY clk_i (line 88) and GATES pending (occurrence 4, line 91). It is cleared by reset (line 84). Its inputs bus_req.stb and bus_req.lock are fields of the transport record bus_req (excluded), so locked is the only eligible reference.",
+   "related structural assets": [
+    {
+     "asset rtl": "locked",
+     "entity": "neorv32_xbus",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Access timeout -- the remaining wait count of an outstanding access and the expiry decision that forces its termination with an error",
+   "security objective": "Integrity",
+   "reasoning": "Operate flow, present only when TIMEOUT_VAL /= 0 (generate at line 108; configuration records of timecnt and timeout): while idle the counter is reloaded, `timecnt <= timeout_c;` (line 116), and the expiry cleared (line 117); while pending it counts down, `timecnt <= std_ulogic_vector(unsigned(timecnt) - 1);` (line 120), and at zero `timeout <= '1';` (line 122). The expiry ends the access (lines 92-93, 96-97) and is reported as both acknowledge and error: `bus_rsp.err <= pending and (timeout or xbus_err_i);` (line 156) and line 155. Integrity is Established: a wrong count or expiry ends a waiting access early with an error, or withholds its termination (lines 119-122, 155-156). Availability is Established under TIMEOUT_VAL /= 0: an access with no external response is ended after the reload value counts down (lines 116-122); this is the only path that ends a locked access without the host releasing lock (line 96). When TIMEOUT_VAL = 0 both elements are tied to '0' (lines 131-132) and the concept is absent. timecnt stores the count (self-updating; CLOCKED_BY clk_i at occurrence 5, GATES timeout at line 119). timeout stores the expiry decision (CLOCKED_BY clk_i at occurrence 6, line 122; GATES pending at line 92; SOURCES bus_rsp.ack and bus_rsp.err); stores takes precedence over computes. timeout_c and TIMEOUT_VAL are a constant and a generic, not candidates.",
+   "related structural assets": [
+    {
+     "asset rtl": "timecnt",
+     "entity": "neorv32_xbus",
+     "realization": "stores",
+     "occurrence": 5,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "timeout",
+     "entity": "neorv32_xbus",
+     "realization": "stores",
+     "occurrence": 6,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Access response status -- whether the host's access is reported as completed (acknowledge) and as failed (error)",
+   "security objective": "Integrity",
+   "reasoning": "Report flow: `bus_rsp.ack <= pending and (timeout or xbus_err_i or xbus_ack_i);` (line 155) and `bus_rsp.err <= pending and (timeout or xbus_err_i);` (line 156) form the status, which bus_rsp hands to reg_stage_inst (connection device_rsp_i, mode in, line 75), a sub-unit that is not supplied. Integrity is Established from these delivering lines: the host side must receive exactly this status; a wrong value reports success for a failed or timed-out access, or failure for a good one. Availability: the status is produced in the cycle any terminating condition holds while pending (line 155). xbus_ack_i and xbus_err_i are input ports this entity reads to form the status that it wires into the sub-unit (SOURCES bus_rsp.ack, line 155; SOURCES bus_rsp.err, line 156), so they set it. bus_rsp.ack and bus_rsp.err compute it but are fields of bus_rsp, whose record type carries the response half of complete transactions (acknowledge, error, read data) to the register stage: transport, excluded whole and by field. pending and timeout qualify the status and are reported under their own concepts.",
+   "related structural assets": [
+    {
+     "asset rtl": "xbus_ack_i",
+     "entity": "neorv32_xbus",
+     "realization": "sets",
+     "occurrence": 3,
+     "edge": {"type": "SOURCES", "partner": "bus_rsp.ack"}
+    },
+    {
+     "asset rtl": "xbus_err_i",
+     "entity": "neorv32_xbus",
+     "realization": "sets",
+     "occurrence": 4,
+     "edge": {"type": "SOURCES", "partner": "bus_rsp.err"}
+    }
+   ]
+  },
+  {
+   "concept": "Read data returned to the host -- the external read data passed to the requester while an access is outstanding",
+   "security objective": "Integrity",
+   "reasoning": "Read-out flow: `bus_rsp.data <= xbus_dat_i when (pending = '1') else (others => '0');` (line 154), delivered to reg_stage_inst through bus_rsp (line 75), a sub-unit that is not supplied. Integrity is Established from these delivering lines: the requester must receive exactly the external data during an outstanding access and zero otherwise. xbus_dat_i is an input port this entity reads to form that value for the sub-unit (SOURCES bus_rsp.data, occurrence 2), so it sets it. bus_rsp.data computes it but is a transport field (excluded). Line 154 passes xbus_dat_i only while pending; whether disclosure outside that window would be unauthorized depends on context, so confidentiality is not claimed.",
+   "related structural assets": [
+    {
+     "asset rtl": "xbus_dat_i",
+     "entity": "neorv32_xbus",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "SOURCES", "partner": "bus_rsp.data"}
+    }
+   ]
+  },
+  {
+   "concept": "External access request -- the address, write data, direction, byte enables and strobe presented on the external bus",
+   "security objective": "Integrity",
+   "reasoning": "Operate flow: `xbus_adr_o <= bus_req.addr;` (line 141), `xbus_dat_o <= bus_req.data;` (line 142), `xbus_we_o <= bus_req.rw;` (line 143), `xbus_sel_o <= bus_req.ben;` (line 144) and `xbus_stb_o <= bus_req.stb;` (line 145) deliver the request that reg_stage_inst drives onto bus_req (connection device_req_o, mode out, line 74) to an external consumer that is not supplied. Integrity is Established from these delivering lines: the external device must receive exactly the requested address, data, direction, byte enables and strobe. The values arrive on fields of the transport record bus_req (excluded), and no element of this entity stores or computes them, so the output ports are the eligible exits (COPIES at occurrence 2 of each). Whether reg_stage_inst registers the request depends on REGSTAGE_EN and its unsupplied internals; nothing is inferred from it. bus_req_i is a transport record port and is not a setting point.",
+   "related structural assets": [
+    {
+     "asset rtl": "xbus_adr_o",
+     "entity": "neorv32_xbus",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "COPIES", "partner": "bus_req.addr"}
+    },
+    {
+     "asset rtl": "xbus_dat_o",
+     "entity": "neorv32_xbus",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "COPIES", "partner": "bus_req.data"}
+    },
+    {
+     "asset rtl": "xbus_we_o",
+     "entity": "neorv32_xbus",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "COPIES", "partner": "bus_req.rw"}
+    },
+    {
+     "asset rtl": "xbus_sel_o",
+     "entity": "neorv32_xbus",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "COPIES", "partner": "bus_req.ben"}
+    },
+    {
+     "asset rtl": "xbus_stb_o",
+     "entity": "neorv32_xbus",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "COPIES", "partner": "bus_req.stb"}
+    }
+   ]
+  },
+  {
+   "concept": "Access attribute tag -- the attribute bits presented with the external access: one bit formed from the request's priv and debug fields, one copied from its src field",
+   "security objective": "Integrity",
+   "reasoning": "Operate flow: `xbus_tag_o(2) <= bus_req.src;` (line 149), `xbus_tag_o(1) <= '0';` (line 150) and `xbus_tag_o(0) <= bus_req.priv or bus_req.debug;` (line 151): this entity computes bit 0 and delivers the tag to an external consumer that is not supplied. Integrity is Established from these delivering lines: the consumer must receive exactly the attribute bits the flow defines; a wrong bit mislabels the access it accompanies. What the consumer does with the tag is not visible here and is not assumed. xbus_tag_o is the exit port (GATED_BY bus_req.priv and bus_req.debug at occurrence 4, line 151; COPIES bus_req.src at line 149). Its inputs are fields of the transport record bus_req (excluded).",
+   "related structural assets": [
+    {
+     "asset rtl": "xbus_tag_o",
+     "entity": "neorv32_xbus",
+     "realization": "exit port",
+     "occurrence": 4,
+     "edge": {"type": "GATED_BY", "partner": "bus_req.priv"}
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,357 @@
+{
+  "module name": "neorv32_fifo",
+  "module purpose": "neorv32_fifo is a parameterizable FIFO that qualifies write and read requests, stores write data in a single register or a memory array depending on depth, tracks queue position and fill state with pointers, and drives read data plus free/available/half/level status outputs. Optional generics change whether requests are safety-gated, whether read/status outputs are registered, and whether storage is reset to zero.",
+  "use-case flows": [
+    {
+      "flow": "start",
+      "value": "effective internal write and read requests after optional FIFO_SAFE qualification",
+      "lines": [
+        64,
+        65
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "read and write pointer state updated or cleared",
+      "lines": [
+        70,
+        72,
+        75,
+        76,
+        77,
+        82,
+        83
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "accepted write data stored into fifo_reg or the addressed fifo_mem entry",
+      "lines": [
+        129,
+        131,
+        134,
+        135,
+        144,
+        146,
+        149,
+        150,
+        167,
+        169,
+        170,
+        171,
+        180,
+        182,
+        183,
+        184
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "stored FIFO word driven on rdata_o from fifo_reg or from fifo_mem selected by the read pointer",
+      "lines": [
+        201,
+        207,
+        209,
+        210,
+        213,
+        232,
+        238,
+        240,
+        241
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "fill level and status decisions computed and exported on level_o, free_o, avail_o, and half_o",
+      "lines": [
+        92,
+        93,
+        94,
+        95,
+        96,
+        102,
+        103,
+        104,
+        105,
+        106,
+        110,
+        111,
+        116,
+        117,
+        217,
+        218,
+        219,
+        249,
+        254,
+        255,
+        256
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "queue state forced to empty by rstn_i or clear_i, with optional zeroing of storage and synchronous status outputs",
+      "lines": [
+        72,
+        73,
+        74,
+        82,
+        83,
+        131,
+        132,
+        146,
+        147,
+        249,
+        250,
+        251,
+        252
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Accepted FIFO write and read requests",
+      "security objective": "Integrity",
+      "reasoning": "The module first computes internal request decisions with `re <= re_i when (FIFO_SAFE = false) else (re_i and avail);` (line 64) and `we <= we_i when (FIFO_SAFE = false) else (we_i and free);` (line 65). These decisions directly control pointer advancement in `r_nxt` and `w_nxt` (lines 82-83) and write acceptance into storage (lines 134-150, 170-184). Integrity is established because an incorrect decision causes an unrequested, suppressed, or safety-bypassing transfer; availability is also established because a true decision produces the corresponding state update at the next rising edge (lines 75-77, 133-150, 169-184).",
+      "related structural assets": [
+        {
+          "asset rtl": "we_i",
+          "entity": "neorv32_fifo",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "we"
+          }
+        },
+        {
+          "asset rtl": "re_i",
+          "entity": "neorv32_fifo",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "re"
+          }
+        },
+        {
+          "asset rtl": "we",
+          "entity": "neorv32_fifo",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "free"
+          }
+        },
+        {
+          "asset rtl": "re",
+          "entity": "neorv32_fifo",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "avail"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Buffered FIFO payload data",
+      "security objective": "Integrity",
+      "reasoning": "Accepted write data is stored into `fifo_reg` for `fifo_depth_c = 1` (`fifo_reg <= wdata_i;`, lines 134-135 or 170-171) or into the addressed `fifo_mem` entry for `fifo_depth_c > 1` (`fifo_mem(...) <= wdata_i;`, lines 149-150 or 183-184). Readout returns `fifo_reg` directly (lines 201, 232) or a selected `fifo_mem` word using the configured read-pointer path (lines 210-213 or 240-241). Integrity is established because the read-out flow depends on `rdata_o` matching the stored word selected by the implemented pointer rules; availability is also established because accepted writes store a word on a clock edge and the configured read path later drives stored data on `rdata_o`.",
+      "related structural assets": [
+        {
+          "asset rtl": "fifo_reg",
+          "entity": "neorv32_fifo",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "fifo_mem",
+          "entity": "neorv32_fifo",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "rdata_o",
+          "entity": "neorv32_fifo",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "fifo_mem"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "FIFO read and write position state",
+      "security objective": "Integrity",
+      "reasoning": "The queue position is held by `w_pnt` and `r_pnt` (lines 76-77). Their next values clear to zero on `clear_i = '1'` and otherwise increment on accepted write or read or hold their current value (lines 82-83), and these pointer values are then used to address storage (lines 150, 184, 213, 241) and to compute `match`, `full`, `empty`, and `level` (lines 92-96, 102-105). Integrity is established because correct queue ordering, overwrite avoidance, and occupancy calculation depend on these stored positions; availability is also established because the pointer state is preserved between edges and forced to the empty state by `rstn_i = '0'` or by `clear_i = '1'` (lines 72-77, 82-83). In async-read large-depth builds, `r_pnt_ff <= r_nxt;` (line 210) is an additional stored read-selection phase for readout.",
+      "related structural assets": [
+        {
+          "asset rtl": "clear_i",
+          "entity": "neorv32_fifo",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATES",
+            "partner": "w_nxt"
+          }
+        },
+        {
+          "asset rtl": "w_nxt",
+          "entity": "neorv32_fifo",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "w_pnt"
+          }
+        },
+        {
+          "asset rtl": "r_nxt",
+          "entity": "neorv32_fifo",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "r_pnt"
+          }
+        },
+        {
+          "asset rtl": "w_pnt",
+          "entity": "neorv32_fifo",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "r_pnt",
+          "entity": "neorv32_fifo",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "r_pnt_ff",
+          "entity": "neorv32_fifo",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "FIFO fill level count",
+      "security objective": "Integrity",
+      "reasoning": "For `fifo_depth_c > 1`, `level <= std_ulogic_vector(unsigned(w_pnt) - unsigned(r_pnt));` (line 95); for `fifo_depth_c = 1`, `level <= (others => full);` (line 105). `level_o` then zero-extends and reports this value (lines 116-117). Integrity is established because the reported occupancy count and the half-full threshold logic depend on this computed level; availability is also established because `level_o` is always driven by the level-extension process.",
+      "related structural assets": [
+        {
+          "asset rtl": "level",
+          "entity": "neorv32_fifo",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "w_pnt"
+          }
+        },
+        {
+          "asset rtl": "level_o",
+          "entity": "neorv32_fifo",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "level"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "FIFO space, data-available, and half-full status decisions",
+      "security objective": "Integrity",
+      "reasoning": "The module derives `free <= not full;` (line 110), `avail <= not empty;` (line 111), and `half <= level(level'left-1) or full;` or `half <= full` (lines 96, 106). When `FIFO_SAFE` is true, `free` and `avail` directly qualify writes and reads at lines 65 and 64. These statuses are exported either combinationally (lines 217-219) or through resettable synchronous outputs (lines 249-256). Integrity is established because both the external report flow and the optional request-qualification flow depend on these decisions being correct; availability is also established because the outputs are continuously driven or updated on each rising edge in `FIFO_RSYNC` builds.",
+      "related structural assets": [
+        {
+          "asset rtl": "free",
+          "entity": "neorv32_fifo",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "full"
+          }
+        },
+        {
+          "asset rtl": "avail",
+          "entity": "neorv32_fifo",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "empty"
+          }
+        },
+        {
+          "asset rtl": "half",
+          "entity": "neorv32_fifo",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "level"
+          }
+        },
+        {
+          "asset rtl": "free_o",
+          "entity": "neorv32_fifo",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "free"
+          }
+        },
+        {
+          "asset rtl": "avail_o",
+          "entity": "neorv32_fifo",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "avail"
+          }
+        },
+        {
+          "asset rtl": "half_o",
+          "entity": "neorv32_fifo",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "half"
+          }
+        }
+      ]
+    }
+  ]
+}

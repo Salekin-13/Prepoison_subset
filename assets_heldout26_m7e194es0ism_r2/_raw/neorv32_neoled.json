@@ -1,0 +1,203 @@
+{
+  "module name": "neorv32_neoled",
+  "conceptual assets": [
+    {
+      "concept": "Global enable configuration (module enable)",
+      "security objective": "Integrity",
+      "reasoning": "The enable bit is stored in the control register and the block's flows depend on it: bus_access writes it (`ctrl.enable <= bus_req_i.data(ctrl_en_c)`), reset clears it, serial_engine samples it into state (`serial.state(2) <= ctrl.enable`), the FIFO clear input is driven from it (`tx_fifo.clear <= not ctrl.enable`), clkgen_en_o is driven from it (`clkgen_en_o <= ctrl.enable`), and irq generation is gated by it (`irq_o <= ctrl.enable and (...)`). Corruption of this stored bit would violate these implemented gating and clear behaviors.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.enable",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "clkgen_en_o",
+          "entity": "neorv32_neoled",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "tx_fifo.clear",
+          "entity": "neorv32_neoled",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "serial.state",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Transmit FIFO item (enqueued frame: strobe, mode, payload)",
+      "security objective": "Integrity",
+      "reasoning": "The FIFO write word combines configuration and payload (`tx_fifo.wdata <= ctrl.strobe & ctrl.mode & bus_req_i.data`). The FIFO output is read into the transmit register and its top bits drive per-message behavior: `serial.sreg <= tx_fifo.rdata(31 downto 0)`; `if (tx_fifo.rdata(32) = '0') then serial.mode <= '0' ...` and `if (tx_fifo.rdata(33) = '0') then serial.state(1 downto 0) <= \"01\" else \"11\"`. Integrity of the enqueued strobe, mode and payload bits is required for correct transmission sequencing.",
+      "related structural assets": [
+        {
+          "asset rtl": "tx_fifo.wdata",
+          "entity": "neorv32_neoled",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "tx_fifo.rdata",
+          "entity": "neorv32_neoled",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "ctrl.strobe",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.mode",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "FIFO occupancy/status signals (available / half / free)",
+      "security objective": "Integrity",
+      "reasoning": "FIFO status outputs are produced by the instantiated FIFO (port map) and used by multiple flows: bus readback reports them (`bus_rsp_o.data(ctrl_tx_empty_c) <= not tx_fifo.avail`, `...ctrl_tx_half_c <= tx_fifo.half`, `...ctrl_tx_full_c <= not tx_fifo.free`), irq generation selects thresholds using them (`irq_o <= ctrl.enable and (((not ctrl.irq_conf) and (not tx_fifo.avail)) or ((ctrl.irq_conf) and (not tx_fifo.half)))`), and the serial engine tests availability (`if (tx_fifo.avail = '1') then ...`). These status signals must be correct for the module's flows to behave as implemented.",
+      "related structural assets": [
+        {
+          "asset rtl": "tx_fifo.avail",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tx_fifo.half",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tx_fifo.free",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "FIFO write-enable decision (enqueue gating)",
+      "security objective": "Integrity",
+      "reasoning": "The module computes the FIFO write enable that gates enqueueing: `tx_fifo.we <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '1') else '0'`. This computed decision determines whether bus writes become FIFO entries; incorrect setting would violate the implemented enqueue behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "tx_fifo.we",
+          "entity": "neorv32_neoled",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "FIFO read/pop decision (dequeue gating)",
+      "security objective": "Integrity",
+      "reasoning": "The module computes the FIFO read enable used to pop data: `tx_fifo.re <= '1' when (serial.state = \"100\") else '0'`. This decision causes the FIFO to present rdata to the serializer; corrupting it would break the implemented data delivery flow.",
+      "related structural assets": [
+        {
+          "asset rtl": "tx_fifo.re",
+          "entity": "neorv32_neoled",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Serial timing configuration and selected pulse clock",
+      "security objective": "Integrity",
+      "reasoning": "Timing and clock selection for the serial engine are set and used in the RTL: the selected pulse clock is sampled `serial.pulse_clk <= clkgen_i(to_integer(unsigned(ctrl.clk_prsc)))`; per-bit high time is set from control fields (`serial.t_high <= ctrl.t0_high` or `ctrl.t1_high`), and the total period is compared to the counter (`if (serial.pulse_cnt = ctrl.t_total) then ...`). These stored control fields and the selected clkgen_i bit define pulse timing used in serial_engine; their integrity is required for the implemented timing and sequencing.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.clk_prsc",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "clkgen_i",
+          "entity": "neorv32_neoled",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "serial.pulse_clk",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.t_total",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.t0_high",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.t1_high",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Transmitted payload register and output waveform (shift register, next-bit, NEOLed output)",
+      "security objective": "Integrity",
+      "reasoning": "The serializer loads transmit payload and produces the LED waveform: `serial.sreg <= tx_fifo.rdata(31 downto 0)` stores the payload; `serial.next_bit <= serial.sreg(23) when (serial.mode = '0') else serial.sreg(31)` computes the bit used to choose pulse timing; and neoled_o is driven in the serial state machine (multiple `neoled_o <= '0'`/`'1'` assignments in serial_engine). Integrity of the stored payload, the derived next-bit decision, and the output port is required for the implemented transmission behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "serial.sreg",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "serial.next_bit",
+          "entity": "neorv32_neoled",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "neoled_o",
+          "entity": "neorv32_neoled",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Interrupt request output (irq_o) and its configuration",
+      "security objective": "Integrity",
+      "reasoning": "The IRQ output is produced by the irq_generator process: `irq_o <= ctrl.enable and (((not ctrl.irq_conf) and (not tx_fifo.avail)) or ((ctrl.irq_conf) and (not tx_fifo.half)))`. The decision depends on the stored irq configuration and FIFO status. Integrity of irq_o and of ctrl.irq_conf (and the FIFO status it uses) is required so the implemented interrupt-assertion condition holds.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_o",
+          "entity": "neorv32_neoled",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "ctrl.irq_conf",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tx_fifo.avail",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "tx_fifo.half",
+          "entity": "neorv32_neoled",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Transmission busy status reported to bus (serial.busy)",
+      "security objective": "Integrity",
+      "reasoning": "The busy flag is computed from serializer state and returned in bus reads: `serial.busy <= '0' when (serial.state(1 downto 0) = \"00\") else '1'` and `bus_rsp_o.data(ctrl_tx_busy_c) <= serial.busy`. Integrity of this computed busy status is required for readback to reflect the implemented state machine.",
+      "related structural assets": [
+        {
+          "asset rtl": "serial.busy",
+          "entity": "neorv32_neoled",
+          "realization": "computes"
+        }
+      ]
+    }
+  ]
+}

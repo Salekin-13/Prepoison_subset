@@ -1,0 +1,82 @@
+{"module name": "neorv32_cpu_cp_bitmanip",
+ "conceptual assets": [
+  {
+   "concept": "Decoded operation selection and validity (which bitmanip operation the core will execute)",
+   "security objective": "Integrity",
+   "reasoning": "Concurrent assignments set cmd bits from instruction fields and generics (e.g. cmd(op_andn_c) <= '1' when ... ctrl_i.ir_funct* ... ), and valid_cmd is driven from ctrl_i.alu_cp_alu and or_reduce_f(cmd) (`valid_cmd <= '1' when (ctrl_i.alu_cp_alu = '1') and (or_reduce_f(cmd) = '1')`). The controller uses valid_cmd in S_IDLE to start multi-cycle units or to assert valid; res_out entries are gated by cmd bits (`res_out(op_... ) <= res_int(op_...) when ... and (cmd(op_...) = '1') else (others => '0')`). Therefore integrity of the decoded command/ctrl_i fields is required to ensure the selected operation is the one actually executed. Structural realization: ctrl_i is the consumed setting input used to compute decode; cmd and valid_cmd are the module's computed decisions.",
+   "related structural assets": [
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_cp_bitmanip", "realization": "sets"},
+    {"asset rtl": "cmd", "entity": "neorv32_cpu_cp_bitmanip", "realization": "computes"},
+    {"asset rtl": "valid_cmd", "entity": "neorv32_cpu_cp_bitmanip", "realization": "computes"}
+   ]
+  },
+  {
+   "concept": "Captured instruction operands and qualifiers used by bitmanip computations (rs1, rs2, shift amount, comparison/less flag)",
+   "security objective": "Integrity",
+   "reasoning": "On a command (`if (ctrl_i.alu_cp_alu = '1')`) the controller captures inputs into registers (`less_reg <= cmp_i(cmp_less_c); rs1_reg <= rs1_i; rs2_reg <= rs2_i; sha_reg <= shamt_i;`). These registers feed nearly all computations (examples: `res_int(op_andn_c) <= rs1_reg and (not rs2_reg)`, shift initialization uses rs1_reg, shift_adder uses rs2_reg and rs1_reg slices). Corruption of the captured operands or their input ports would change computed results, establishing Integrity. Structural realization: input ports supply the values and the *_reg signals store them.",
+   "related structural assets": [
+    {"asset rtl": "rs1_i", "entity": "neorv32_cpu_cp_bitmanip", "realization": "sets"},
+    {"asset rtl": "rs2_i", "entity": "neorv32_cpu_cp_bitmanip", "realization": "sets"},
+    {"asset rtl": "shamt_i", "entity": "neorv32_cpu_cp_bitmanip", "realization": "sets"},
+    {"asset rtl": "cmp_i", "entity": "neorv32_cpu_cp_bitmanip", "realization": "sets"},
+    {"asset rtl": "rs1_reg", "entity": "neorv32_cpu_cp_bitmanip", "realization": "stores"},
+    {"asset rtl": "rs2_reg", "entity": "neorv32_cpu_cp_bitmanip", "realization": "stores"},
+    {"asset rtl": "sha_reg", "entity": "neorv32_cpu_cp_bitmanip", "realization": "stores"},
+    {"asset rtl": "less_reg", "entity": "neorv32_cpu_cp_bitmanip", "realization": "stores"}
+   ]
+  },
+  {
+   "concept": "Per-operation computed values and the final operation result delivered at the res_o port",
+   "security objective": "Integrity",
+   "reasoning": "Per-op combinational results are produced into the internal result vector (res_int) (e.g. `res_int(op_andn_c) <= rs1_reg and (not rs2_reg)`, `res_int(op_clmul_c) <= clmul.res(...)`). res_out entries are driven from res_int when the corresponding EN_* and cmd bits are true (`res_out(op_...) <= res_int(op_...) when ... and (cmd(op_...) = '1') else (others => '0')`). The output_gate process on rising_edge assigns res_o <= OR of all res_out entries only when valid = '1'. Integrity of the computed per-op values, their gated res_out forms, and the res_o exit is required to ensure the delivered result matches the selected operation's computation. Structural realization: res_int and res_out realize the per-op computations and res_o is the exit port through which the result leaves.",
+   "related structural assets": [
+    {"asset rtl": "res_int", "entity": "neorv32_cpu_cp_bitmanip", "realization": "computes"},
+    {"asset rtl": "res_out", "entity": "neorv32_cpu_cp_bitmanip", "realization": "computes"},
+    {"asset rtl": "res_o", "entity": "neorv32_cpu_cp_bitmanip", "realization": "exit port"}
+   ]
+  },
+  {
+   "concept": "Result-ready signal that gates publishing the computed result (valid)",
+   "security objective": "Integrity",
+   "reasoning": "The controller sets the internal valid register to indicate a ready result (controller: in S_IDLE and on S_BUSY exit conditions it sets `valid <= '1'`); output_gate uses valid to permit writing res_o (`if (valid = '1') then res_o <= ... end if;`) and valid is exported (`valid_o <= valid`). Corruption of valid would cause incorrect publication or suppression of results, so its integrity is required for correct operation reporting. Structural realization: valid is the stored ready indicator and valid_o is the exit port.",
+   "related structural assets": [
+    {"asset rtl": "valid", "entity": "neorv32_cpu_cp_bitmanip", "realization": "stores"},
+    {"asset rtl": "valid_o", "entity": "neorv32_cpu_cp_bitmanip", "realization": "exit port"}
+   ]
+  },
+  {
+   "concept": "Start decisions for multi-cycle units (whether to start the shifter or the clmul unit)",
+   "security objective": "Integrity",
+   "reasoning": "The controller asserts shifter.start or clmul.start when a decoded command requires multi-cycle execution (e.g. in S_IDLE: `shifter.start <= '1'` when valid_cmd and shift-related cmd bits; `clmul.start <= '1'` when cmd(op_clmul_c) = '1'). The serial_shifter_core and clmul_core processes use start to initialize counters and result registers (shifter: `if (shifter.start = '1') then shifter.sreg <= rs1_reg; ...`; clmul: `if (clmul.start = '1') then clmul.res <= replicate_f('0', XLEN) & rs1_reg; ...`). Integrity of the start decisions is required because they control initiation of multi-cycle computation flows that produce outputs. Structural realization: shifter.start and clmul.start are the stored start control fields.",
+   "related structural assets": [
+    {"asset rtl": "shifter.start", "entity": "neorv32_cpu_cp_bitmanip", "realization": "stores"},
+    {"asset rtl": "clmul.start", "entity": "neorv32_cpu_cp_bitmanip", "realization": "stores"}
+   ]
+  },
+  {
+   "concept": "Shifter internal state used to form shift/rotate/popcount/cz results",
+   "security objective": "Integrity",
+   "reasoning": "Shifter state is initialized and updated by the shifter logic (serial_shifter_core sets `shifter.sreg <= rs1_reg` on start and shifts sreg on run; barrel_shifter assigns `shifter.sreg <= bs_level(...)` when EN_FAST_SHIFT). The shifter counters track bit/count progress (shifter.bcnt increments when bits = '1'). These fields feed outputs (`res_int(op_rot_c) <= shifter.sreg;` and `res_int(op_cpop_c)`/`res_int(op_cz_c)` are sourced from shifter counters). Integrity of shifter.sreg and shifter.bcnt is required because they directly determine several operation results.",
+   "related structural assets": [
+    {"asset rtl": "shifter.sreg", "entity": "neorv32_cpu_cp_bitmanip", "realization": "stores"},
+    {"asset rtl": "shifter.bcnt", "entity": "neorv32_cpu_cp_bitmanip", "realization": "stores"}
+   ]
+  },
+  {
+   "concept": "Carry-less multiply internal accumulator/result used by the clmul operation",
+   "security objective": "Integrity",
+   "reasoning": "The clmul_core process initializes and iteratively updates clmul.res on start/run (`clmul.res <= replicate_f('0', XLEN) & rs1_reg` on start; updates while clmul.run = '1' shift/xor with rs2_reg). The clmul result is selected into outputs (`res_int(op_clmul_c) <= clmul.res(2*XLEN-1 downto XLEN)` or `clmul.res(XLEN-1 downto 0)` depending on funct3). Integrity of clmul.res is required because it is the operation's computed result.",
+   "related structural assets": [
+    {"asset rtl": "clmul.res", "entity": "neorv32_cpu_cp_bitmanip", "realization": "stores"}
+   ]
+  },
+  {
+   "concept": "Controller finite state (ctrl_state) that schedules capture, start, run and result publication",
+   "security objective": "Integrity",
+   "reasoning": "The controller process holds ctrl_state and transitions it to schedule operations (reset sets S_IDLE; S_IDLE -> S_START when valid_cmd; S_START -> S_BUSY; S_BUSY returns to S_IDLE when shifter.run and clmul.run are inactive or cpu_trap). ctrl_state thereby controls when operands are captured, multi-cycle units are started, and when valid is asserted. Integrity of ctrl_state is required to ensure the module follows the implemented operation lifecycle and publishes results at the correct times.",
+   "related structural assets": [
+    {"asset rtl": "ctrl_state", "entity": "neorv32_cpu_cp_bitmanip", "realization": "stores"}
+   ]
+  }
+ ]
+}

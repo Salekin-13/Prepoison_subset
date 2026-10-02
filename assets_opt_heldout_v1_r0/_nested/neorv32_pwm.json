@@ -1,0 +1,199 @@
+{
+ "module name": "neorv32_pwm",
+ "module purpose": "neorv32_pwm decodes bus accesses into per-channel write and read strobes, and instantiates NUM_CHANNELS neorv32_pwm_channel units (line 94). Each channel holds an enable, prescaler select, polarity, clock divider and duty threshold written from the bus data (lines 183-188), counts prescaled clock ticks into a divider tick and a duty count (lines 211-227), and drives a registered PWM level (lines 231-234). The top entity outputs the channel levels on pwm_o (lines 116-117), the OR of the channel enables on clkgen_en_o (line 121), and returns the OR-combined channel readback in the bus response (lines 70, 86-88).",
+ "use-case flows": [
+  {
+   "flow": "start",
+   "value": "per-channel write and read eligibility of a bus access (address bits 5 downto 2 equal to the channel index, strobe, read/write)",
+   "lines": [109, 110, 111, 99, 100]
+  },
+  {
+   "flow": "configure",
+   "value": "channel settings (enable, prescaler select, polarity, clock divider, duty threshold) taken from the write data and held per channel",
+   "lines": [101, 183, 184, 185, 186, 187, 188]
+  },
+  {
+   "flow": "operate",
+   "value": "clock-divider count, divider tick, duty count and the generated PWM level of each channel, driven out on pwm_o",
+   "lines": [211, 212, 213, 214, 215, 216, 217, 219, 224, 225, 226, 227, 231, 232, 234, 105, 116, 117]
+  },
+  {
+   "flow": "report",
+   "value": "clock-generator enable request: each channel's enable, OR-reduced across channels and driven out",
+   "lines": [197, 104, 121]
+  },
+  {
+   "flow": "read out",
+   "value": "stored channel settings returned on a qualified read, OR-combined across channels and registered into the bus response",
+   "lines": [194, 102, 86, 88, 69, 70, 71]
+  },
+  {
+   "flow": "reset",
+   "value": "channel settings, counters, PWM level and bus response cleared while rstn_i is '0'",
+   "lines": [66, 67, 176, 177, 178, 179, 180, 181, 203, 204, 205, 206, 207]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Channel configuration write access -- whether a bus write is allowed to update a given channel's settings",
+   "security objective": "Integrity",
+   "reasoning": "`we(i) <= sel(i) and bus_req_i.stb and (bus_req_i.rw);` (line 110), with sel(i) set only when bus_req_i.addr(5 downto 2) equals the channel index (line 109), decides per channel whether a write is eligible; the decision is wired into the channel's we_i (line 99), where `if (we_i = '1') then` (line 183) admits the write data into cfg_en, cfg_prsc, cfg_pol, cfg_cdiv and cfg_duty (lines 184-188). Integrity is Established: a wrong decision updates the wrong channel or none, breaking the configure flow (lines 110, 183-188). Availability is Established under the implemented conditions: with rstn_i high, a strobed write whose address matches updates that channel at the next rising edge of clk_i (line 182). we computes the decision (occurrence 3, GATED_BY sel, line 110); we_i sets it in neorv32_pwm_channel (occurrence 2, GATES cfg_en, line 183), read there to decide the store. sel also qualifies reads (GATES re, line 111), so it is an operand of the decision, not the decision. bus_req_i carries complete transactions (addr, data, ben, stb, rw) and bus_rsp_o returns data, ack and err: both are transport records and are not reported, whole or by field. The read qualification (re, re_i, lines 111, 194) only gates readback on its way and is not reported. Confidentiality is not established: no line restricts the requester.",
+   "related structural assets": [
+    {
+     "asset rtl": "we",
+     "entity": "neorv32_pwm",
+     "realization": "computes",
+     "occurrence": 3,
+     "edge": {"type": "GATED_BY", "partner": "sel"}
+    },
+    {
+     "asset rtl": "we_i",
+     "entity": "neorv32_pwm_channel",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "GATES", "partner": "cfg_en"}
+    }
+   ]
+  },
+  {
+   "concept": "Channel enable -- whether a PWM channel runs, and the request it raises for the shared clock generator",
+   "security objective": "Integrity",
+   "reasoning": "`cfg_en <= wdata_i(31);` under we_i (lines 183-184) holds the enable. When it is '0' the divider and duty counters are cleared and pwm_o is forced to cfg_pol (lines 212-213, 224-225, 231-232). `clkgen_en_o <= cfg_en;` (line 197) exports it from the channel, and `clkgen_en_o <= or_reduce_f(ce);` (line 121) delivers the OR of all channel enables out of neorv32_pwm to a consumer that is not supplied, so integrity of that request (it equals the OR of the held enables) is Established from line 121. Availability is Established: the enable is held between writes (lines 183-184), exported continuously (lines 197, 121) and read back (line 194). cfg_en stores (occurrence 3, CLOCKED_BY clk_i, line 184; its uses include GATES cnt_cdiv at line 212 and CARRIES clkgen_en_o at line 197); wdata_i sets (occurrence 2, SOURCES cfg_en, line 184); the channel clkgen_en_o is exit port (occurrence 2, COPIES cfg_en, line 197); neorv32_pwm clkgen_en_o is exit port (occurrence 2, DERIVES_FROM ce, line 121); rdata_o is exit port of its readback (occurrence 2, DERIVES_FROM cfg_en, line 194). ce only carries each channel's clkgen_en_o to the OR (lines 104, 121) and is not listed. Channels exist for i in 0 to NUM_CHANNELS-1 (line 94). No line restricts reads, so confidentiality is not established.",
+   "related structural assets": [
+    {
+     "asset rtl": "cfg_en",
+     "entity": "neorv32_pwm_channel",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "wdata_i",
+     "entity": "neorv32_pwm_channel",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "SOURCES", "partner": "cfg_en"}
+    },
+    {
+     "asset rtl": "clkgen_en_o",
+     "entity": "neorv32_pwm_channel",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "COPIES", "partner": "cfg_en"}
+    },
+    {
+     "asset rtl": "clkgen_en_o",
+     "entity": "neorv32_pwm",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "DERIVES_FROM", "partner": "ce"}
+    },
+    {
+     "asset rtl": "rdata_o",
+     "entity": "neorv32_pwm_channel",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "DERIVES_FROM", "partner": "cfg_en"}
+    }
+   ]
+  },
+  {
+   "concept": "PWM waveform settings -- prescaler select, clock-divider limit, duty-cycle threshold and output polarity of a channel",
+   "security objective": "Integrity",
+   "reasoning": "The configure flow writes these from wdata_i under we_i: cfg_prsc (line 185), cfg_pol (line 186), cfg_cdiv (line 187) and cfg_duty (line 188). Each is read by the waveform computation: cfg_prsc picks the clkgen_i bit that advances the divider (line 214, SELECTS cnt_cdiv); cfg_cdiv is the divider limit in `if (cnt_cdiv = cfg_cdiv) then` (line 215); cfg_duty is the threshold in `unsigned(cnt_duty) >= unsigned(cfg_duty)` (line 231); cfg_pol gives the output level (lines 232, 234). Integrity is Established: corrupting any of them changes the period, duty or level of pwm_o against the written configuration. Availability is Established: the settings are held between writes (lines 183-188) and read back through rdata_o (line 194). All four store (occurrence 3, CLOCKED_BY clk_i, lines 185-188); wdata_i sets (occurrence 3, SOURCES cfg_prsc, line 185); rdata_o is exit port (occurrence 2, DERIVES_FROM cfg_duty, line 194). The readback then passes through rdata, rdata_sum and the transport field bus_rsp_o.data (lines 102, 86, 88, 70), which only forward it or are transport, so they are not listed. No line restricts reads, so confidentiality is not established.",
+   "related structural assets": [
+    {
+     "asset rtl": "cfg_prsc",
+     "entity": "neorv32_pwm_channel",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "cfg_cdiv",
+     "entity": "neorv32_pwm_channel",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "cfg_duty",
+     "entity": "neorv32_pwm_channel",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "cfg_pol",
+     "entity": "neorv32_pwm_channel",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "wdata_i",
+     "entity": "neorv32_pwm_channel",
+     "realization": "sets",
+     "occurrence": 3,
+     "edge": {"type": "SOURCES", "partner": "cfg_prsc"}
+    },
+    {
+     "asset rtl": "rdata_o",
+     "entity": "neorv32_pwm_channel",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "DERIVES_FROM", "partner": "cfg_duty"}
+    }
+   ]
+  },
+  {
+   "concept": "PWM timing state -- the clock-divider count, its expiry tick and the duty count of a channel",
+   "security objective": "Integrity",
+   "reasoning": "cnt_cdiv counts prescaled ticks and wraps at cfg_cdiv (lines 214-219), setting cnt_tick to '1' for one cycle (lines 211, 217); cnt_tick advances cnt_duty (lines 226-227); cnt_duty compared with cfg_duty decides the output level (line 231). Integrity is Established: a corrupted count or tick shifts the period or duty of the generated waveform. Availability is Established under the implemented conditions: with cfg_en = '1' and the selected clkgen_i bit '1', the divider advances at each rising edge (lines 212-219). cnt_cdiv stores (occurrence 6, CLOCKED_BY clk_i, line 219; uses CONSTRAINS cnt_tick at line 215); cnt_tick stores the expiry event (occurrence 4, CLOCKED_BY clk_i, line 217; uses GATES cnt_duty at line 226); cnt_duty stores (occurrence 4, CLOCKED_BY clk_i, line 227; uses CONSTRAINS pwm_o at line 231). The flow graph lists all three as constant-valued sources; the RTL shows self-increments (lines 219, 227) and a conditional set (line 217), so they are state. clkgen_i only enables the divider update at the clock edge (GATES cnt_cdiv and cnt_tick, line 214) and in neorv32_pwm is wired unchanged to the channel (line 103): a clock-enable input, not reported in either entity.",
+   "related structural assets": [
+    {
+     "asset rtl": "cnt_cdiv",
+     "entity": "neorv32_pwm_channel",
+     "realization": "stores",
+     "occurrence": 6,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "cnt_tick",
+     "entity": "neorv32_pwm_channel",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "cnt_duty",
+     "entity": "neorv32_pwm_channel",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "PWM output level -- the generated waveform driven out of each channel and out of the module",
+   "security objective": "Integrity",
+   "reasoning": "`if (cfg_en = '0') or (unsigned(cnt_duty) >= unsigned(cfg_duty)) then pwm_o <= cfg_pol; else pwm_o <= not cfg_pol;` (lines 231-234) computes and registers each channel's level. neorv32_pwm drives it out through `pwm_o(pwm'range) <= pwm(pwm'range);` (line 117), with the bits above NUM_CHANNELS-1 tied to '0' (line 116). The level leaves to logic that is not supplied, so its integrity (it equals the defined comparison and polarity) is Established from the delivering lines 232, 234 and 117. Availability is Established: the level is registered at each rising edge while rstn_i is high (lines 208, 231-234). The channel pwm_o is exit port (occurrence 3, CONSTRAINED_BY cnt_duty, line 232), taking precedence over its storage role; neorv32_pwm pwm_o is exit port (occurrence 3, DERIVES_FROM pwm, line 117). pwm only carries each channel's pwm_o to the output (lines 105, 117) and is not listed.",
+   "related structural assets": [
+    {
+     "asset rtl": "pwm_o",
+     "entity": "neorv32_pwm_channel",
+     "realization": "exit port",
+     "occurrence": 3,
+     "edge": {"type": "CONSTRAINED_BY", "partner": "cnt_duty"}
+    },
+    {
+     "asset rtl": "pwm_o",
+     "entity": "neorv32_pwm",
+     "realization": "exit port",
+     "occurrence": 3,
+     "edge": {"type": "DERIVES_FROM", "partner": "pwm"}
+    }
+   ]
+  }
+ ]
+}

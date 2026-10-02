@@ -1,0 +1,154 @@
+{
+ "module name": "neorv32_cache",
+ "module purpose": "neorv32_cache is a direct-mapped cache controller: it buffers host access strobes and fences, looks the host address up in the valid, tag and data arrays of its neorv32_cache_memory sub-unit, answers read hits with the cached word, downloads a whole block over the downstream bus on a read miss, passes uncached accesses (address at or above UC_BEGIN, atomic or debug) and writes through to the bus, clears all valid flags on a fence, and invalidates the block and returns an error when the download sees a bus error.",
+ "use-case flows": [
+  {
+   "flow": "start",
+   "value": "buffered host access strobe and fence request that begin a lookup or a cache clear",
+   "lines": [137, 138, 168, 169, 170, 175, 184, 220]
+  },
+  {
+   "flow": "operate",
+   "value": "hit decision: the index and tag of the host address looked up in the valid and tag arrays",
+   "lines": [149, 180, 181, 186, 189, 366, 367, 387, 400, 405]
+  },
+  {
+   "flow": "operate",
+   "value": "uncached (direct) access decision and pass-through of the bus transaction and its response",
+   "lines": [159, 171, 172, 173, 186, 187, 188, 209, 210, 211]
+  },
+  {
+   "flow": "operate",
+   "value": "write handling: a write hit updates the cached word with the host byte enables and data and is written through to the bus; a write miss goes only to the bus",
+   "lines": [151, 190, 194, 195, 196, 199, 202, 203, 413, 414, 416, 417, 419, 420, 422, 423]
+  },
+  {
+   "flow": "operate",
+   "value": "block download on a read miss: block address built from the captured tag, index and word offset, line allocated, each bus word written into the data array, offset counted to the end of the block",
+   "lines": [200, 225, 226, 227, 228, 229, 230, 231, 235, 236, 237, 238, 239, 240, 243, 244, 245, 246, 248, 260, 385, 398]
+  },
+  {
+   "flow": "read out",
+   "value": "cached word returned to the host with an acknowledge on a read hit",
+   "lines": [156, 191, 291, 425, 426, 427, 428]
+  },
+  {
+   "flow": "report",
+   "value": "download bus error accumulated, reported to the host as ack with err, and the block invalidated",
+   "lines": [242, 254, 255, 256, 257, 258, 383]
+  },
+  {
+   "flow": "reset",
+   "value": "controller state and buffers cleared while rstn_i is low; all valid flags cleared by rstn_i and by the fence clear command",
+   "lines": [116, 117, 118, 119, 120, 121, 122, 123, 124, 216, 217, 219, 221, 376, 377, 378, 380, 381]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Cached data -- the words of the cached blocks held in the data array and returned to the host on a read hit",
+   "security objective": "Integrity",
+   "reasoning": "The read-out flow returns the stored word: `rdata_o( 7 downto  0) <= data_mem_b0(to_integer(unsigned(acc_adr)));` (line 425, other bytes lines 426-428) reaches host_rsp_o.data through cache_i.data (lines 291, 156) and is acknowledged on a read hit (line 191). The array is written only by `data_mem_b0(to_integer(unsigned(acc_adr))) <= wdata_i(7 downto 0);` under we_i(0) (lines 413-414, other bytes lines 416-423), fed with host write data on a write hit (lines 151, 194) or with bus_rsp_i.data during a download (lines 236-237). Integrity: the word returned on a hit must equal the word last written for that block (lines 414, 425); a corrupted entry is answered as valid read data without any bus access. Availability is also established: the array holds each word between writes and returns it one clock edge after addressing (lines 412, 425). No line restricts who may read a cached word, so confidentiality is not established. data_mem_b0 to data_mem_b3 store (CLOCKED_BY clk_i, occurrence 2); wdata_i sets (SOURCES data_mem_b0, occurrence 2), read by neorv32_cache_memory to store; rdata_o is the exit port of neorv32_cache_memory (DERIVES_FROM data_mem_b0, occurrence 2), taking precedence over its CLOCKED_BY storage. Not listed: acc_adr only indexes the array (SELECTS); cache_o.data only forwards host_req_i.data or bus_rsp_i.data to wdata_i (COPIES, lines 151, 236); cache_i.data only carries rdata_o to host_rsp_o.data (line 156); host_rsp_o is a transport record.",
+   "related structural assets": [
+    {"asset rtl": "data_mem_b0", "entity": "neorv32_cache_memory", "realization": "stores", "occurrence": 2, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "data_mem_b1", "entity": "neorv32_cache_memory", "realization": "stores", "occurrence": 2, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "data_mem_b2", "entity": "neorv32_cache_memory", "realization": "stores", "occurrence": 2, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "data_mem_b3", "entity": "neorv32_cache_memory", "realization": "stores", "occurrence": 2, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "wdata_i", "entity": "neorv32_cache_memory", "realization": "sets", "occurrence": 2, "edge": {"type": "SOURCES", "partner": "data_mem_b0"}},
+    {"asset rtl": "rdata_o", "entity": "neorv32_cache_memory", "realization": "exit port", "occurrence": 2, "edge": {"type": "DERIVES_FROM", "partner": "data_mem_b0"}}
+   ]
+  },
+  {
+   "concept": "Cache directory -- the per-block valid flag and stored tag that say which address block a cache line holds",
+   "security objective": "Integrity",
+   "reasoning": "The lookup flow reads the flag and tag of the indexed block: `valid_mem_rd <= valid_mem(to_integer(unsigned(acc_idx)));` (line 387) and `tag_mem_rd <= tag_mem(to_integer(unsigned(acc_idx)));` (line 400), both tested by hit_o (line 405). Updates: reset (line 377), `if (clr_i = '1') then valid_mem <= (others => '0');` (lines 380-381), invalidation to '0' under inv_i (lines 382-383), allocation to '1' under new_i (lines 384-385) with `tag_mem(to_integer(unsigned(acc_idx))) <= acc_tag;` (lines 397-398), acc_tag being the tag bits of addr_i (line 366). Integrity: a block may count as present only after allocation for its tag and until invalidation or clear (lines 381-385, 398); a corrupted flag or tag makes the hit decision accept a block for another address or reject a held one. Availability is also established: the fence-clear and error-invalidation flows depend on these flags being cleared (lines 219, 255). In neorv32_cache the update commands originate from controller decisions: cache_o.cmd_clr in S_CLEAR (line 219, SELECTED_BY ctrl.state), cache_o.cmd_new in S_DOWNLOAD_REQ (line 226, SELECTED_BY ctrl.state), cache_o.cmd_inv when ctrl.buf_err = '1' in S_DOWNLOAD_DONE (line 255, GATED_BY ctrl.buf_err); each is computed here from a decision, so the sub-unit wiring exception holds. valid_mem, tag_mem and their registered read copies valid_mem_rd and tag_mem_rd store (CLOCKED_BY clk_i); clr_i, inv_i and new_i set (GATES valid_mem, occurrence 2); addr_i sets (SOURCES acc_tag, occurrence 2), the value stored into tag_mem. Not listed: acc_idx only selects the entry; acc_tag only carries the slice of addr_i (CARRIES tag_mem, line 398).",
+   "related structural assets": [
+    {"asset rtl": "valid_mem", "entity": "neorv32_cache_memory", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "tag_mem", "entity": "neorv32_cache_memory", "realization": "stores", "occurrence": 2, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "valid_mem_rd", "entity": "neorv32_cache_memory", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "tag_mem_rd", "entity": "neorv32_cache_memory", "realization": "stores", "occurrence": 2, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "clr_i", "entity": "neorv32_cache_memory", "realization": "sets", "occurrence": 2, "edge": {"type": "GATES", "partner": "valid_mem"}},
+    {"asset rtl": "inv_i", "entity": "neorv32_cache_memory", "realization": "sets", "occurrence": 2, "edge": {"type": "GATES", "partner": "valid_mem"}},
+    {"asset rtl": "new_i", "entity": "neorv32_cache_memory", "realization": "sets", "occurrence": 2, "edge": {"type": "GATES", "partner": "valid_mem"}},
+    {"asset rtl": "addr_i", "entity": "neorv32_cache_memory", "realization": "sets", "occurrence": 2, "edge": {"type": "SOURCES", "partner": "acc_tag"}},
+    {"asset rtl": "cache_o.cmd_clr", "entity": "neorv32_cache", "realization": "computes", "occurrence": 3, "edge": {"type": "SELECTED_BY", "partner": "ctrl.state"}},
+    {"asset rtl": "cache_o.cmd_new", "entity": "neorv32_cache", "realization": "computes", "occurrence": 3, "edge": {"type": "SELECTED_BY", "partner": "ctrl.state"}},
+    {"asset rtl": "cache_o.cmd_inv", "entity": "neorv32_cache", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "ctrl.buf_err"}}
+   ]
+  },
+  {
+   "concept": "Cache hit decision -- whether the requested address is held in the cache",
+   "security objective": "Integrity",
+   "reasoning": "`hit_o <= '1' when (valid_mem_rd = '1') and (tag_mem_rd = acc_tag) else '0';` (line 405) computes the decision; it enters neorv32_cache as cache_i.sta_hit (line 286) and is tested in S_LOOKUP by `elsif (cache_i.sta_hit = '1') then` (line 189). On a hit a read is acknowledged with the cached word (lines 190-192) and a write updates the cached word (line 194); on a miss a read starts a block download (line 200). Integrity: the decision must follow the predicate of line 405; a wrong hit returns or overwrites cached data for an address that is not held, a wrong miss forces a download. hit_o is the exit port of neorv32_cache_memory (CONSTRAINED_BY tag_mem_rd and GATED_BY valid_mem_rd, occurrence 2). cache_i.sta_hit sets the decision in neorv32_cache through the connection from neorv32_cache_memory_inst.hit_o (occurrence 3), and this block tests it in an if (line 189), so the sub-unit wiring exception holds. valid_mem_rd, tag_mem_rd and acc_tag are operands of the condition, not its result.",
+   "related structural assets": [
+    {"asset rtl": "hit_o", "entity": "neorv32_cache_memory", "realization": "exit port", "occurrence": 2, "edge": {"type": "CONSTRAINED_BY", "partner": "tag_mem_rd"}},
+    {"asset rtl": "cache_i.sta_hit", "entity": "neorv32_cache", "realization": "sets", "occurrence": 3, "edge": {"type": "CONNECTS", "partner": "neorv32_cache_memory_inst.hit_o"}}
+   ]
+  },
+  {
+   "concept": "Cache data write decision -- whether and which byte lanes of the addressed cache word are overwritten",
+   "security objective": "Integrity",
+   "reasoning": "On a write hit `cache_o.we <= host_req_i.ben;` (line 194, gated by cache_i.sta_hit, not ctrl.buf_dir and the write condition of line 190), during a download `cache_o.we <= (others => '1');` (line 237), and zero otherwise (line 150). In neorv32_cache_memory each byte lane is written only when its we_i bit is '1' (lines 413-423). Integrity: the cached word may change only on a write hit or a downloaded word (lines 194, 237); a wrong enable writes data into a block of another address or drops an update, leaving the cached word different from the bus write issued with it (line 195). When READ_ONLY is true, line 190 never takes the write arm, so cache_o.we is driven only at line 237. cache_o.we computes the decision (GATED_BY cache_i.sta_hit, occurrence 3) and originates it here, so the sub-unit wiring exception holds; we_i sets it in neorv32_cache_memory (GATES data_mem_b0, occurrence 2). host_req_i.ben is a field of a transport port and is not reported.",
+   "related structural assets": [
+    {"asset rtl": "cache_o.we", "entity": "neorv32_cache", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "cache_i.sta_hit"}},
+    {"asset rtl": "we_i", "entity": "neorv32_cache_memory", "realization": "sets", "occurrence": 2, "edge": {"type": "GATES", "partner": "data_mem_b0"}}
+   ]
+  },
+  {
+   "concept": "Cache controller state -- the step of the lookup, direct-access, clear and download sequence the controller is in",
+   "security objective": "Integrity",
+   "reasoning": "`case ctrl.state is` (line 164) selects every command and response: the record shows SELECTS from ctrl.state to bus_req_o.stb, cache_o.cmd_new, cache_o.cmd_clr, cache_o.we, host_rsp_o.ack and ctrl_nxt.state. The state is self-updating through ctrl_nxt.state (line 136, transitions at lines 169-265), stored by `ctrl <= ctrl_nxt;` on the rising edge (lines 125-126) and reset to S_IDLE (line 117). Integrity: each command is issued only in its state, for example cmd_clr only in S_CLEAR (line 219) and cmd_new only in S_DOWNLOAD_REQ (line 226); a corrupted state issues them out of sequence. Availability is also established: the machine returns to S_IDLE after each response (lines 192, 211, 221, 258) and the others arm recovers any other value (line 265). ctrl.state stores it: the map writes the clock edge only on the whole record ctrl (CLOCKED_BY clk_i, occurrence 10, line 126) and the field has no occurrence on line 126, so the reset-arm occurrence of the same clocked process (occurrence 2, line 117) is cited with edge null; for the same missed statement the flow graph lists the field as constant-valued. ctrl_nxt.state computes the transition (GATED_BY ctrl.buf_sync, occurrence 3, line 169).",
+   "related structural assets": [
+    {"asset rtl": "ctrl.state", "entity": "neorv32_cache", "realization": "stores", "occurrence": 2, "edge": null},
+    {"asset rtl": "ctrl_nxt.state", "entity": "neorv32_cache", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "ctrl.buf_sync"}}
+   ]
+  },
+  {
+   "concept": "Direct-access decision -- whether a host access bypasses the cache and goes straight to the bus",
+   "security objective": "Integrity",
+   "reasoning": "In S_IDLE `if (unsigned(host_req_i.addr(31 downto 28)) >= unsigned(UC_BEGIN)) or (host_req_i.amo = '1') or (host_req_i.debug = '1') then ctrl_nxt.buf_dir <= '1';` (lines 171-173) decides the bypass; in S_LOOKUP `if (ctrl.buf_dir = '1') then` sends the access to the bus (lines 186-188) and the bus response is returned unchanged (line 209). Integrity: accesses at or above UC_BEGIN, atomic accesses and debug accesses must not be answered from or written into the cache (lines 186-196); a wrong decision answers them from cached data or writes them into the cache. ctrl_nxt.buf_dir computes the decision (GATED_BY host_req_i.addr, occurrence 3), defaulting to '0' every cycle (line 140). ctrl.buf_dir stores it for S_LOOKUP: it is stored by line 126, the map writes CLOCKED_BY only on the whole ctrl, so occurrence 2 (line 121) is cited with edge null. host_req_i.addr, host_req_i.amo and host_req_i.debug are fields of a transport port and are not reported.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.buf_dir", "entity": "neorv32_cache", "realization": "stores", "occurrence": 2, "edge": null},
+    {"asset rtl": "ctrl_nxt.buf_dir", "entity": "neorv32_cache", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "host_req_i.addr"}}
+   ]
+  },
+  {
+   "concept": "Download block address -- the captured tag and index of the missed block and the word offset counted through it",
+   "security objective": "Integrity",
+   "reasoning": "In S_LOOKUP `ctrl_nxt.tag <= host_req_i.addr(31 downto 32-tag_size_c);` and the index (lines 180-181) are captured and the offset is cleared (line 182). During the download both the bus request and the cache write use `ctrl.tag & ctrl.idx & ctrl.ofs` with two zero bits (lines 225, 227, 235, 238), and `ctrl_nxt.ofs <= std_ulogic_vector(unsigned(ctrl.ofs) + 1);` advances on each bus acknowledge (lines 243-244) until `and_reduce_f(ctrl.ofs) = '1'` ends the block (line 245). Integrity: every downloaded word must come from, and be written to, the matching word of the requested block; a corrupted tag, index or offset fills the allocated line with another block's data or ends the download early. Availability is also established: the counter must reach the last word for the download to complete (lines 245-246). ctrl.tag, ctrl.idx and ctrl.ofs store these values (stored by line 126; the map writes CLOCKED_BY only on the whole ctrl, so occurrence 2 at their reset lines 122-124 is cited with edge null). ctrl_nxt.ofs computes the next offset (DERIVES_FROM ctrl.ofs, occurrence 4, line 244). Not listed: ctrl_nxt.tag and ctrl_nxt.idx only carry slices of host_req_i.addr; cache_o.addr only concatenates the stored parts into the sub-unit address input; bus_req_o is a transport port.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.tag", "entity": "neorv32_cache", "realization": "stores", "occurrence": 2, "edge": null},
+    {"asset rtl": "ctrl.idx", "entity": "neorv32_cache", "realization": "stores", "occurrence": 2, "edge": null},
+    {"asset rtl": "ctrl.ofs", "entity": "neorv32_cache", "realization": "stores", "occurrence": 2, "edge": null},
+    {"asset rtl": "ctrl_nxt.ofs", "entity": "neorv32_cache", "realization": "computes", "occurrence": 4, "edge": {"type": "DERIVES_FROM", "partner": "ctrl.ofs"}}
+   ]
+  },
+  {
+   "concept": "Download bus-error status -- whether any bus response of the current block download reported an error",
+   "security objective": "Integrity",
+   "reasoning": "`ctrl_nxt.buf_err <= ctrl.buf_err or bus_rsp_i.err;` (line 242) accumulates the errors of the download and S_LOOKUP clears it (line 183). In S_DOWNLOAD_DONE `if (ctrl.buf_err = '1') then` drives cache_o.cmd_inv, host_rsp_o.ack and host_rsp_o.err to '1' (lines 254-257), invalidating the block and reporting the error; otherwise the lookup is retried (line 260). Integrity: a block fetched with a bus error must not stay valid and must be reported as an error (lines 255-257); a lost flag leaves the block valid, so the retried lookup answers from it. ctrl_nxt.buf_err computes the error decision (GATED_BY bus_rsp_i.err, occurrence 4); ctrl.buf_err stores it (stored by line 126; occurrence 2, line 120, cited with edge null because the map writes CLOCKED_BY only on the whole ctrl); cache_o.cmd_inv computes the invalidation decided from it (GATED_BY ctrl.buf_err, occurrence 3). host_rsp_o.err is a field of a transport port and is not reported.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.buf_err", "entity": "neorv32_cache", "realization": "stores", "occurrence": 2, "edge": null},
+    {"asset rtl": "ctrl_nxt.buf_err", "entity": "neorv32_cache", "realization": "computes", "occurrence": 4, "edge": {"type": "GATED_BY", "partner": "bus_rsp_i.err"}},
+    {"asset rtl": "cache_o.cmd_inv", "entity": "neorv32_cache", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "ctrl.buf_err"}}
+   ]
+  },
+  {
+   "concept": "Pending access request -- a host access strobe held until the controller starts its lookup",
+   "security objective": "Availability",
+   "reasoning": "`ctrl_nxt.buf_req <= ctrl.buf_req or host_req_i.stb;` (line 137) holds a host strobe until S_IDLE takes it with `elsif (host_req_i.stb = '1') or (ctrl.buf_req = '1') then` (lines 170-175), and S_LOOKUP clears it (line 184). Availability: a strobe that arrives while the controller is busy in another state must still start a lookup once the controller is idle (lines 137, 170, 175). Integrity is not claimed separately. ctrl_nxt.buf_req computes the next flag (GATED_BY ctrl.buf_req, occurrence 2); ctrl.buf_req stores it (stored by line 126; occurrence 2, line 118, cited with edge null because the map writes CLOCKED_BY only on the whole ctrl).",
+   "related structural assets": [
+    {"asset rtl": "ctrl.buf_req", "entity": "neorv32_cache", "realization": "stores", "occurrence": 2, "edge": null},
+    {"asset rtl": "ctrl_nxt.buf_req", "entity": "neorv32_cache", "realization": "computes", "occurrence": 2, "edge": {"type": "GATED_BY", "partner": "ctrl.buf_req"}}
+   ]
+  },
+  {
+   "concept": "Pending fence request -- a fence held until the controller clears the cache",
+   "security objective": "Availability",
+   "reasoning": "`ctrl_nxt.buf_sync <= ctrl.buf_sync or host_req_i.fence;` (line 138) holds a fence until S_IDLE takes it with `if (host_req_i.fence = '1') or (ctrl.buf_sync = '1') then ctrl_nxt.state <= S_CLEAR;` (lines 168-169), ahead of any pending access. S_CLEAR clears all valid flags through cache_o.cmd_clr (line 219, consumed at lines 380-381), forwards the fence on the bus when READ_ONLY is false (lines 216-217) and clears the flag (line 220). Availability: a fence that arrives while the controller is busy must still lead to the clear (lines 138, 168, 219). ctrl_nxt.buf_sync computes the next flag (GATED_BY ctrl.buf_sync, occurrence 2); ctrl.buf_sync stores it (stored by line 126; occurrence 2, line 119, cited with edge null because the map writes CLOCKED_BY only on the whole ctrl).",
+   "related structural assets": [
+    {"asset rtl": "ctrl.buf_sync", "entity": "neorv32_cache", "realization": "stores", "occurrence": 2, "edge": null},
+    {"asset rtl": "ctrl_nxt.buf_sync", "entity": "neorv32_cache", "realization": "computes", "occurrence": 2, "edge": {"type": "GATED_BY", "partner": "ctrl.buf_sync"}}
+   ]
+  }
+ ]
+}

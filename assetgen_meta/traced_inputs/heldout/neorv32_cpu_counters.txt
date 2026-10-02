@@ -1,0 +1,556 @@
+TARGET IP MODULE: neorv32_cpu_counters
+
+=== RTL (comments removed, blank lines left out; each line starts with its line number in the source file) ===
+   22 | entity neorv32_cpu_counters is
+   23 |   generic (
+   24 |     ZICNTR_EN : boolean;
+   25 |     ZIHPM_EN  : boolean;
+   26 |     HPM_NUM   : natural range 0 to 13;
+   27 |     HPM_WIDTH : natural range 0 to 64
+   28 |   );
+   29 |   port (
+   31 |     clk_i   : in  std_ulogic;
+   32 |     rstn_i  : in  std_ulogic;
+   33 |     ctrl_i  : in  ctrl_bus_t;
+   35 |     rdata_o : out std_ulogic_vector(XLEN-1 downto 0)
+   36 |   );
+   37 | end neorv32_cpu_counters;
+
+   39 | architecture neorv32_cpu_counters_rtl of neorv32_cpu_counters is
+   42 |   component neorv32_cpu_counters_cnt
+   43 |   generic (
+   44 |     CNT_WIDTH : natural range 0 to 64
+   45 |   );
+   46 |   port (
+   48 |     clk_i   : in  std_ulogic;
+   49 |     rstn_i  : in  std_ulogic;
+   50 |     inc_i   : in  std_ulogic;
+   52 |     sel_i   : in  std_ulogic;
+   53 |     we_i    : in  std_ulogic;
+   54 |     re_i    : in  std_ulogic;
+   55 |     wdata_i : in  std_ulogic_vector(XLEN-1 downto 0);
+   56 |     rdata_o : out std_ulogic_vector(XLEN-1 downto 0)
+   57 |   );
+   58 |   end component;
+   61 |   signal cnt_acc, cfg_acc : std_ulogic;
+   62 |   signal sel, cnt_we, cnt_re, cfg_we, cfg_re : std_ulogic_vector(15 downto 0);
+   65 |   signal cnt_en : std_ulogic_vector(15 downto 0);
+   68 |   type hpmevent_t is array (3 to 15) of std_ulogic_vector(11 downto 0);
+   69 |   type hpmcnt_t   is array (3 to 15) of std_ulogic_vector(XLEN-1 downto 0);
+   70 |   signal hpmevent : hpmevent_t;
+   71 |   signal hpmcnt   : hpmcnt_t;
+   74 |   signal cycle_rd, time_rd, instret_rd, hpm_rd : std_ulogic_vector(XLEN-1 downto 0);
+   76 | begin
+   80 |   acc_gen:
+   81 |   for i in 0 to 15 generate
+   82 |     sel(i)    <= '1' when (ctrl_i.csr_addr(3 downto 0) = std_ulogic_vector(to_unsigned(i, 4))) else '0';
+   83 |     cnt_we(i) <= cnt_acc and sel(i) and ctrl_i.csr_we;
+   84 |     cnt_re(i) <= cnt_acc and sel(i) and ctrl_i.csr_re;
+   85 |     cfg_we(i) <= cfg_acc and sel(i) and ctrl_i.csr_we;
+   86 |     cfg_re(i) <= cfg_acc and sel(i) and ctrl_i.csr_re;
+   87 |   end generate;
+   90 |   cnt_acc <= '1' when ZICNTR_EN and ((ctrl_i.csr_addr(11 downto 5) = csr_cycle_c(11 downto 5)) or
+   91 |                                      (ctrl_i.csr_addr(11 downto 5) = csr_mcycle_c(11 downto 5)) or
+   92 |                                      (ctrl_i.csr_addr(11 downto 5) = csr_cycleh_c(11 downto 5)) or
+   93 |                                      (ctrl_i.csr_addr(11 downto 5) = csr_mcycleh_c(11 downto 5))) else '0';
+   94 |   cfg_acc <= '1' when ZIHPM_EN and (ctrl_i.csr_addr(11 downto 5) = csr_mhpmevent3_c(11 downto 5)) else '0';
+   97 |   rdata_o <= cycle_rd or time_rd or instret_rd or hpm_rd;
+  102 |   cnt_control: process(rstn_i, clk_i)
+  103 |   begin
+  104 |     if (rstn_i = '0') then
+  105 |       cnt_en <= (others => '0');
+  106 |     elsif rising_edge(clk_i) then
+  108 |       cnt_en(0) <= ctrl_i.cnt_event(cnt_event_cy_c) and (not ctrl_i.cpu_debug) and (not ctrl_i.cnt_halt(0));
+  109 |       cnt_en(1) <= '0';
+  110 |       cnt_en(2) <= ctrl_i.cnt_event(cnt_event_ir_c) and (not ctrl_i.cpu_debug) and (not ctrl_i.cnt_halt(2));
+  111 |       for i in 3 to 15 loop
+  112 |         cnt_en(i) <= or_reduce_f(ctrl_i.cnt_event and hpmevent(i)) and (not ctrl_i.cpu_debug) and (not ctrl_i.cnt_halt(i));
+  113 |       end loop;
+  114 |     end if;
+  115 |   end process cnt_control;
+  120 |   base_enabled:
+  121 |   if ZICNTR_EN generate
+  124 |     cycle_inst: neorv32_cpu_counters_cnt
+  125 |     generic map (
+  126 |       CNT_WIDTH => 2*XLEN
+  127 |     )
+  128 |     port map (
+  129 |       clk_i   => clk_i,
+  130 |       rstn_i  => rstn_i,
+  131 |       inc_i   => cnt_en(0),
+  132 |       sel_i   => ctrl_i.csr_addr(7),
+  133 |       we_i    => cnt_we(0),
+  134 |       re_i    => cnt_re(0),
+  135 |       wdata_i => ctrl_i.csr_wdata,
+  136 |       rdata_o => cycle_rd
+  137 |     );
+  140 |     time_rd <= (others => '0');
+  143 |     instret_inst: neorv32_cpu_counters_cnt
+  144 |     generic map (
+  145 |       CNT_WIDTH => 2*XLEN
+  146 |     )
+  147 |     port map (
+  148 |       clk_i   => clk_i,
+  149 |       rstn_i  => rstn_i,
+  150 |       inc_i   => cnt_en(2),
+  151 |       sel_i   => ctrl_i.csr_addr(7),
+  152 |       we_i    => cnt_we(2),
+  153 |       re_i    => cnt_re(2),
+  154 |       wdata_i => ctrl_i.csr_wdata,
+  155 |       rdata_o => instret_rd
+  156 |     );
+  158 |   end generate;
+  161 |   base_disabled:
+  162 |   if not ZICNTR_EN generate
+  163 |     cycle_rd   <= (others => '0');
+  164 |     time_rd    <= (others => '0');
+  165 |     instret_rd <= (others => '0');
+  166 |   end generate;
+  171 |   hpm_enabled:
+  172 |   if ZIHPM_EN and (HPM_NUM > 0) generate
+  174 |     hpm_gen:
+  175 |     for i in 3 to (HPM_NUM+3)-1 generate
+  178 |       hpmcnt_inst: neorv32_cpu_counters_cnt
+  179 |       generic map (
+  180 |         CNT_WIDTH => HPM_WIDTH
+  181 |       )
+  182 |       port map (
+  183 |         clk_i   => clk_i,
+  184 |         rstn_i  => rstn_i,
+  185 |         inc_i   => cnt_en(i),
+  186 |         sel_i   => ctrl_i.csr_addr(7),
+  187 |         we_i    => cnt_we(i),
+  188 |         re_i    => cnt_re(i),
+  189 |         wdata_i => ctrl_i.csr_wdata,
+  190 |         rdata_o => hpmcnt(i)
+  191 |       );
+  194 |       hpmevent_reg: process(rstn_i, clk_i)
+  195 |       begin
+  196 |         if (rstn_i = '0') then
+  197 |           hpmevent(i) <= (others => '0');
+  198 |         elsif rising_edge(clk_i) then
+  199 |           if (cfg_we(i) = '1') then
+  200 |             hpmevent(i) <= ctrl_i.csr_wdata(11 downto 0);
+  201 |           end if;
+  202 |           hpmevent(i)(cnt_event_tm_c) <= '0';
+  203 |         end if;
+  204 |       end process hpmevent_reg;
+  206 |     end generate;
+  209 |     hpm_terminate_gen:
+  210 |     for i in HPM_NUM+3 to 15 generate
+  211 |       hpmcnt(i)   <= (others => '0');
+  212 |       hpmevent(i) <= (others => '0');
+  213 |     end generate;
+  216 |     hpm_read_back: process(hpmcnt, cfg_re, hpmevent)
+  217 |       variable cnt_v, cfg_v : std_ulogic_vector(XLEN-1 downto 0);
+  218 |     begin
+  219 |       cnt_v := (others => '0');
+  220 |       cfg_v := (others => '0');
+  221 |       for i in 3 to 15 loop
+  222 |         cnt_v := cnt_v or hpmcnt(i);
+  223 |         if (cfg_re(i) = '1') then
+  224 |           cfg_v := cfg_v or std_ulogic_vector(resize(unsigned(hpmevent(i)), XLEN));
+  225 |         end if;
+  226 |       end loop;
+  227 |       hpm_rd <= cnt_v or cfg_v;
+  228 |     end process hpm_read_back;
+  230 |   end generate;
+  233 |   hpm_disabled:
+  234 |   if (not ZIHPM_EN) or (HPM_NUM = 0) generate
+  235 |     hpmcnt   <= (others => (others => '0'));
+  236 |     hpmevent <= (others => (others => '0'));
+  237 |     hpm_rd   <= (others => '0');
+  238 |   end generate;
+  240 | end neorv32_cpu_counters_rtl;
+  256 | library ieee;
+  257 | use ieee.std_logic_1164.all;
+  258 | use ieee.numeric_std.all;
+  260 | library neorv32;
+  261 | use neorv32.neorv32_package.all;
+
+  263 | entity neorv32_cpu_counters_cnt is
+  264 |   generic (
+  265 |     CNT_WIDTH : natural range 0 to 64
+  266 |   );
+  267 |   port (
+  269 |     clk_i   : in  std_ulogic;
+  270 |     rstn_i  : in  std_ulogic;
+  271 |     inc_i   : in  std_ulogic;
+  273 |     sel_i   : in  std_ulogic;
+  274 |     we_i    : in  std_ulogic;
+  275 |     re_i    : in  std_ulogic;
+  276 |     wdata_i : in  std_ulogic_vector(XLEN-1 downto 0);
+  277 |     rdata_o : out std_ulogic_vector(XLEN-1 downto 0)
+  278 |   );
+  279 | end neorv32_cpu_counters_cnt;
+
+  281 | architecture neorv32_cpu_counters_cnt_rtl of neorv32_cpu_counters_cnt is
+  284 |   constant lo_width_c : natural := min_natural_f(CNT_WIDTH, 32);
+  285 |   constant hi_width_c : natural := CNT_WIDTH - lo_width_c;
+  288 |   signal lo_q : std_ulogic_vector(lo_width_c-1 downto 0);
+  289 |   signal hi_q : std_ulogic_vector(hi_width_c-1 downto 0);
+  290 |   signal cy_q : std_ulogic_vector(0 downto 0);
+  291 |   signal nxt  : std_ulogic_vector(lo_width_c downto 0);
+  292 |   signal inc  : std_ulogic_vector(0 downto 0);
+  294 | begin
+  297 |   low_reg: process(rstn_i, clk_i)
+  298 |   begin
+  299 |     if (rstn_i = '0') then
+  300 |       lo_q <= (others => '0');
+  301 |     elsif rising_edge(clk_i) then
+  302 |       if (we_i = '1') and (sel_i = '0') then
+  303 |         lo_q <= wdata_i(lo_width_c-1 downto 0);
+  304 |       else
+  305 |         lo_q <= nxt(lo_width_c-1 downto 0);
+  306 |       end if;
+  307 |     end if;
+  308 |   end process low_reg;
+  311 |   inc <= (others => inc_i);
+  312 |   nxt <= std_ulogic_vector(unsigned('0' & lo_q) + unsigned(inc));
+  316 |   high_word_enabled:
+  317 |   if (CNT_WIDTH > 32) generate
+  318 |     high_reg: process(rstn_i, clk_i)
+  319 |     begin
+  320 |       if (rstn_i = '0') then
+  321 |         cy_q <= (others => '0');
+  322 |         hi_q <= (others => '0');
+  323 |       elsif rising_edge(clk_i) then
+  324 |         cy_q <= (others => nxt(lo_width_c));
+  325 |         if (we_i = '1') and (sel_i = '1') then
+  326 |           hi_q <= wdata_i(hi_width_c-1 downto 0);
+  327 |         else
+  328 |           hi_q <= std_ulogic_vector(unsigned(hi_q) + unsigned(cy_q));
+  329 |         end if;
+  330 |       end if;
+  331 |     end process high_reg;
+  332 |   end generate;
+  334 |   high_word_disabled:
+  335 |   if (CNT_WIDTH <= 32) generate
+  336 |     cy_q <= (others => '0');
+  337 |     hi_q <= (others => '0');
+  338 |   end generate;
+  342 |   output_select: process(re_i, sel_i, lo_q, hi_q)
+  343 |   begin
+  344 |     rdata_o <= (others => '0');
+  345 |     if (re_i = '1') and (CNT_WIDTH > 0) then
+  346 |       if (sel_i = '0') or (CNT_WIDTH <= 32) then
+  347 |         rdata_o <= std_ulogic_vector(resize(unsigned(lo_q), XLEN));
+  348 |       else
+  349 |         rdata_o <= std_ulogic_vector(resize(unsigned(hi_q), XLEN));
+  350 |       end if;
+  351 |     end if;
+  352 |   end process output_select;
+  354 | end neorv32_cpu_counters_cnt_rtl;
+
+=== RELATIONSHIP MAP: ELEMENTS AND RECORDS ===
+PORT {"name":"clk_i","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":31},{"id":2,"line":102},{"id":3,"line":106},{"id":4,"line":129},{"id":5,"line":148},{"id":6,"line":183},{"id":7,"line":194},{"id":8,"line":198}]}
+    {"connections":[{"at":4,"instance":"cycle_inst","formal":"clk_i","mode":"in","lines":[129]},{"at":5,"instance":"instret_inst","formal":"clk_i","mode":"in","lines":[148]},{"at":6,"instance":"hpmcnt_inst","formal":"clk_i","mode":"in","lines":[183]}]}
+    {"type":"SEQUENCES","at":[3],"lines":[106],"targets":["cnt_en"]}
+    {"type":"SEQUENCES","at":[8],"lines":[198],"targets":["hpmevent"]}
+PORT {"name":"rstn_i","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":32},{"id":2,"line":102},{"id":3,"line":104},{"id":4,"line":130},{"id":5,"line":149},{"id":6,"line":184},{"id":7,"line":194},{"id":8,"line":196}]}
+    {"connections":[{"at":4,"instance":"cycle_inst","formal":"rstn_i","mode":"in","lines":[130]},{"at":5,"instance":"instret_inst","formal":"rstn_i","mode":"in","lines":[149]},{"at":6,"instance":"hpmcnt_inst","formal":"rstn_i","mode":"in","lines":[184]}]}
+    {"type":"RESETS","at":[3],"lines":[104],"targets":["cnt_en"]}
+    {"type":"RESETS","at":[8],"lines":[196],"targets":["hpmevent"]}
+PORT {"name":"ctrl_i","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33},{"id":2,"line":82},{"id":3,"line":83},{"id":4,"line":84},{"id":5,"line":85},{"id":6,"line":86},{"id":7,"line":90},{"id":8,"line":91},{"id":9,"line":92},{"id":10,"line":93},{"id":11,"line":94},{"id":12,"line":108},{"id":13,"line":108},{"id":14,"line":108},{"id":15,"line":110},{"id":16,"line":110},{"id":17,"line":110},{"id":18,"line":112},{"id":19,"line":112},{"id":20,"line":112},{"id":21,"line":132},{"id":22,"line":135},{"id":23,"line":151},{"id":24,"line":154},{"id":25,"line":186},{"id":26,"line":189},{"id":27,"line":200}]}
+PORT {"name":"ctrl_i.if_fence","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.if_reset","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.if_ack","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.pc_cur","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.pc_nxt","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.pc_ret","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.rf_wb_en","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.rf_rs1","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.rf_rs2","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.rf_rd","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.rf_zero_we","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.alu_op","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.alu_sub","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.alu_opa_mux","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.alu_opb_mux","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.alu_unsigned","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.alu_imm","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.alu_cp_alu","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.alu_cp_cfu","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.alu_cp_fpu","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.lsu_req","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.lsu_rw","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.lsu_amo","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.lsu_mo_we","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.lsu_fence","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.lsu_priv","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.csr_we","entity":"neorv32_cpu_counters","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33},{"id":2,"line":83},{"id":3,"line":85}]}
+    {"type":"GATES","at":[2],"guard":"cnt_acc and sel(i) and ctrl_i.csr_we","lines":[83],"targets":["cnt_we"]}
+    {"type":"GATES","at":[3],"guard":"cfg_acc and sel(i) and ctrl_i.csr_we","lines":[85],"targets":["cfg_we"]}
+PORT {"name":"ctrl_i.csr_re","entity":"neorv32_cpu_counters","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33},{"id":2,"line":84},{"id":3,"line":86}]}
+    {"type":"GATES","at":[2],"guard":"cnt_acc and sel(i) and ctrl_i.csr_re","lines":[84],"targets":["cnt_re"]}
+    {"type":"GATES","at":[3],"guard":"cfg_acc and sel(i) and ctrl_i.csr_re","lines":[86],"targets":["cfg_re"]}
+PORT {"name":"ctrl_i.csr_addr","entity":"neorv32_cpu_counters","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33},{"id":2,"line":82},{"id":3,"line":90},{"id":4,"line":91},{"id":5,"line":92},{"id":6,"line":93},{"id":7,"line":94},{"id":8,"line":132},{"id":9,"line":151},{"id":10,"line":186}]}
+    {"connections":[{"at":8,"instance":"cycle_inst","formal":"sel_i","mode":"in","lines":[132]},{"at":9,"instance":"instret_inst","formal":"sel_i","mode":"in","lines":[151]},{"at":10,"instance":"hpmcnt_inst","formal":"sel_i","mode":"in","lines":[186]}]}
+    {"type":"GATES","at":[2],"guard":"(ctrl_i.csr_addr(3 downto 0) = std_ulogic_vector(to_unsigned(i, 4)))","lines":[82],"targets":["sel"]}
+    {"type":"GATES","at":[3,4,5,6],"guard":"ZICNTR_EN and ((ctrl_i.csr_addr(11 downto 5) = csr_cycle_c(11 downto 5)) or","lines":[90,91,92,93],"targets":["cnt_acc"]}
+    {"type":"GATES","at":[7],"guard":"ZIHPM_EN and (ctrl_i.csr_addr(11 downto 5) = csr_mhpmevent3_c(11 downto 5))","lines":[94],"targets":["cfg_acc"]}
+PORT {"name":"ctrl_i.csr_wdata","entity":"neorv32_cpu_counters","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33},{"id":2,"line":135},{"id":3,"line":154},{"id":4,"line":189},{"id":5,"line":200}]}
+    {"connections":[{"at":2,"instance":"cycle_inst","formal":"wdata_i","mode":"in","lines":[135]},{"at":3,"instance":"instret_inst","formal":"wdata_i","mode":"in","lines":[154]},{"at":4,"instance":"hpmcnt_inst","formal":"wdata_i","mode":"in","lines":[189]}]}
+    {"type":"SOURCES","at":[5],"lines":[200],"targets":["hpmevent"]}
+PORT {"name":"ctrl_i.cnt_halt","entity":"neorv32_cpu_counters","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33},{"id":2,"line":108},{"id":3,"line":110},{"id":4,"line":112}]}
+    {"type":"GATES","at":[2],"guard":"ctrl_i.cnt_event(cnt_event_cy_c) and (not ctrl_i.cpu_debug) and (not ctrl_i.cnt_halt(0))","lines":[108],"targets":["cnt_en"]}
+    {"type":"GATES","at":[3],"guard":"ctrl_i.cnt_event(cnt_event_ir_c) and (not ctrl_i.cpu_debug) and (not ctrl_i.cnt_halt(2))","lines":[110],"targets":["cnt_en"]}
+    {"type":"GATES","at":[4],"guard":"or_reduce_f(ctrl_i.cnt_event and hpmevent(i)) and (not ctrl_i.cpu_debug) and (not ctrl_i.cnt_halt(i))","lines":[112],"targets":["cnt_en"]}
+PORT {"name":"ctrl_i.cnt_event","entity":"neorv32_cpu_counters","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33},{"id":2,"line":108},{"id":3,"line":110},{"id":4,"line":112}]}
+    {"type":"GATES","at":[2],"guard":"ctrl_i.cnt_event(cnt_event_cy_c) and (not ctrl_i.cpu_debug) and (not ctrl_i.cnt_halt(0))","lines":[108],"targets":["cnt_en"]}
+    {"type":"GATES","at":[3],"guard":"ctrl_i.cnt_event(cnt_event_ir_c) and (not ctrl_i.cpu_debug) and (not ctrl_i.cnt_halt(2))","lines":[110],"targets":["cnt_en"]}
+    {"type":"SOURCES","at":[4],"lines":[112],"targets":["cnt_en"]}
+PORT {"name":"ctrl_i.ir_funct3","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.ir_funct12","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.ir_opcode","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.cpu_priv","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.cpu_sleep","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.cpu_trap","entity":"neorv32_cpu_counters","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33}]}
+PORT {"name":"ctrl_i.cpu_debug","entity":"neorv32_cpu_counters","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33},{"id":2,"line":108},{"id":3,"line":110},{"id":4,"line":112}]}
+    {"type":"GATES","at":[2],"guard":"ctrl_i.cnt_event(cnt_event_cy_c) and (not ctrl_i.cpu_debug) and (not ctrl_i.cnt_halt(0))","lines":[108],"targets":["cnt_en"]}
+    {"type":"GATES","at":[3],"guard":"ctrl_i.cnt_event(cnt_event_ir_c) and (not ctrl_i.cpu_debug) and (not ctrl_i.cnt_halt(2))","lines":[110],"targets":["cnt_en"]}
+    {"type":"GATES","at":[4],"guard":"or_reduce_f(ctrl_i.cnt_event and hpmevent(i)) and (not ctrl_i.cpu_debug) and (not ctrl_i.cnt_halt(i))","lines":[112],"targets":["cnt_en"]}
+PORT {"name":"rdata_o","entity":"neorv32_cpu_counters","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":35},{"id":2,"line":97}]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[97],"targets":["cycle_rd","hpm_rd","instret_rd","time_rd"]}
+PORT {"name":"clk_i","entity":"neorv32_cpu_counters_cnt","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":269},{"id":2,"line":297},{"id":3,"line":301},{"id":4,"line":318},{"id":5,"line":323}]}
+    {"type":"SEQUENCES","at":[3],"lines":[301],"targets":["lo_q"]}
+    {"type":"SEQUENCES","at":[5],"lines":[323],"targets":["cy_q","hi_q"]}
+PORT {"name":"rstn_i","entity":"neorv32_cpu_counters_cnt","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":270},{"id":2,"line":297},{"id":3,"line":299},{"id":4,"line":318},{"id":5,"line":320}]}
+    {"type":"RESETS","at":[3],"lines":[299],"targets":["lo_q"]}
+    {"type":"RESETS","at":[5],"lines":[320],"targets":["cy_q","hi_q"]}
+PORT {"name":"inc_i","entity":"neorv32_cpu_counters_cnt","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":271},{"id":2,"line":311}]}
+    {"type":"SOURCES","at":[2],"lines":[311],"targets":["inc"]}
+PORT {"name":"sel_i","entity":"neorv32_cpu_counters_cnt","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":273},{"id":2,"line":302},{"id":3,"line":325},{"id":4,"line":342},{"id":5,"line":346}]}
+    {"type":"GATES","at":[2],"guard":"(we_i = '1') and (sel_i = '0') | not ((we_i = '1') and (sel_i = '0'))","lines":[302],"targets":["lo_q"]}
+    {"type":"GATES","at":[3],"guard":"(we_i = '1') and (sel_i = '1') | not ((we_i = '1') and (sel_i = '1'))","lines":[325],"targets":["hi_q"]}
+    {"type":"GATES","at":[5],"guard":"(sel_i = '0') or (CNT_WIDTH <= 32) | not ((sel_i = '0') or (CNT_WIDTH <= 32))","lines":[346],"targets":["rdata_o"]}
+PORT {"name":"we_i","entity":"neorv32_cpu_counters_cnt","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":274},{"id":2,"line":302},{"id":3,"line":325}]}
+    {"type":"GATES","at":[2],"guard":"(we_i = '1') and (sel_i = '0') | not ((we_i = '1') and (sel_i = '0'))","lines":[302],"targets":["lo_q"]}
+    {"type":"GATES","at":[3],"guard":"(we_i = '1') and (sel_i = '1') | not ((we_i = '1') and (sel_i = '1'))","lines":[325],"targets":["hi_q"]}
+PORT {"name":"re_i","entity":"neorv32_cpu_counters_cnt","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":275},{"id":2,"line":342},{"id":3,"line":345}]}
+    {"type":"GATES","at":[3],"guard":"(re_i = '1') and (CNT_WIDTH > 0)","lines":[345],"targets":["rdata_o"]}
+PORT {"name":"wdata_i","entity":"neorv32_cpu_counters_cnt","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":276},{"id":2,"line":303},{"id":3,"line":326}]}
+    {"type":"SOURCES","at":[2],"lines":[303],"targets":["lo_q"]}
+    {"type":"SOURCES","at":[3],"lines":[326],"targets":["hi_q"]}
+PORT {"name":"rdata_o","entity":"neorv32_cpu_counters_cnt","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":277},{"id":2,"line":344},{"id":3,"line":347},{"id":4,"line":349}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[344]}]}
+    {"type":"GATED_BY","at":[3,4],"guard":"(re_i = '1') and (CNT_WIDTH > 0)","lines":[347,349],"targets":["re_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"(sel_i = '0') or (CNT_WIDTH <= 32)","lines":[347],"targets":["sel_i"]}
+    {"type":"GATED_BY","at":[4],"guard":"not ((sel_i = '0') or (CNT_WIDTH <= 32))","lines":[349],"targets":["sel_i"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[347],"targets":["lo_q"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[349],"targets":["hi_q"]}
+SIGNAL {"name":"cnt_acc","entity":"neorv32_cpu_counters","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":61},{"id":2,"line":83},{"id":3,"line":84},{"id":4,"line":90}]}
+    {"type":"GATES","at":[2],"guard":"cnt_acc and sel(i) and ctrl_i.csr_we","lines":[83],"targets":["cnt_we"]}
+    {"type":"GATES","at":[3],"guard":"cnt_acc and sel(i) and ctrl_i.csr_re","lines":[84],"targets":["cnt_re"]}
+    {"type":"GATED_BY","at":[4],"guard":"ZICNTR_EN and ((ctrl_i.csr_addr(11 downto 5) = csr_cycle_c(11 downto 5)) or","lines":[90],"targets":["ctrl_i.csr_addr"]}
+SIGNAL {"name":"cfg_acc","entity":"neorv32_cpu_counters","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":61},{"id":2,"line":85},{"id":3,"line":86},{"id":4,"line":94}]}
+    {"type":"GATES","at":[2],"guard":"cfg_acc and sel(i) and ctrl_i.csr_we","lines":[85],"targets":["cfg_we"]}
+    {"type":"GATES","at":[3],"guard":"cfg_acc and sel(i) and ctrl_i.csr_re","lines":[86],"targets":["cfg_re"]}
+    {"type":"GATED_BY","at":[4],"guard":"ZIHPM_EN and (ctrl_i.csr_addr(11 downto 5) = csr_mhpmevent3_c(11 downto 5))","lines":[94],"targets":["ctrl_i.csr_addr"]}
+SIGNAL {"name":"sel","entity":"neorv32_cpu_counters","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":62},{"id":2,"line":82},{"id":3,"line":83},{"id":4,"line":84},{"id":5,"line":85},{"id":6,"line":86}]}
+    {"type":"GATES","at":[3],"guard":"cnt_acc and sel(i) and ctrl_i.csr_we","lines":[83],"targets":["cnt_we"]}
+    {"type":"GATES","at":[4],"guard":"cnt_acc and sel(i) and ctrl_i.csr_re","lines":[84],"targets":["cnt_re"]}
+    {"type":"GATES","at":[5],"guard":"cfg_acc and sel(i) and ctrl_i.csr_we","lines":[85],"targets":["cfg_we"]}
+    {"type":"GATES","at":[6],"guard":"cfg_acc and sel(i) and ctrl_i.csr_re","lines":[86],"targets":["cfg_re"]}
+    {"type":"GATED_BY","at":[2],"guard":"(ctrl_i.csr_addr(3 downto 0) = std_ulogic_vector(to_unsigned(i, 4)))","lines":[82],"targets":["ctrl_i.csr_addr"]}
+SIGNAL {"name":"cnt_we","entity":"neorv32_cpu_counters","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":62},{"id":2,"line":83},{"id":3,"line":133},{"id":4,"line":152},{"id":5,"line":187}]}
+    {"connections":[{"at":3,"instance":"cycle_inst","formal":"we_i","mode":"in","lines":[133]},{"at":4,"instance":"instret_inst","formal":"we_i","mode":"in","lines":[152]},{"at":5,"instance":"hpmcnt_inst","formal":"we_i","mode":"in","lines":[187]}]}
+    {"type":"GATED_BY","at":[2],"guard":"cnt_acc and sel(i) and ctrl_i.csr_we","lines":[83],"targets":["cnt_acc","ctrl_i.csr_we","sel"]}
+SIGNAL {"name":"cnt_re","entity":"neorv32_cpu_counters","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":62},{"id":2,"line":84},{"id":3,"line":134},{"id":4,"line":153},{"id":5,"line":188}]}
+    {"connections":[{"at":3,"instance":"cycle_inst","formal":"re_i","mode":"in","lines":[134]},{"at":4,"instance":"instret_inst","formal":"re_i","mode":"in","lines":[153]},{"at":5,"instance":"hpmcnt_inst","formal":"re_i","mode":"in","lines":[188]}]}
+    {"type":"GATED_BY","at":[2],"guard":"cnt_acc and sel(i) and ctrl_i.csr_re","lines":[84],"targets":["cnt_acc","ctrl_i.csr_re","sel"]}
+SIGNAL {"name":"cfg_we","entity":"neorv32_cpu_counters","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":62},{"id":2,"line":85},{"id":3,"line":199}]}
+    {"type":"GATES","at":[3],"guard":"cfg_we(i) = '1'","lines":[199],"targets":["hpmevent"]}
+    {"type":"GATED_BY","at":[2],"guard":"cfg_acc and sel(i) and ctrl_i.csr_we","lines":[85],"targets":["cfg_acc","ctrl_i.csr_we","sel"]}
+SIGNAL {"name":"cfg_re","entity":"neorv32_cpu_counters","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":62},{"id":2,"line":86},{"id":3,"line":216},{"id":4,"line":223}]}
+    {"type":"GATES","at":[4],"lines":[223],"targets":["hpm_rd"]}
+    {"type":"GATED_BY","at":[2],"guard":"cfg_acc and sel(i) and ctrl_i.csr_re","lines":[86],"targets":["cfg_acc","ctrl_i.csr_re","sel"]}
+SIGNAL {"name":"cnt_en","entity":"neorv32_cpu_counters","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":65},{"id":2,"line":105},{"id":3,"line":108},{"id":4,"line":109},{"id":5,"line":110},{"id":6,"line":112},{"id":7,"line":131},{"id":8,"line":150},{"id":9,"line":185}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[105]},{"at":4,"value":"'0'","lines":[109]}]}
+    {"connections":[{"at":7,"instance":"cycle_inst","formal":"inc_i","mode":"in","lines":[131]},{"at":8,"instance":"instret_inst","formal":"inc_i","mode":"in","lines":[150]},{"at":9,"instance":"hpmcnt_inst","formal":"inc_i","mode":"in","lines":[185]}]}
+    {"type":"CLOCKED_BY","at":[3,4,5,6],"lines":[108,109,110,112],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[105],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"ctrl_i.cnt_event(cnt_event_cy_c) and (not ctrl_i.cpu_debug) and (not ctrl_i.cnt_halt(0))","lines":[108],"targets":["ctrl_i.cnt_event","ctrl_i.cnt_halt","ctrl_i.cpu_debug"]}
+    {"type":"GATED_BY","at":[5],"guard":"ctrl_i.cnt_event(cnt_event_ir_c) and (not ctrl_i.cpu_debug) and (not ctrl_i.cnt_halt(2))","lines":[110],"targets":["ctrl_i.cnt_event","ctrl_i.cnt_halt","ctrl_i.cpu_debug"]}
+    {"type":"GATED_BY","at":[6],"guard":"or_reduce_f(ctrl_i.cnt_event and hpmevent(i)) and (not ctrl_i.cpu_debug) and (not ctrl_i.cnt_halt(i))","lines":[112],"targets":["ctrl_i.cnt_halt","ctrl_i.cpu_debug"]}
+    {"type":"DERIVES_FROM","at":[6],"lines":[112],"targets":["ctrl_i.cnt_event","hpmevent"]}
+SIGNAL {"name":"hpmevent","entity":"neorv32_cpu_counters","kind":"register","storage":"mixed"}
+    {"occurrences":[{"id":1,"line":70},{"id":2,"line":112},{"id":3,"line":197},{"id":4,"line":200},{"id":5,"line":202},{"id":6,"line":212},{"id":7,"line":216},{"id":8,"line":224},{"id":9,"line":236}]}
+    {"constant_drivers":[{"at":3,"value":"(others => '0')","lines":[197]},{"at":5,"value":"'0'","lines":[202]},{"at":6,"value":"(others => '0')","lines":[212]},{"at":9,"value":"(others => (others => '0'))","lines":[236]}]}
+    {"configuration":[{"condition":"[generic] (not ZIHPM_EN) or (HPM_NUM = 0)","at":[9],"lines":[236]},{"condition":"[generic] ZIHPM_EN and (HPM_NUM > 0)","at":[3,4,5,6],"lines":[197,200,202,212]}]}
+    {"type":"SOURCES","at":[2],"lines":[112],"targets":["cnt_en"]}
+    {"type":"SOURCES","at":[8],"lines":[224],"targets":["hpm_rd"]}
+    {"type":"CLOCKED_BY","at":[4,5],"lines":[200,202],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[3],"lines":[197],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[4],"guard":"cfg_we(i) = '1'","lines":[200],"targets":["cfg_we"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[200],"targets":["ctrl_i.csr_wdata"]}
+SIGNAL {"name":"hpmcnt","entity":"neorv32_cpu_counters","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":71},{"id":2,"line":190},{"id":3,"line":211},{"id":4,"line":216},{"id":5,"line":222},{"id":6,"line":235}]}
+    {"constant_drivers":[{"at":3,"value":"(others => '0')","lines":[211]},{"at":6,"value":"(others => (others => '0'))","lines":[235]}]}
+    {"configuration":[{"condition":"[generic] (not ZIHPM_EN) or (HPM_NUM = 0)","at":[6],"lines":[235]},{"condition":"[generic] ZIHPM_EN and (HPM_NUM > 0)","at":[3],"lines":[211]}]}
+    {"connections":[{"at":2,"instance":"hpmcnt_inst","formal":"rdata_o","mode":"out","lines":[190]}]}
+    {"type":"SOURCES","at":[5],"lines":[222],"targets":["hpm_rd"]}
+SIGNAL {"name":"cycle_rd","entity":"neorv32_cpu_counters","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":74},{"id":2,"line":97},{"id":3,"line":136},{"id":4,"line":163}]}
+    {"constant_drivers":[{"at":4,"value":"(others => '0')","lines":[163]}]}
+    {"configuration":[{"condition":"[generic] not ZICNTR_EN","at":[4],"lines":[163]}]}
+    {"connections":[{"at":3,"instance":"cycle_inst","formal":"rdata_o","mode":"out","lines":[136]}]}
+    {"type":"SOURCES","at":[2],"lines":[97],"targets":["rdata_o"]}
+SIGNAL {"name":"time_rd","entity":"neorv32_cpu_counters","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":74},{"id":2,"line":97},{"id":3,"line":140},{"id":4,"line":164}]}
+    {"constant_drivers":[{"at":3,"value":"(others => '0')","lines":[140]},{"at":4,"value":"(others => '0')","lines":[164]}]}
+    {"configuration":[{"condition":"[generic] ZICNTR_EN","at":[3],"lines":[140]},{"condition":"[generic] not ZICNTR_EN","at":[4],"lines":[164]}]}
+    {"type":"SOURCES","at":[2],"lines":[97],"targets":["rdata_o"]}
+SIGNAL {"name":"instret_rd","entity":"neorv32_cpu_counters","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":74},{"id":2,"line":97},{"id":3,"line":155},{"id":4,"line":165}]}
+    {"constant_drivers":[{"at":4,"value":"(others => '0')","lines":[165]}]}
+    {"configuration":[{"condition":"[generic] not ZICNTR_EN","at":[4],"lines":[165]}]}
+    {"connections":[{"at":3,"instance":"instret_inst","formal":"rdata_o","mode":"out","lines":[155]}]}
+    {"type":"SOURCES","at":[2],"lines":[97],"targets":["rdata_o"]}
+SIGNAL {"name":"hpm_rd","entity":"neorv32_cpu_counters","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":74},{"id":2,"line":97},{"id":3,"line":227},{"id":4,"line":237}]}
+    {"constant_drivers":[{"at":4,"value":"(others => '0')","lines":[237]}]}
+    {"configuration":[{"condition":"[generic] (not ZIHPM_EN) or (HPM_NUM = 0)","at":[4],"lines":[237]},{"condition":"[generic] ZIHPM_EN and (HPM_NUM > 0)","at":[3],"lines":[227]}]}
+    {"type":"SOURCES","at":[2],"lines":[97],"targets":["rdata_o"]}
+    {"type":"GATED_BY","at":[3],"guard":"cnt_v or cfg_v","lines":[227],"targets":["cfg_re"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[227],"targets":["hpmcnt","hpmevent"]}
+SIGNAL {"name":"lo_q","entity":"neorv32_cpu_counters_cnt","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":288},{"id":2,"line":300},{"id":3,"line":303},{"id":4,"line":305},{"id":5,"line":312},{"id":6,"line":342},{"id":7,"line":347}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[300]}]}
+    {"type":"SOURCES","at":[5],"lines":[312],"targets":["nxt"]}
+    {"type":"SOURCES","at":[7],"lines":[347],"targets":["rdata_o"]}
+    {"type":"CLOCKED_BY","at":[3,4],"lines":[303,305],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[300],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"(we_i = '1') and (sel_i = '0')","lines":[303],"targets":["sel_i","we_i"]}
+    {"type":"GATED_BY","at":[4],"guard":"not ((we_i = '1') and (sel_i = '0'))","lines":[305],"targets":["sel_i","we_i"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[303],"targets":["wdata_i"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[305],"targets":["nxt"]}
+SIGNAL {"name":"hi_q","entity":"neorv32_cpu_counters_cnt","kind":"register","storage":"mixed"}
+    {"occurrences":[{"id":1,"line":289},{"id":2,"line":322},{"id":3,"line":326},{"id":4,"line":328},{"id":5,"line":328},{"id":6,"line":337},{"id":7,"line":342},{"id":8,"line":349}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[322]},{"at":6,"value":"(others => '0')","lines":[337]}]}
+    {"configuration":[{"condition":"[generic] CNT_WIDTH <= 32","at":[6],"lines":[337]},{"condition":"[generic] CNT_WIDTH > 32","at":[2,3,4],"lines":[322,326,328]}]}
+    {"type":"SOURCES","at":[5],"lines":[328],"targets":["hi_q"]}
+    {"type":"SOURCES","at":[8],"lines":[349],"targets":["rdata_o"]}
+    {"type":"CLOCKED_BY","at":[3,4],"lines":[326,328],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[322],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"(we_i = '1') and (sel_i = '1')","lines":[326],"targets":["sel_i","we_i"]}
+    {"type":"GATED_BY","at":[4],"guard":"not ((we_i = '1') and (sel_i = '1'))","lines":[328],"targets":["sel_i","we_i"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[326],"targets":["wdata_i"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[328],"targets":["cy_q","hi_q"]}
+SIGNAL {"name":"cy_q","entity":"neorv32_cpu_counters_cnt","kind":"register","storage":"mixed"}
+    {"occurrences":[{"id":1,"line":290},{"id":2,"line":321},{"id":3,"line":324},{"id":4,"line":328},{"id":5,"line":336}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[321]},{"at":5,"value":"(others => '0')","lines":[336]}]}
+    {"configuration":[{"condition":"[generic] CNT_WIDTH <= 32","at":[5],"lines":[336]},{"condition":"[generic] CNT_WIDTH > 32","at":[2,3],"lines":[321,324]}]}
+    {"type":"SOURCES","at":[4],"lines":[328],"targets":["hi_q"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[324],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[321],"targets":["rstn_i"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[324],"targets":["nxt"]}
+SIGNAL {"name":"nxt","entity":"neorv32_cpu_counters_cnt","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":291},{"id":2,"line":305},{"id":3,"line":312},{"id":4,"line":324}]}
+    {"type":"SOURCES","at":[2],"lines":[305],"targets":["lo_q"]}
+    {"type":"SOURCES","at":[4],"lines":[324],"targets":["cy_q"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[312],"targets":["inc","lo_q"]}
+SIGNAL {"name":"inc","entity":"neorv32_cpu_counters_cnt","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":292},{"id":2,"line":311},{"id":3,"line":312}]}
+    {"type":"SOURCES","at":[3],"lines":[312],"targets":["nxt"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[311],"targets":["inc_i"]}
+
+=== RELATIONSHIP MAP: FLOW GRAPH (computed by a program from the records above) ===
+MAP CHECK {"elements":67,"driving records":52,"receiving records":52,"driving without receiving":4,"receiving without driving":4}
+    {"driving without receiving":["cycle_rd SOURCES rdata_o","hpm_rd SOURCES rdata_o","instret_rd SOURCES rdata_o","time_rd SOURCES rdata_o"]}
+    {"receiving without driving":["cnt_en CLOCKED_BY clk_i","cnt_en RESET_BY rstn_i","hpmevent CLOCKED_BY clk_i","hpmevent RESET_BY rstn_i"]}
+    {"clock or reset (drive SEQUENCES / RESETS)":["clk_i","rstn_i"]}
+    {"whole records (their fields carry the records)":["ctrl_i"]}
+    {"self-updating (X is computed from X: counters, state registers)":["hi_q"]}
+PATH {"from":"ctrl_i.cnt_event","source":"input"}
+    {"stores":["cnt_en"]}
+    {"sub-block":["cycle_inst.inc_i","hpmcnt_inst.inc_i","instret_inst.inc_i"]}
+    {"influence":["ctrl_i.cnt_halt","ctrl_i.cpu_debug"]}
+PATH {"from":"ctrl_i.csr_addr","source":"input"}
+    {"sub-block":["cycle_inst.sel_i","hpmcnt_inst.sel_i","instret_inst.sel_i"]}
+PATH {"from":"ctrl_i.csr_wdata","source":"input"}
+    {"stores":["cnt_en","hpmevent"]}
+    {"exits":["rdata_o"]}
+    {"sub-block":["cycle_inst.inc_i","cycle_inst.wdata_i","hpmcnt_inst.inc_i","hpmcnt_inst.wdata_i","instret_inst.inc_i","instret_inst.wdata_i"]}
+    {"influence":["cfg_re","cfg_we","ctrl_i.cnt_event","ctrl_i.cnt_halt","ctrl_i.cpu_debug","re_i","sel_i"]}
+PATH {"from":"inc_i","source":"input"}
+    {"stores":["cy_q","hi_q","lo_q"]}
+    {"exits":["rdata_o"]}
+    {"influence":["re_i","sel_i","we_i"]}
+PATH {"from":"time_rd","source":"constant-valued"}
+    {"exits":["rdata_o"]}
+    {"influence":["re_i","sel_i"]}
+PATH {"from":"wdata_i","source":"input"}
+    {"stores":["cy_q","hi_q","lo_q"]}
+    {"exits":["rdata_o"]}
+    {"influence":["re_i","sel_i","we_i"]}
+CONTROL-ONLY {"from":"ctrl_i.cnt_halt","source":"input","gates or selects":["cnt_en"]}
+CONTROL-ONLY {"from":"ctrl_i.cpu_debug","source":"input","gates or selects":["cnt_en"]}
+CONTROL-ONLY {"from":"ctrl_i.csr_re","source":"input","gates or selects":["cfg_re","cnt_re"]}
+CONTROL-ONLY {"from":"ctrl_i.csr_we","source":"input","gates or selects":["cfg_we","cnt_we"]}
+CONTROL-ONLY {"from":"re_i","source":"input","gates or selects":["rdata_o"]}
+CONTROL-ONLY {"from":"sel_i","source":"input","gates or selects":["hi_q","lo_q","rdata_o"]}
+CONTROL-ONLY {"from":"we_i","source":"input","gates or selects":["hi_q","lo_q"]}
+    {"no local use (no relationship, connection or constant driver)":["ctrl_i.alu_cp_alu","ctrl_i.alu_cp_cfu","ctrl_i.alu_cp_fpu","ctrl_i.alu_imm","ctrl_i.alu_op","ctrl_i.alu_opa_mux","ctrl_i.alu_opb_mux","ctrl_i.alu_sub","ctrl_i.alu_unsigned","ctrl_i.cpu_priv","ctrl_i.cpu_sleep","ctrl_i.cpu_trap","ctrl_i.if_ack","ctrl_i.if_fence","ctrl_i.if_reset","ctrl_i.ir_funct12","ctrl_i.ir_funct3","ctrl_i.ir_opcode","ctrl_i.lsu_amo","ctrl_i.lsu_fence","ctrl_i.lsu_mo_we","ctrl_i.lsu_priv","ctrl_i.lsu_req","ctrl_i.lsu_rw","ctrl_i.pc_cur","ctrl_i.pc_nxt","ctrl_i.pc_ret","ctrl_i.rf_rd","ctrl_i.rf_rs1","ctrl_i.rf_rs2","ctrl_i.rf_wb_en","ctrl_i.rf_zero_we"]}
+    {"not reached from an input or constant-valued element":["cfg_acc","cfg_re","cfg_we","cnt_acc","cnt_re","cnt_we","cycle_rd","hpmcnt","instret_rd","sel"]}
+
+Identify the primary security assets for 'neorv32_cpu_counters' and return the JSON object per the contract.

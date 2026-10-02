@@ -1,0 +1,847 @@
+TARGET IP MODULE: neorv32_cache
+
+=== RTL (comments removed, blank lines left out; each line starts with its line number in the source file) ===
+   27 | entity neorv32_cache is
+   28 |   generic (
+   29 |     NUM_BLOCKS : natural range 2 to 1024;
+   30 |     BLOCK_SIZE : natural range 4 to 32768;
+   31 |     UC_BEGIN   : std_ulogic_vector(3 downto 0);
+   32 |     READ_ONLY  : boolean
+   33 |   );
+   34 |   port (
+   35 |     clk_i      : in  std_ulogic;
+   36 |     rstn_i     : in  std_ulogic;
+   37 |     host_req_i : in  bus_req_t;
+   38 |     host_rsp_o : out bus_rsp_t;
+   39 |     bus_req_o  : out bus_req_t;
+   40 |     bus_rsp_i  : in  bus_rsp_t
+   41 |   );
+   42 | end neorv32_cache;
+
+   44 | architecture neorv32_cache_rtl of neorv32_cache is
+   47 |   constant block_num_c  : natural := 2**index_size_f(NUM_BLOCKS);
+   48 |   constant block_size_c : natural := 2**index_size_f(BLOCK_SIZE);
+   51 |   constant offset_size_c : natural := index_size_f(block_size_c/4);
+   52 |   constant index_size_c  : natural := index_size_f(block_num_c);
+   53 |   constant tag_size_c    : natural := 32 - (offset_size_c + index_size_c + 2);
+   56 |   component neorv32_cache_memory
+   57 |     generic (
+   58 |       NUM_BLOCKS : natural;
+   59 |       BLOCK_SIZE : natural
+   60 |     );
+   61 |     port (
+   62 |       rstn_i  : in  std_ulogic;
+   63 |       clk_i   : in  std_ulogic;
+   64 |       clr_i   : in  std_ulogic;
+   65 |       inv_i   : in  std_ulogic;
+   66 |       new_i   : in  std_ulogic;
+   67 |       hit_o   : out std_ulogic;
+   68 |       addr_i  : in  std_ulogic_vector(31 downto 0);
+   69 |       we_i    : in  std_ulogic_vector(3 downto 0);
+   70 |       wdata_i : in  std_ulogic_vector(31 downto 0);
+   71 |       rdata_o : out std_ulogic_vector(31 downto 0)
+   72 |     );
+   73 |   end component;
+   76 |   type cache_o_t is record
+   77 |     cmd_clr : std_ulogic;
+   78 |     cmd_inv : std_ulogic;
+   79 |     cmd_new : std_ulogic;
+   80 |     addr    : std_ulogic_vector(31 downto 0);
+   81 |     data    : std_ulogic_vector(31 downto 0);
+   82 |     we      : std_ulogic_vector(3 downto 0);
+   83 |   end record;
+   84 |   signal cache_o : cache_o_t;
+   87 |   type cache_i_t is record
+   88 |     sta_hit : std_ulogic;
+   89 |     data    : std_ulogic_vector(31 downto 0);
+   90 |   end record;
+   91 |   signal cache_i : cache_i_t;
+   94 |   type state_t is (
+   95 |     S_IDLE, S_LOOKUP, S_DIRECT_RSP, S_CLEAR,
+   96 |     S_DOWNLOAD_REQ, S_DOWNLOAD_RSP, S_DOWNLOAD_DONE
+   97 |   );
+   98 |   type ctrl_t is record
+   99 |     state    : state_t;
+  100 |     buf_req  : std_ulogic;
+  101 |     buf_sync : std_ulogic;
+  102 |     buf_err  : std_ulogic;
+  103 |     buf_dir  : std_ulogic;
+  104 |     tag      : std_ulogic_vector(tag_size_c-1 downto 0);
+  105 |     idx      : std_ulogic_vector(index_size_c-1 downto 0);
+  106 |     ofs      : std_ulogic_vector(offset_size_c-1 downto 0);
+  107 |   end record;
+  108 |   signal ctrl, ctrl_nxt : ctrl_t;
+  110 | begin
+  114 |   ctrl_engine_sync: process(rstn_i, clk_i)
+  115 |   begin
+  116 |     if (rstn_i = '0') then
+  117 |       ctrl.state    <= S_IDLE;
+  118 |       ctrl.buf_req  <= '0';
+  119 |       ctrl.buf_sync <= '0';
+  120 |       ctrl.buf_err  <= '0';
+  121 |       ctrl.buf_dir  <= '0';
+  122 |       ctrl.tag      <= (others => '0');
+  123 |       ctrl.idx      <= (others => '0');
+  124 |       ctrl.ofs      <= (others => '0');
+  125 |     elsif rising_edge(clk_i) then
+  126 |       ctrl <= ctrl_nxt;
+  127 |     end if;
+  128 |   end process ctrl_engine_sync;
+  133 |   ctrl_engine_comb: process(ctrl, host_req_i, cache_i, bus_rsp_i)
+  134 |   begin
+  136 |     ctrl_nxt.state    <= ctrl.state;
+  137 |     ctrl_nxt.buf_req  <= ctrl.buf_req or host_req_i.stb;
+  138 |     ctrl_nxt.buf_sync <= ctrl.buf_sync or host_req_i.fence;
+  139 |     ctrl_nxt.buf_err  <= ctrl.buf_err;
+  140 |     ctrl_nxt.buf_dir  <= '0';
+  141 |     ctrl_nxt.tag      <= ctrl.tag;
+  142 |     ctrl_nxt.idx      <= ctrl.idx;
+  143 |     ctrl_nxt.ofs      <= ctrl.ofs;
+  146 |     cache_o.cmd_clr <= '0';
+  147 |     cache_o.cmd_inv <= '0';
+  148 |     cache_o.cmd_new <= '0';
+  149 |     cache_o.addr    <= host_req_i.addr;
+  150 |     cache_o.we      <= (others => '0');
+  151 |     cache_o.data    <= host_req_i.data;
+  154 |     host_rsp_o.ack  <= '0';
+  155 |     host_rsp_o.err  <= '0';
+  156 |     host_rsp_o.data <= cache_i.data;
+  159 |     bus_req_o       <= host_req_i;
+  160 |     bus_req_o.stb   <= '0';
+  161 |     bus_req_o.fence <= '0';
+  164 |     case ctrl.state is
+  166 |       when S_IDLE =>
+  168 |         if (host_req_i.fence = '1') or (ctrl.buf_sync = '1') then
+  169 |           ctrl_nxt.state <= S_CLEAR;
+  170 |         elsif (host_req_i.stb = '1') or (ctrl.buf_req = '1') then
+  171 |           if (unsigned(host_req_i.addr(31 downto 28)) >= unsigned(UC_BEGIN)) or
+  172 |              (host_req_i.amo = '1') or (host_req_i.debug = '1') then
+  173 |             ctrl_nxt.buf_dir <= '1';
+  174 |           end if;
+  175 |           ctrl_nxt.state <= S_LOOKUP;
+  176 |         end if;
+  178 |       when S_LOOKUP =>
+  180 |         ctrl_nxt.tag     <= host_req_i.addr(31 downto 32-tag_size_c);
+  181 |         ctrl_nxt.idx     <= host_req_i.addr((offset_size_c+2+index_size_c)-1 downto offset_size_c+2);
+  182 |         ctrl_nxt.ofs     <= (others => '0');
+  183 |         ctrl_nxt.buf_err <= '0';
+  184 |         ctrl_nxt.buf_req <= '0';
+  186 |         if (ctrl.buf_dir = '1') then
+  187 |           bus_req_o.stb  <= '1';
+  188 |           ctrl_nxt.state <= S_DIRECT_RSP;
+  189 |         elsif (cache_i.sta_hit = '1') then
+  190 |           if (host_req_i.rw = '0') or (READ_ONLY = true) then
+  191 |             host_rsp_o.ack <= '1';
+  192 |             ctrl_nxt.state <= S_IDLE;
+  193 |           else
+  194 |             cache_o.we     <= host_req_i.ben;
+  195 |             bus_req_o.stb  <= '1';
+  196 |             ctrl_nxt.state <= S_DIRECT_RSP;
+  197 |           end if;
+  198 |         else
+  199 |           if (host_req_i.rw = '0') or (READ_ONLY = true) then
+  200 |             ctrl_nxt.state <= S_DOWNLOAD_REQ;
+  201 |           else
+  202 |             bus_req_o.stb  <= '1';
+  203 |             ctrl_nxt.state <= S_DIRECT_RSP;
+  204 |           end if;
+  205 |         end if;
+  207 |       when S_DIRECT_RSP =>
+  209 |         host_rsp_o <= bus_rsp_i;
+  210 |         if (bus_rsp_i.ack = '1') then
+  211 |           ctrl_nxt.state <= S_IDLE;
+  212 |         end if;
+  214 |       when S_CLEAR =>
+  216 |         if (READ_ONLY = false) then
+  217 |           bus_req_o.fence <= '1';
+  218 |         end if;
+  219 |         cache_o.cmd_clr   <= '1';
+  220 |         ctrl_nxt.buf_sync <= '0';
+  221 |         ctrl_nxt.state    <= S_IDLE;
+  223 |       when S_DOWNLOAD_REQ =>
+  225 |         cache_o.addr    <= ctrl.tag & ctrl.idx & ctrl.ofs & "00";
+  226 |         cache_o.cmd_new <= '1';
+  227 |         bus_req_o.addr  <= ctrl.tag & ctrl.idx & ctrl.ofs & "00";
+  228 |         bus_req_o.rw    <= '0';
+  229 |         bus_req_o.stb   <= '1';
+  230 |         bus_req_o.lock  <= '1';
+  231 |         ctrl_nxt.state  <= S_DOWNLOAD_RSP;
+  233 |       when S_DOWNLOAD_RSP =>
+  235 |         cache_o.addr   <= ctrl.tag & ctrl.idx & ctrl.ofs & "00";
+  236 |         cache_o.data   <= bus_rsp_i.data;
+  237 |         cache_o.we     <= (others => '1');
+  238 |         bus_req_o.addr <= ctrl.tag & ctrl.idx & ctrl.ofs & "00";
+  239 |         bus_req_o.rw   <= '0';
+  240 |         bus_req_o.lock <= '1';
+  242 |         ctrl_nxt.buf_err <= ctrl.buf_err or bus_rsp_i.err;
+  243 |         if (bus_rsp_i.ack = '1') then
+  244 |           ctrl_nxt.ofs <= std_ulogic_vector(unsigned(ctrl.ofs) + 1);
+  245 |           if (and_reduce_f(ctrl.ofs) = '1') then
+  246 |             ctrl_nxt.state <= S_DOWNLOAD_DONE;
+  247 |           else
+  248 |             ctrl_nxt.state <= S_DOWNLOAD_REQ;
+  249 |           end if;
+  250 |         end if;
+  252 |       when S_DOWNLOAD_DONE =>
+  254 |         if (ctrl.buf_err = '1') then
+  255 |           cache_o.cmd_inv <= '1';
+  256 |           host_rsp_o.ack  <= '1';
+  257 |           host_rsp_o.err  <= '1';
+  258 |           ctrl_nxt.state  <= S_IDLE;
+  259 |         else
+  260 |           ctrl_nxt.state <= S_LOOKUP;
+  261 |         end if;
+  263 |       when others =>
+  265 |         ctrl_nxt.state <= S_IDLE;
+  267 |     end case;
+  268 |   end process ctrl_engine_comb;
+  273 |   neorv32_cache_memory_inst: neorv32_cache_memory
+  274 |   generic map (
+  275 |     NUM_BLOCKS => block_num_c,
+  276 |     BLOCK_SIZE => block_size_c
+  277 |   )
+  278 |   port map (
+  280 |     rstn_i  => rstn_i,
+  281 |     clk_i   => clk_i,
+  283 |     clr_i   => cache_o.cmd_clr,
+  284 |     inv_i   => cache_o.cmd_inv,
+  285 |     new_i   => cache_o.cmd_new,
+  286 |     hit_o   => cache_i.sta_hit,
+  288 |     addr_i  => cache_o.addr,
+  289 |     we_i    => cache_o.we,
+  290 |     wdata_i => cache_o.data,
+  291 |     rdata_o => cache_i.data
+  292 |   );
+  294 | end neorv32_cache_rtl;
+  307 | library ieee;
+  308 | use ieee.std_logic_1164.all;
+  309 | use ieee.numeric_std.all;
+  311 | library neorv32;
+  312 | use neorv32.neorv32_package.all;
+
+  314 | entity neorv32_cache_memory is
+  315 |   generic (
+  316 |     NUM_BLOCKS : natural;
+  317 |     BLOCK_SIZE : natural
+  318 |   );
+  319 |   port (
+  321 |     rstn_i  : in  std_ulogic;
+  322 |     clk_i   : in  std_ulogic;
+  324 |     clr_i   : in  std_ulogic;
+  325 |     inv_i   : in  std_ulogic;
+  326 |     new_i   : in  std_ulogic;
+  327 |     hit_o   : out std_ulogic;
+  329 |     addr_i  : in  std_ulogic_vector(31 downto 0);
+  330 |     we_i    : in  std_ulogic_vector(3 downto 0);
+  331 |     wdata_i : in  std_ulogic_vector(31 downto 0);
+  332 |     rdata_o : out std_ulogic_vector(31 downto 0)
+  333 |   );
+  334 | end neorv32_cache_memory;
+
+  336 | architecture neorv32_cache_memory_rtl of neorv32_cache_memory is
+  339 |   constant offset_size_c : natural := index_size_f(BLOCK_SIZE/4);
+  340 |   constant index_size_c  : natural := index_size_f(NUM_BLOCKS);
+  341 |   constant tag_size_c    : natural := 32 - (offset_size_c + index_size_c + 2);
+  344 |   signal valid_mem : std_ulogic_vector(NUM_BLOCKS-1 downto 0);
+  345 |   signal valid_mem_rd : std_ulogic;
+  348 |   type tag_mem_t is array (0 to NUM_BLOCKS-1) of std_ulogic_vector(tag_size_c-1 downto 0);
+  349 |   signal tag_mem : tag_mem_t;
+  350 |   signal tag_mem_rd : std_ulogic_vector(tag_size_c-1 downto 0);
+  353 |   type data_mem_t is array (0 to (NUM_BLOCKS * (BLOCK_SIZE/4))-1) of std_ulogic_vector(7 downto 0);
+  354 |   signal data_mem_b0, data_mem_b1, data_mem_b2, data_mem_b3 : data_mem_t;
+  357 |   signal acc_tag : std_ulogic_vector(tag_size_c-1 downto 0);
+  358 |   signal acc_idx : std_ulogic_vector(index_size_c-1 downto 0);
+  359 |   signal acc_off : std_ulogic_vector(offset_size_c-1 downto 0);
+  360 |   signal acc_adr : std_ulogic_vector((index_size_c+offset_size_c)-1 downto 0);
+  362 | begin
+  366 |   acc_tag <= addr_i(31 downto 31-(tag_size_c-1));
+  367 |   acc_idx <= addr_i(31-tag_size_c downto 2+offset_size_c);
+  368 |   acc_off <= addr_i(2+(offset_size_c-1) downto 2);
+  369 |   acc_adr <= acc_idx & acc_off;
+  374 |   status_memory: process(rstn_i, clk_i)
+  375 |   begin
+  376 |     if (rstn_i = '0') then
+  377 |       valid_mem    <= (others => '0');
+  378 |       valid_mem_rd <= '0';
+  379 |     elsif rising_edge(clk_i) then
+  380 |       if (clr_i = '1') then
+  381 |         valid_mem <= (others => '0');
+  382 |       elsif (inv_i = '1') then
+  383 |         valid_mem(to_integer(unsigned(acc_idx))) <= '0';
+  384 |       elsif (new_i = '1') then
+  385 |         valid_mem(to_integer(unsigned(acc_idx))) <= '1';
+  386 |       end if;
+  387 |       valid_mem_rd <= valid_mem(to_integer(unsigned(acc_idx)));
+  388 |     end if;
+  389 |   end process status_memory;
+  394 |   tag_memory: process(clk_i)
+  395 |   begin
+  396 |     if rising_edge(clk_i) then
+  397 |       if (new_i = '1') then
+  398 |         tag_mem(to_integer(unsigned(acc_idx))) <= acc_tag;
+  399 |       end if;
+  400 |       tag_mem_rd <= tag_mem(to_integer(unsigned(acc_idx)));
+  401 |     end if;
+  402 |   end process tag_memory;
+  405 |   hit_o <= '1' when (valid_mem_rd = '1') and (tag_mem_rd = acc_tag) else '0';
+  410 |   data_memory: process(clk_i)
+  411 |   begin
+  412 |     if rising_edge(clk_i) then
+  413 |       if (we_i(0) = '1') then
+  414 |         data_mem_b0(to_integer(unsigned(acc_adr))) <= wdata_i(7 downto 0);
+  415 |       end if;
+  416 |       if (we_i(1) = '1') then
+  417 |         data_mem_b1(to_integer(unsigned(acc_adr))) <= wdata_i(15 downto 8);
+  418 |       end if;
+  419 |       if (we_i(2) = '1') then
+  420 |         data_mem_b2(to_integer(unsigned(acc_adr))) <= wdata_i(23 downto 16);
+  421 |       end if;
+  422 |       if (we_i(3) = '1') then
+  423 |         data_mem_b3(to_integer(unsigned(acc_adr))) <= wdata_i(31 downto 24);
+  424 |       end if;
+  425 |       rdata_o( 7 downto  0) <= data_mem_b0(to_integer(unsigned(acc_adr)));
+  426 |       rdata_o(15 downto  8) <= data_mem_b1(to_integer(unsigned(acc_adr)));
+  427 |       rdata_o(23 downto 16) <= data_mem_b2(to_integer(unsigned(acc_adr)));
+  428 |       rdata_o(31 downto 24) <= data_mem_b3(to_integer(unsigned(acc_adr)));
+  429 |     end if;
+  430 |   end process data_memory;
+  433 | end neorv32_cache_memory_rtl;
+
+=== RELATIONSHIP MAP: ELEMENTS AND RECORDS ===
+PORT {"name":"clk_i","entity":"neorv32_cache","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":35},{"id":2,"line":114},{"id":3,"line":125},{"id":4,"line":281}]}
+    {"connections":[{"at":4,"instance":"neorv32_cache_memory_inst","formal":"clk_i","mode":"in","lines":[281]}]}
+    {"type":"SEQUENCES","at":[3],"lines":[125],"targets":["ctrl"]}
+PORT {"name":"rstn_i","entity":"neorv32_cache","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":36},{"id":2,"line":114},{"id":3,"line":116},{"id":4,"line":280}]}
+    {"connections":[{"at":4,"instance":"neorv32_cache_memory_inst","formal":"rstn_i","mode":"in","lines":[280]}]}
+    {"type":"RESETS","at":[3],"lines":[116],"targets":["ctrl.buf_dir","ctrl.buf_err","ctrl.buf_req","ctrl.buf_sync","ctrl.idx","ctrl.ofs","ctrl.state","ctrl.tag"]}
+PORT {"name":"host_req_i","entity":"neorv32_cache","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":37},{"id":2,"line":133},{"id":3,"line":137},{"id":4,"line":138},{"id":5,"line":149},{"id":6,"line":151},{"id":7,"line":159},{"id":8,"line":168},{"id":9,"line":170},{"id":10,"line":171},{"id":11,"line":172},{"id":12,"line":172},{"id":13,"line":180},{"id":14,"line":181},{"id":15,"line":190},{"id":16,"line":194},{"id":17,"line":199}]}
+    {"type":"CARRIES","at":[7],"lines":[159],"targets":["bus_req_o"]}
+PORT {"name":"host_req_i.addr","entity":"neorv32_cache","handling":["CONSUMES","FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":37},{"id":2,"line":149},{"id":3,"line":171},{"id":4,"line":180},{"id":5,"line":181}]}
+    {"type":"GATES","at":[3],"guard":"(unsigned(host_req_i.addr(31 downto 28)) >= unsigned(UC_BEGIN)) or (host_req_i.amo = '1') or (host_req_i.debug = '1')","lines":[171],"targets":["ctrl_nxt.buf_dir"]}
+    {"type":"CARRIES","at":[2],"lines":[149],"targets":["cache_o.addr"]}
+    {"type":"SOURCES","at":[4],"lines":[180],"targets":["ctrl_nxt.tag"]}
+    {"type":"SOURCES","at":[5],"lines":[181],"targets":["ctrl_nxt.idx"]}
+PORT {"name":"host_req_i.data","entity":"neorv32_cache","handling":["FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":37},{"id":2,"line":151}]}
+    {"type":"CARRIES","at":[2],"lines":[151],"targets":["cache_o.data"]}
+PORT {"name":"host_req_i.ben","entity":"neorv32_cache","handling":["FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":37},{"id":2,"line":194}]}
+    {"type":"CARRIES","at":[2],"lines":[194],"targets":["cache_o.we"]}
+PORT {"name":"host_req_i.stb","entity":"neorv32_cache","handling":["CONSUMES","FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":37},{"id":2,"line":137},{"id":3,"line":170}]}
+    {"type":"GATES","at":[2],"guard":"ctrl.buf_req or host_req_i.stb","lines":[137],"targets":["ctrl_nxt.buf_req"]}
+    {"type":"GATES","at":[3],"guard":"(host_req_i.stb = '1') or (ctrl.buf_req = '1')","lines":[170],"targets":["ctrl_nxt.buf_dir","ctrl_nxt.state"]}
+PORT {"name":"host_req_i.rw","entity":"neorv32_cache","handling":["CONSUMES","FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":37},{"id":2,"line":190},{"id":3,"line":199}]}
+    {"type":"GATES","at":[2],"guard":"not ((host_req_i.rw = '0') or (READ_ONLY = true))","lines":[190],"targets":["bus_req_o.stb","cache_o.we"]}
+    {"type":"GATES","at":[3],"guard":"not ((host_req_i.rw = '0') or (READ_ONLY = true))","lines":[199],"targets":["bus_req_o.stb"]}
+    {"type":"GATES","at":[2,3],"guard":"(host_req_i.rw = '0') or (READ_ONLY = true) | not ((host_req_i.rw = '0') or (READ_ONLY = true))","lines":[190,199],"targets":["ctrl_nxt.state"]}
+    {"type":"GATES","at":[2],"guard":"(host_req_i.rw = '0') or (READ_ONLY = true)","lines":[190],"targets":["host_rsp_o.ack"]}
+PORT {"name":"host_req_i.src","entity":"neorv32_cache","handling":["FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":37}]}
+PORT {"name":"host_req_i.priv","entity":"neorv32_cache","handling":["FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":37}]}
+PORT {"name":"host_req_i.debug","entity":"neorv32_cache","handling":["CONSUMES","FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":37},{"id":2,"line":172}]}
+    {"type":"GATES","at":[2],"guard":"(unsigned(host_req_i.addr(31 downto 28)) >= unsigned(UC_BEGIN)) or (host_req_i.amo = '1') or (host_req_i.debug = '1')","lines":[172],"targets":["ctrl_nxt.buf_dir"]}
+PORT {"name":"host_req_i.amo","entity":"neorv32_cache","handling":["CONSUMES","FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":37},{"id":2,"line":172}]}
+    {"type":"GATES","at":[2],"guard":"(unsigned(host_req_i.addr(31 downto 28)) >= unsigned(UC_BEGIN)) or (host_req_i.amo = '1') or (host_req_i.debug = '1')","lines":[172],"targets":["ctrl_nxt.buf_dir"]}
+PORT {"name":"host_req_i.amoop","entity":"neorv32_cache","handling":["FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":37}]}
+PORT {"name":"host_req_i.lock","entity":"neorv32_cache","handling":["FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":37}]}
+PORT {"name":"host_req_i.fence","entity":"neorv32_cache","handling":["CONSUMES","FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":37},{"id":2,"line":138},{"id":3,"line":168}]}
+    {"type":"GATES","at":[2],"guard":"ctrl.buf_sync or host_req_i.fence","lines":[138],"targets":["ctrl_nxt.buf_sync"]}
+    {"type":"GATES","at":[3],"guard":"not ((host_req_i.fence = '1') or (ctrl.buf_sync = '1'))","lines":[168],"targets":["ctrl_nxt.buf_dir"]}
+    {"type":"GATES","at":[3],"guard":"(host_req_i.fence = '1') or (ctrl.buf_sync = '1') | not ((host_req_i.fence = '1') or (ctrl.buf_sync = '1'))","lines":[168],"targets":["ctrl_nxt.state"]}
+PORT {"name":"host_rsp_o","entity":"neorv32_cache","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":38},{"id":2,"line":154},{"id":3,"line":155},{"id":4,"line":156},{"id":5,"line":191},{"id":6,"line":209},{"id":7,"line":256},{"id":8,"line":257}]}
+    {"type":"SELECTED_BY","at":[6],"guard":"ctrl.state = S_DIRECT_RSP","lines":[209],"targets":["ctrl.state"]}
+    {"type":"COPIES","at":[6],"lines":[209],"targets":["bus_rsp_i"]}
+PORT {"name":"host_rsp_o.ack","entity":"neorv32_cache","handling":["ORIGINATES"],"boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":38},{"id":2,"line":154},{"id":3,"line":191},{"id":4,"line":256}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[154]},{"at":3,"value":"'1'","lines":[191]},{"at":4,"value":"'1'","lines":[256]}]}
+    {"type":"SELECTED_BY","at":[3],"guard":"ctrl.state = S_LOOKUP","lines":[191],"targets":["ctrl.state"]}
+    {"type":"SELECTED_BY","at":[4],"guard":"ctrl.state = S_DOWNLOAD_DONE","lines":[256],"targets":["ctrl.state"]}
+    {"type":"GATED_BY","at":[3],"guard":"cache_i.sta_hit = '1'","lines":[191],"targets":["cache_i.sta_hit"]}
+    {"type":"GATED_BY","at":[3],"guard":"not (ctrl.buf_dir = '1')","lines":[191],"targets":["ctrl.buf_dir"]}
+    {"type":"GATED_BY","at":[3],"guard":"(host_req_i.rw = '0') or (READ_ONLY = true)","lines":[191],"targets":["host_req_i.rw"]}
+    {"type":"GATED_BY","at":[4],"guard":"ctrl.buf_err = '1'","lines":[256],"targets":["ctrl.buf_err"]}
+PORT {"name":"host_rsp_o.err","entity":"neorv32_cache","handling":["ORIGINATES"],"boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":38},{"id":2,"line":155},{"id":3,"line":257}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[155]},{"at":3,"value":"'1'","lines":[257]}]}
+    {"type":"SELECTED_BY","at":[3],"guard":"ctrl.state = S_DOWNLOAD_DONE","lines":[257],"targets":["ctrl.state"]}
+    {"type":"GATED_BY","at":[3],"guard":"ctrl.buf_err = '1'","lines":[257],"targets":["ctrl.buf_err"]}
+PORT {"name":"host_rsp_o.data","entity":"neorv32_cache","handling":["FORWARDS"],"boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":38},{"id":2,"line":156}]}
+    {"type":"COPIES","at":[2],"lines":[156],"targets":["cache_i.data"]}
+PORT {"name":"bus_req_o","entity":"neorv32_cache","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":39},{"id":2,"line":159},{"id":3,"line":160},{"id":4,"line":161},{"id":5,"line":187},{"id":6,"line":195},{"id":7,"line":202},{"id":8,"line":217},{"id":9,"line":227},{"id":10,"line":228},{"id":11,"line":229},{"id":12,"line":230},{"id":13,"line":238},{"id":14,"line":239},{"id":15,"line":240}]}
+    {"type":"COPIES","at":[2],"lines":[159],"targets":["host_req_i"]}
+PORT {"name":"bus_req_o.addr","entity":"neorv32_cache","handling":["ORIGINATES"],"boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":39},{"id":2,"line":227},{"id":3,"line":238}]}
+    {"type":"SELECTED_BY","at":[2],"guard":"ctrl.state = S_DOWNLOAD_REQ","lines":[227],"targets":["ctrl.state"]}
+    {"type":"SELECTED_BY","at":[3],"guard":"ctrl.state = S_DOWNLOAD_RSP","lines":[238],"targets":["ctrl.state"]}
+    {"type":"DERIVES_FROM","at":[2,3],"lines":[227,238],"targets":["ctrl.idx","ctrl.ofs","ctrl.tag"]}
+PORT {"name":"bus_req_o.data","entity":"neorv32_cache","boundary":{"mode":"out","drive":"undriven"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":39}]}
+PORT {"name":"bus_req_o.ben","entity":"neorv32_cache","boundary":{"mode":"out","drive":"undriven"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":39}]}
+PORT {"name":"bus_req_o.stb","entity":"neorv32_cache","handling":["ORIGINATES"],"boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":39},{"id":2,"line":160},{"id":3,"line":187},{"id":4,"line":195},{"id":5,"line":202},{"id":6,"line":229}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[160]},{"at":3,"value":"'1'","lines":[187]},{"at":4,"value":"'1'","lines":[195]},{"at":5,"value":"'1'","lines":[202]},{"at":6,"value":"'1'","lines":[229]}]}
+    {"type":"SELECTED_BY","at":[3,4,5],"guard":"ctrl.state = S_LOOKUP","lines":[187,195,202],"targets":["ctrl.state"]}
+    {"type":"SELECTED_BY","at":[6],"guard":"ctrl.state = S_DOWNLOAD_REQ","lines":[229],"targets":["ctrl.state"]}
+    {"type":"GATED_BY","at":[3],"guard":"ctrl.buf_dir = '1'","lines":[187],"targets":["ctrl.buf_dir"]}
+    {"type":"GATED_BY","at":[4],"guard":"cache_i.sta_hit = '1'","lines":[195],"targets":["cache_i.sta_hit"]}
+    {"type":"GATED_BY","at":[4,5],"guard":"not (ctrl.buf_dir = '1')","lines":[195,202],"targets":["ctrl.buf_dir"]}
+    {"type":"GATED_BY","at":[4,5],"guard":"not ((host_req_i.rw = '0') or (READ_ONLY = true))","lines":[195,202],"targets":["host_req_i.rw"]}
+    {"type":"GATED_BY","at":[5],"guard":"not (cache_i.sta_hit = '1')","lines":[202],"targets":["cache_i.sta_hit"]}
+PORT {"name":"bus_req_o.rw","entity":"neorv32_cache","handling":["ORIGINATES"],"boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":39},{"id":2,"line":228},{"id":3,"line":239}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[228]},{"at":3,"value":"'0'","lines":[239]}]}
+    {"type":"SELECTED_BY","at":[2],"guard":"ctrl.state = S_DOWNLOAD_REQ","lines":[228],"targets":["ctrl.state"]}
+    {"type":"SELECTED_BY","at":[3],"guard":"ctrl.state = S_DOWNLOAD_RSP","lines":[239],"targets":["ctrl.state"]}
+PORT {"name":"bus_req_o.src","entity":"neorv32_cache","boundary":{"mode":"out","drive":"undriven"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":39}]}
+PORT {"name":"bus_req_o.priv","entity":"neorv32_cache","boundary":{"mode":"out","drive":"undriven"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":39}]}
+PORT {"name":"bus_req_o.debug","entity":"neorv32_cache","boundary":{"mode":"out","drive":"undriven"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":39}]}
+PORT {"name":"bus_req_o.amo","entity":"neorv32_cache","boundary":{"mode":"out","drive":"undriven"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":39}]}
+PORT {"name":"bus_req_o.amoop","entity":"neorv32_cache","boundary":{"mode":"out","drive":"undriven"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":39}]}
+PORT {"name":"bus_req_o.lock","entity":"neorv32_cache","handling":["ORIGINATES"],"boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":39},{"id":2,"line":230},{"id":3,"line":240}]}
+    {"constant_drivers":[{"at":2,"value":"'1'","lines":[230]},{"at":3,"value":"'1'","lines":[240]}]}
+    {"type":"SELECTED_BY","at":[2],"guard":"ctrl.state = S_DOWNLOAD_REQ","lines":[230],"targets":["ctrl.state"]}
+    {"type":"SELECTED_BY","at":[3],"guard":"ctrl.state = S_DOWNLOAD_RSP","lines":[240],"targets":["ctrl.state"]}
+PORT {"name":"bus_req_o.fence","entity":"neorv32_cache","handling":["ORIGINATES"],"boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":39},{"id":2,"line":161},{"id":3,"line":217}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[161]},{"at":3,"value":"'1'","lines":[217]}]}
+    {"configuration":[{"condition":"[static] READ_ONLY = false","at":[3],"lines":[217]}]}
+    {"type":"SELECTED_BY","at":[3],"guard":"ctrl.state = S_CLEAR","lines":[217],"targets":["ctrl.state"]}
+PORT {"name":"bus_rsp_i","entity":"neorv32_cache","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":40},{"id":2,"line":133},{"id":3,"line":209},{"id":4,"line":210},{"id":5,"line":236},{"id":6,"line":242},{"id":7,"line":243}]}
+    {"type":"CARRIES","at":[3],"lines":[209],"targets":["host_rsp_o"]}
+PORT {"name":"bus_rsp_i.ack","entity":"neorv32_cache","handling":["CONSUMES","FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":40},{"id":2,"line":210},{"id":3,"line":243}]}
+    {"type":"GATES","at":[2],"guard":"bus_rsp_i.ack = '1'","lines":[210],"targets":["ctrl_nxt.state"]}
+    {"type":"GATES","at":[3],"guard":"bus_rsp_i.ack = '1'","lines":[243],"targets":["ctrl_nxt.ofs","ctrl_nxt.state"]}
+PORT {"name":"bus_rsp_i.err","entity":"neorv32_cache","handling":["CONSUMES","FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":40},{"id":2,"line":242}]}
+    {"type":"GATES","at":[2],"guard":"ctrl.buf_err or bus_rsp_i.err","lines":[242],"targets":["ctrl_nxt.buf_err"]}
+PORT {"name":"bus_rsp_i.data","entity":"neorv32_cache","handling":["FORWARDS"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":40},{"id":2,"line":236}]}
+    {"type":"CARRIES","at":[2],"lines":[236],"targets":["cache_o.data"]}
+PORT {"name":"rstn_i","entity":"neorv32_cache_memory","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":321},{"id":2,"line":374},{"id":3,"line":376}]}
+    {"type":"RESETS","at":[3],"lines":[376],"targets":["valid_mem","valid_mem_rd"]}
+PORT {"name":"clk_i","entity":"neorv32_cache_memory","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":322},{"id":2,"line":374},{"id":3,"line":379},{"id":4,"line":394},{"id":5,"line":396},{"id":6,"line":410},{"id":7,"line":412}]}
+    {"type":"SEQUENCES","at":[3],"lines":[379],"targets":["valid_mem","valid_mem_rd"]}
+    {"type":"SEQUENCES","at":[5],"lines":[396],"targets":["tag_mem","tag_mem_rd"]}
+    {"type":"SEQUENCES","at":[7],"lines":[412],"targets":["data_mem_b0","data_mem_b1","data_mem_b2","data_mem_b3","rdata_o"]}
+PORT {"name":"clr_i","entity":"neorv32_cache_memory","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":324},{"id":2,"line":380}]}
+    {"type":"GATES","at":[2],"guard":"clr_i = '1' | not (clr_i = '1')","lines":[380],"targets":["valid_mem"]}
+PORT {"name":"inv_i","entity":"neorv32_cache_memory","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":325},{"id":2,"line":382}]}
+    {"type":"GATES","at":[2],"guard":"inv_i = '1' | not (inv_i = '1')","lines":[382],"targets":["valid_mem"]}
+PORT {"name":"new_i","entity":"neorv32_cache_memory","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":326},{"id":2,"line":384},{"id":3,"line":397}]}
+    {"type":"GATES","at":[2],"guard":"new_i = '1'","lines":[384],"targets":["valid_mem"]}
+    {"type":"GATES","at":[3],"guard":"new_i = '1'","lines":[397],"targets":["tag_mem"]}
+PORT {"name":"hit_o","entity":"neorv32_cache_memory","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":327},{"id":2,"line":405}]}
+    {"type":"CONSTRAINED_BY","at":[2],"guard":"(valid_mem_rd = '1') and (tag_mem_rd = acc_tag)","lines":[405],"targets":["acc_tag","tag_mem_rd"]}
+    {"type":"GATED_BY","at":[2],"guard":"(valid_mem_rd = '1') and (tag_mem_rd = acc_tag)","lines":[405],"targets":["valid_mem_rd"]}
+PORT {"name":"addr_i","entity":"neorv32_cache_memory","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":329},{"id":2,"line":366},{"id":3,"line":367},{"id":4,"line":368}]}
+    {"type":"SOURCES","at":[2],"lines":[366],"targets":["acc_tag"]}
+    {"type":"SOURCES","at":[3],"lines":[367],"targets":["acc_idx"]}
+    {"type":"SOURCES","at":[4],"lines":[368],"targets":["acc_off"]}
+PORT {"name":"we_i","entity":"neorv32_cache_memory","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":330},{"id":2,"line":413},{"id":3,"line":416},{"id":4,"line":419},{"id":5,"line":422}]}
+    {"type":"GATES","at":[2],"guard":"we_i(0) = '1'","lines":[413],"targets":["data_mem_b0"]}
+    {"type":"GATES","at":[3],"guard":"we_i(1) = '1'","lines":[416],"targets":["data_mem_b1"]}
+    {"type":"GATES","at":[4],"guard":"we_i(2) = '1'","lines":[419],"targets":["data_mem_b2"]}
+    {"type":"GATES","at":[5],"guard":"we_i(3) = '1'","lines":[422],"targets":["data_mem_b3"]}
+PORT {"name":"wdata_i","entity":"neorv32_cache_memory","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":331},{"id":2,"line":414},{"id":3,"line":417},{"id":4,"line":420},{"id":5,"line":423}]}
+    {"type":"SOURCES","at":[2],"lines":[414],"targets":["data_mem_b0"]}
+    {"type":"SOURCES","at":[3],"lines":[417],"targets":["data_mem_b1"]}
+    {"type":"SOURCES","at":[4],"lines":[420],"targets":["data_mem_b2"]}
+    {"type":"SOURCES","at":[5],"lines":[423],"targets":["data_mem_b3"]}
+PORT {"name":"rdata_o","entity":"neorv32_cache_memory","boundary":{"mode":"out","drive":"driven"},"storage":"edge"}
+    {"occurrences":[{"id":1,"line":332},{"id":2,"line":425},{"id":3,"line":426},{"id":4,"line":427},{"id":5,"line":428}]}
+    {"type":"CLOCKED_BY","at":[2,3,4,5],"lines":[425,426,427,428],"targets":["clk_i"]}
+    {"type":"SELECTED_BY","at":[2],"guard":"data_mem_b0(to_integer(unsigned(acc_adr)))","lines":[425],"targets":["acc_adr"]}
+    {"type":"SELECTED_BY","at":[3],"guard":"data_mem_b1(to_integer(unsigned(acc_adr)))","lines":[426],"targets":["acc_adr"]}
+    {"type":"SELECTED_BY","at":[4],"guard":"data_mem_b2(to_integer(unsigned(acc_adr)))","lines":[427],"targets":["acc_adr"]}
+    {"type":"SELECTED_BY","at":[5],"guard":"data_mem_b3(to_integer(unsigned(acc_adr)))","lines":[428],"targets":["acc_adr"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[425],"targets":["data_mem_b0"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[426],"targets":["data_mem_b1"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[427],"targets":["data_mem_b2"]}
+    {"type":"DERIVES_FROM","at":[5],"lines":[428],"targets":["data_mem_b3"]}
+SIGNAL {"name":"cache_o","entity":"neorv32_cache","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":146},{"id":3,"line":147},{"id":4,"line":148},{"id":5,"line":149},{"id":6,"line":150},{"id":7,"line":151},{"id":8,"line":194},{"id":9,"line":219},{"id":10,"line":225},{"id":11,"line":226},{"id":12,"line":235},{"id":13,"line":236},{"id":14,"line":237},{"id":15,"line":255},{"id":16,"line":283},{"id":17,"line":284},{"id":18,"line":285},{"id":19,"line":288},{"id":20,"line":289},{"id":21,"line":290}]}
+SIGNAL {"name":"cache_o.cmd_clr","entity":"neorv32_cache","kind":"signal","handling":["ORIGINATES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":146},{"id":3,"line":219},{"id":4,"line":283}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[146]},{"at":3,"value":"'1'","lines":[219]}]}
+    {"connections":[{"at":4,"instance":"neorv32_cache_memory_inst","formal":"clr_i","mode":"in","lines":[283]}]}
+    {"type":"SELECTED_BY","at":[3],"guard":"ctrl.state = S_CLEAR","lines":[219],"targets":["ctrl.state"]}
+SIGNAL {"name":"cache_o.cmd_inv","entity":"neorv32_cache","kind":"signal","handling":["ORIGINATES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":147},{"id":3,"line":255},{"id":4,"line":284}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[147]},{"at":3,"value":"'1'","lines":[255]}]}
+    {"connections":[{"at":4,"instance":"neorv32_cache_memory_inst","formal":"inv_i","mode":"in","lines":[284]}]}
+    {"type":"SELECTED_BY","at":[3],"guard":"ctrl.state = S_DOWNLOAD_DONE","lines":[255],"targets":["ctrl.state"]}
+    {"type":"GATED_BY","at":[3],"guard":"ctrl.buf_err = '1'","lines":[255],"targets":["ctrl.buf_err"]}
+SIGNAL {"name":"cache_o.cmd_new","entity":"neorv32_cache","kind":"signal","handling":["ORIGINATES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":148},{"id":3,"line":226},{"id":4,"line":285}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[148]},{"at":3,"value":"'1'","lines":[226]}]}
+    {"connections":[{"at":4,"instance":"neorv32_cache_memory_inst","formal":"new_i","mode":"in","lines":[285]}]}
+    {"type":"SELECTED_BY","at":[3],"guard":"ctrl.state = S_DOWNLOAD_REQ","lines":[226],"targets":["ctrl.state"]}
+SIGNAL {"name":"cache_o.addr","entity":"neorv32_cache","kind":"signal","handling":["ORIGINATES","FORWARDS"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":149},{"id":3,"line":225},{"id":4,"line":235},{"id":5,"line":288}]}
+    {"connections":[{"at":5,"instance":"neorv32_cache_memory_inst","formal":"addr_i","mode":"in","lines":[288]}]}
+    {"type":"SELECTED_BY","at":[3],"guard":"ctrl.state = S_DOWNLOAD_REQ","lines":[225],"targets":["ctrl.state"]}
+    {"type":"SELECTED_BY","at":[4],"guard":"ctrl.state = S_DOWNLOAD_RSP","lines":[235],"targets":["ctrl.state"]}
+    {"type":"COPIES","at":[2],"lines":[149],"targets":["host_req_i.addr"]}
+    {"type":"DERIVES_FROM","at":[3,4],"lines":[225,235],"targets":["ctrl.idx","ctrl.ofs","ctrl.tag"]}
+SIGNAL {"name":"cache_o.data","entity":"neorv32_cache","kind":"signal","handling":["FORWARDS"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":151},{"id":3,"line":236},{"id":4,"line":290}]}
+    {"connections":[{"at":4,"instance":"neorv32_cache_memory_inst","formal":"wdata_i","mode":"in","lines":[290]}]}
+    {"type":"SELECTED_BY","at":[3],"guard":"ctrl.state = S_DOWNLOAD_RSP","lines":[236],"targets":["ctrl.state"]}
+    {"type":"COPIES","at":[2],"lines":[151],"targets":["host_req_i.data"]}
+    {"type":"COPIES","at":[3],"lines":[236],"targets":["bus_rsp_i.data"]}
+SIGNAL {"name":"cache_o.we","entity":"neorv32_cache","kind":"signal","handling":["ORIGINATES","FORWARDS"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":150},{"id":3,"line":194},{"id":4,"line":237},{"id":5,"line":289}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[150]},{"at":4,"value":"(others => '1')","lines":[237]}]}
+    {"connections":[{"at":5,"instance":"neorv32_cache_memory_inst","formal":"we_i","mode":"in","lines":[289]}]}
+    {"type":"SELECTED_BY","at":[3],"guard":"ctrl.state = S_LOOKUP","lines":[194],"targets":["ctrl.state"]}
+    {"type":"SELECTED_BY","at":[4],"guard":"ctrl.state = S_DOWNLOAD_RSP","lines":[237],"targets":["ctrl.state"]}
+    {"type":"GATED_BY","at":[3],"guard":"cache_i.sta_hit = '1'","lines":[194],"targets":["cache_i.sta_hit"]}
+    {"type":"GATED_BY","at":[3],"guard":"not (ctrl.buf_dir = '1')","lines":[194],"targets":["ctrl.buf_dir"]}
+    {"type":"GATED_BY","at":[3],"guard":"not ((host_req_i.rw = '0') or (READ_ONLY = true))","lines":[194],"targets":["host_req_i.rw"]}
+    {"type":"COPIES","at":[3],"lines":[194],"targets":["host_req_i.ben"]}
+SIGNAL {"name":"cache_i","entity":"neorv32_cache","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":91},{"id":2,"line":133},{"id":3,"line":156},{"id":4,"line":189},{"id":5,"line":286},{"id":6,"line":291}]}
+SIGNAL {"name":"cache_i.sta_hit","entity":"neorv32_cache","kind":"signal","handling":["CONSUMES"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":91},{"id":2,"line":189},{"id":3,"line":286}]}
+    {"connections":[{"at":3,"instance":"neorv32_cache_memory_inst","formal":"hit_o","mode":"out","lines":[286]}]}
+    {"type":"GATES","at":[2],"guard":"cache_i.sta_hit = '1' | not (cache_i.sta_hit = '1')","lines":[189],"targets":["bus_req_o.stb","ctrl_nxt.state"]}
+    {"type":"GATES","at":[2],"guard":"cache_i.sta_hit = '1'","lines":[189],"targets":["cache_o.we","host_rsp_o.ack"]}
+SIGNAL {"name":"cache_i.data","entity":"neorv32_cache","kind":"signal","handling":["FORWARDS"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":91},{"id":2,"line":156},{"id":3,"line":291}]}
+    {"connections":[{"at":3,"instance":"neorv32_cache_memory_inst","formal":"rdata_o","mode":"out","lines":[291]}]}
+    {"type":"CARRIES","at":[2],"lines":[156],"targets":["host_rsp_o.data"]}
+SIGNAL {"name":"ctrl","entity":"neorv32_cache","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":108},{"id":2,"line":117},{"id":3,"line":118},{"id":4,"line":119},{"id":5,"line":120},{"id":6,"line":121},{"id":7,"line":122},{"id":8,"line":123},{"id":9,"line":124},{"id":10,"line":126},{"id":11,"line":133},{"id":12,"line":136},{"id":13,"line":137},{"id":14,"line":138},{"id":15,"line":139},{"id":16,"line":141},{"id":17,"line":142},{"id":18,"line":143},{"id":19,"line":164},{"id":20,"line":168},{"id":21,"line":170},{"id":22,"line":186},{"id":23,"line":225},{"id":24,"line":225},{"id":25,"line":225},{"id":26,"line":227},{"id":27,"line":227},{"id":28,"line":227},{"id":29,"line":235},{"id":30,"line":235},{"id":31,"line":235},{"id":32,"line":238},{"id":33,"line":238},{"id":34,"line":238},{"id":35,"line":242},{"id":36,"line":244},{"id":37,"line":245},{"id":38,"line":254}]}
+    {"type":"CLOCKED_BY","at":[10],"lines":[126],"targets":["clk_i"]}
+    {"type":"COPIES","at":[10],"lines":[126],"targets":["ctrl_nxt"]}
+SIGNAL {"name":"ctrl.state","entity":"neorv32_cache","kind":"signal","handling":["ORIGINATES","CONSUMES","FORWARDS"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":108},{"id":2,"line":117},{"id":3,"line":136},{"id":4,"line":164}]}
+    {"constant_drivers":[{"at":2,"value":"S_IDLE","lines":[117]}]}
+    {"type":"SELECTS","at":[4],"guard":"ctrl.state = S_DOWNLOAD_REQ | ctrl.state = S_DOWNLOAD_RSP","lines":[164],"targets":["bus_req_o.addr","bus_req_o.lock","bus_req_o.rw","cache_o.addr"]}
+    {"type":"SELECTS","at":[4],"guard":"ctrl.state = S_CLEAR","lines":[164],"targets":["bus_req_o.fence","cache_o.cmd_clr","ctrl_nxt.buf_sync"]}
+    {"type":"SELECTS","at":[4],"guard":"ctrl.state = S_DOWNLOAD_REQ | ctrl.state = S_LOOKUP","lines":[164],"targets":["bus_req_o.stb"]}
+    {"type":"SELECTS","at":[4],"guard":"ctrl.state = S_DOWNLOAD_DONE","lines":[164],"targets":["cache_o.cmd_inv","host_rsp_o.err"]}
+    {"type":"SELECTS","at":[4],"guard":"ctrl.state = S_DOWNLOAD_REQ","lines":[164],"targets":["cache_o.cmd_new"]}
+    {"type":"SELECTS","at":[4],"guard":"ctrl.state = S_DOWNLOAD_RSP","lines":[164],"targets":["cache_o.data"]}
+    {"type":"SELECTS","at":[4],"guard":"ctrl.state = S_DOWNLOAD_RSP | ctrl.state = S_LOOKUP","lines":[164],"targets":["cache_o.we","ctrl_nxt.buf_err","ctrl_nxt.ofs"]}
+    {"type":"SELECTS","at":[4],"guard":"ctrl.state = S_IDLE","lines":[164],"targets":["ctrl_nxt.buf_dir"]}
+    {"type":"SELECTS","at":[4],"guard":"ctrl.state = S_LOOKUP","lines":[164],"targets":["ctrl_nxt.buf_req","ctrl_nxt.idx","ctrl_nxt.tag"]}
+    {"type":"SELECTS","at":[4],"guard":"ctrl.state = S_CLEAR | ctrl.state = S_DIRECT_RSP | ctrl.state = S_DOWNLOAD_DONE | ctrl.state = S_DOWNLOAD_REQ | ctrl.state = S_DOWNLOAD_RSP | ctrl.state = S_IDLE | ctrl.state = S_LOOKUP | not (ctrl.state in {S_IDLE, S_LOOKUP, S_DIRECT_RSP, S_CLEAR, S_DOWNLOAD_REQ, S_DOWNLOAD_RSP, S_DOWNLOAD_DONE})","lines":[164],"targets":["ctrl_nxt.state"]}
+    {"type":"SELECTS","at":[4],"guard":"ctrl.state = S_DIRECT_RSP","lines":[164],"targets":["host_rsp_o"]}
+    {"type":"SELECTS","at":[4],"guard":"ctrl.state = S_DOWNLOAD_DONE | ctrl.state = S_LOOKUP","lines":[164],"targets":["host_rsp_o.ack"]}
+    {"type":"CARRIES","at":[3],"lines":[136],"targets":["ctrl_nxt.state"]}
+    {"type":"RESET_BY","at":[2],"lines":[117],"targets":["rstn_i"]}
+SIGNAL {"name":"ctrl.buf_req","entity":"neorv32_cache","kind":"signal","handling":["ORIGINATES","CONSUMES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":108},{"id":2,"line":118},{"id":3,"line":137},{"id":4,"line":170}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[118]}]}
+    {"type":"GATES","at":[3],"guard":"ctrl.buf_req or host_req_i.stb","lines":[137],"targets":["ctrl_nxt.buf_req"]}
+    {"type":"GATES","at":[4],"guard":"(host_req_i.stb = '1') or (ctrl.buf_req = '1')","lines":[170],"targets":["ctrl_nxt.buf_dir","ctrl_nxt.state"]}
+    {"type":"RESET_BY","at":[2],"lines":[118],"targets":["rstn_i"]}
+SIGNAL {"name":"ctrl.buf_sync","entity":"neorv32_cache","kind":"signal","handling":["ORIGINATES","CONSUMES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":108},{"id":2,"line":119},{"id":3,"line":138},{"id":4,"line":168}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[119]}]}
+    {"type":"GATES","at":[3],"guard":"ctrl.buf_sync or host_req_i.fence","lines":[138],"targets":["ctrl_nxt.buf_sync"]}
+    {"type":"GATES","at":[4],"guard":"not ((host_req_i.fence = '1') or (ctrl.buf_sync = '1'))","lines":[168],"targets":["ctrl_nxt.buf_dir"]}
+    {"type":"GATES","at":[4],"guard":"(host_req_i.fence = '1') or (ctrl.buf_sync = '1') | not ((host_req_i.fence = '1') or (ctrl.buf_sync = '1'))","lines":[168],"targets":["ctrl_nxt.state"]}
+    {"type":"RESET_BY","at":[2],"lines":[119],"targets":["rstn_i"]}
+SIGNAL {"name":"ctrl.buf_err","entity":"neorv32_cache","kind":"signal","handling":["ORIGINATES","CONSUMES","FORWARDS"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":108},{"id":2,"line":120},{"id":3,"line":139},{"id":4,"line":242},{"id":5,"line":254}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[120]}]}
+    {"type":"GATES","at":[4],"guard":"ctrl.buf_err or bus_rsp_i.err","lines":[242],"targets":["ctrl_nxt.buf_err"]}
+    {"type":"GATES","at":[5],"guard":"ctrl.buf_err = '1'","lines":[254],"targets":["cache_o.cmd_inv","host_rsp_o.ack","host_rsp_o.err"]}
+    {"type":"GATES","at":[5],"guard":"ctrl.buf_err = '1' | not (ctrl.buf_err = '1')","lines":[254],"targets":["ctrl_nxt.state"]}
+    {"type":"CARRIES","at":[3],"lines":[139],"targets":["ctrl_nxt.buf_err"]}
+    {"type":"RESET_BY","at":[2],"lines":[120],"targets":["rstn_i"]}
+SIGNAL {"name":"ctrl.buf_dir","entity":"neorv32_cache","kind":"signal","handling":["ORIGINATES","CONSUMES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":108},{"id":2,"line":121},{"id":3,"line":186}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[121]}]}
+    {"type":"GATES","at":[3],"guard":"ctrl.buf_dir = '1' | not (ctrl.buf_dir = '1')","lines":[186],"targets":["bus_req_o.stb","ctrl_nxt.state"]}
+    {"type":"GATES","at":[3],"guard":"not (ctrl.buf_dir = '1')","lines":[186],"targets":["cache_o.we","host_rsp_o.ack"]}
+    {"type":"RESET_BY","at":[2],"lines":[121],"targets":["rstn_i"]}
+SIGNAL {"name":"ctrl.tag","entity":"neorv32_cache","kind":"signal","handling":["ORIGINATES","CONSUMES","FORWARDS"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":108},{"id":2,"line":122},{"id":3,"line":141},{"id":4,"line":225},{"id":5,"line":227},{"id":6,"line":235},{"id":7,"line":238}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[122]}]}
+    {"type":"CARRIES","at":[3],"lines":[141],"targets":["ctrl_nxt.tag"]}
+    {"type":"SOURCES","at":[4,6],"lines":[225,235],"targets":["cache_o.addr"]}
+    {"type":"SOURCES","at":[5,7],"lines":[227,238],"targets":["bus_req_o.addr"]}
+    {"type":"RESET_BY","at":[2],"lines":[122],"targets":["rstn_i"]}
+SIGNAL {"name":"ctrl.idx","entity":"neorv32_cache","kind":"signal","handling":["ORIGINATES","CONSUMES","FORWARDS"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":108},{"id":2,"line":123},{"id":3,"line":142},{"id":4,"line":225},{"id":5,"line":227},{"id":6,"line":235},{"id":7,"line":238}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[123]}]}
+    {"type":"CARRIES","at":[3],"lines":[142],"targets":["ctrl_nxt.idx"]}
+    {"type":"SOURCES","at":[4,6],"lines":[225,235],"targets":["cache_o.addr"]}
+    {"type":"SOURCES","at":[5,7],"lines":[227,238],"targets":["bus_req_o.addr"]}
+    {"type":"RESET_BY","at":[2],"lines":[123],"targets":["rstn_i"]}
+SIGNAL {"name":"ctrl.ofs","entity":"neorv32_cache","kind":"signal","handling":["ORIGINATES","CONSUMES","FORWARDS"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":108},{"id":2,"line":124},{"id":3,"line":143},{"id":4,"line":225},{"id":5,"line":227},{"id":6,"line":235},{"id":7,"line":238},{"id":8,"line":244},{"id":9,"line":245}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[124]}]}
+    {"type":"GATES","at":[9],"guard":"and_reduce_f(ctrl.ofs) = '1' | not (and_reduce_f(ctrl.ofs) = '1')","lines":[245],"targets":["ctrl_nxt.state"]}
+    {"type":"CARRIES","at":[3],"lines":[143],"targets":["ctrl_nxt.ofs"]}
+    {"type":"SOURCES","at":[4,6],"lines":[225,235],"targets":["cache_o.addr"]}
+    {"type":"SOURCES","at":[5,7],"lines":[227,238],"targets":["bus_req_o.addr"]}
+    {"type":"SOURCES","at":[8],"lines":[244],"targets":["ctrl_nxt.ofs"]}
+    {"type":"RESET_BY","at":[2],"lines":[124],"targets":["rstn_i"]}
+SIGNAL {"name":"ctrl_nxt","entity":"neorv32_cache","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":108},{"id":2,"line":126},{"id":3,"line":136},{"id":4,"line":137},{"id":5,"line":138},{"id":6,"line":139},{"id":7,"line":140},{"id":8,"line":141},{"id":9,"line":142},{"id":10,"line":143},{"id":11,"line":169},{"id":12,"line":173},{"id":13,"line":175},{"id":14,"line":180},{"id":15,"line":181},{"id":16,"line":182},{"id":17,"line":183},{"id":18,"line":184},{"id":19,"line":188},{"id":20,"line":192},{"id":21,"line":196},{"id":22,"line":200},{"id":23,"line":203},{"id":24,"line":211},{"id":25,"line":220},{"id":26,"line":221},{"id":27,"line":231},{"id":28,"line":242},{"id":29,"line":244},{"id":30,"line":246},{"id":31,"line":248},{"id":32,"line":258},{"id":33,"line":260},{"id":34,"line":265}]}
+    {"type":"CARRIES","at":[2],"lines":[126],"targets":["ctrl"]}
+SIGNAL {"name":"ctrl_nxt.state","entity":"neorv32_cache","kind":"signal","handling":["ORIGINATES","FORWARDS"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":108},{"id":2,"line":136},{"id":3,"line":169},{"id":4,"line":175},{"id":5,"line":188},{"id":6,"line":192},{"id":7,"line":196},{"id":8,"line":200},{"id":9,"line":203},{"id":10,"line":211},{"id":11,"line":221},{"id":12,"line":231},{"id":13,"line":246},{"id":14,"line":248},{"id":15,"line":258},{"id":16,"line":260},{"id":17,"line":265}]}
+    {"constant_drivers":[{"at":3,"value":"S_CLEAR","lines":[169]},{"at":4,"value":"S_LOOKUP","lines":[175]},{"at":5,"value":"S_DIRECT_RSP","lines":[188]},{"at":6,"value":"S_IDLE","lines":[192]},{"at":7,"value":"S_DIRECT_RSP","lines":[196]},{"at":8,"value":"S_DOWNLOAD_REQ","lines":[200]},{"at":9,"value":"S_DIRECT_RSP","lines":[203]},{"at":10,"value":"S_IDLE","lines":[211]},{"at":11,"value":"S_IDLE","lines":[221]},{"at":12,"value":"S_DOWNLOAD_RSP","lines":[231]},{"at":13,"value":"S_DOWNLOAD_DONE","lines":[246]},{"at":14,"value":"S_DOWNLOAD_REQ","lines":[248]},{"at":15,"value":"S_IDLE","lines":[258]},{"at":16,"value":"S_LOOKUP","lines":[260]},{"at":17,"value":"S_IDLE","lines":[265]}]}
+    {"type":"SELECTED_BY","at":[10],"guard":"ctrl.state = S_DIRECT_RSP","lines":[211],"targets":["ctrl.state"]}
+    {"type":"SELECTED_BY","at":[11],"guard":"ctrl.state = S_CLEAR","lines":[221],"targets":["ctrl.state"]}
+    {"type":"SELECTED_BY","at":[12],"guard":"ctrl.state = S_DOWNLOAD_REQ","lines":[231],"targets":["ctrl.state"]}
+    {"type":"SELECTED_BY","at":[13,14],"guard":"ctrl.state = S_DOWNLOAD_RSP","lines":[246,248],"targets":["ctrl.state"]}
+    {"type":"SELECTED_BY","at":[15,16],"guard":"ctrl.state = S_DOWNLOAD_DONE","lines":[258,260],"targets":["ctrl.state"]}
+    {"type":"SELECTED_BY","at":[17],"guard":"not (ctrl.state in {S_IDLE, S_LOOKUP, S_DIRECT_RSP, S_CLEAR, S_DOWNLOAD_REQ, S_DOWNLOAD_RSP, S_DOWNLOAD_DONE})","lines":[265],"targets":["ctrl.state"]}
+    {"type":"SELECTED_BY","at":[3,4],"guard":"ctrl.state = S_IDLE","lines":[169,175],"targets":["ctrl.state"]}
+    {"type":"SELECTED_BY","at":[5,6,7,8,9],"guard":"ctrl.state = S_LOOKUP","lines":[188,192,196,200,203],"targets":["ctrl.state"]}
+    {"type":"GATED_BY","at":[10,13,14],"guard":"bus_rsp_i.ack = '1'","lines":[211,246,248],"targets":["bus_rsp_i.ack"]}
+    {"type":"GATED_BY","at":[13],"guard":"and_reduce_f(ctrl.ofs) = '1'","lines":[246],"targets":["ctrl.ofs"]}
+    {"type":"GATED_BY","at":[14],"guard":"not (and_reduce_f(ctrl.ofs) = '1')","lines":[248],"targets":["ctrl.ofs"]}
+    {"type":"GATED_BY","at":[15],"guard":"ctrl.buf_err = '1'","lines":[258],"targets":["ctrl.buf_err"]}
+    {"type":"GATED_BY","at":[16],"guard":"not (ctrl.buf_err = '1')","lines":[260],"targets":["ctrl.buf_err"]}
+    {"type":"GATED_BY","at":[3],"guard":"(host_req_i.fence = '1') or (ctrl.buf_sync = '1')","lines":[169],"targets":["ctrl.buf_sync","host_req_i.fence"]}
+    {"type":"GATED_BY","at":[4],"guard":"(host_req_i.stb = '1') or (ctrl.buf_req = '1')","lines":[175],"targets":["ctrl.buf_req","host_req_i.stb"]}
+    {"type":"GATED_BY","at":[4],"guard":"not ((host_req_i.fence = '1') or (ctrl.buf_sync = '1'))","lines":[175],"targets":["ctrl.buf_sync","host_req_i.fence"]}
+    {"type":"GATED_BY","at":[5],"guard":"ctrl.buf_dir = '1'","lines":[188],"targets":["ctrl.buf_dir"]}
+    {"type":"GATED_BY","at":[6,7],"guard":"cache_i.sta_hit = '1'","lines":[192,196],"targets":["cache_i.sta_hit"]}
+    {"type":"GATED_BY","at":[6,7,8,9],"guard":"not (ctrl.buf_dir = '1')","lines":[192,196,200,203],"targets":["ctrl.buf_dir"]}
+    {"type":"GATED_BY","at":[6,8],"guard":"(host_req_i.rw = '0') or (READ_ONLY = true)","lines":[192,200],"targets":["host_req_i.rw"]}
+    {"type":"GATED_BY","at":[7,9],"guard":"not ((host_req_i.rw = '0') or (READ_ONLY = true))","lines":[196,203],"targets":["host_req_i.rw"]}
+    {"type":"GATED_BY","at":[8,9],"guard":"not (cache_i.sta_hit = '1')","lines":[200,203],"targets":["cache_i.sta_hit"]}
+    {"type":"COPIES","at":[2],"lines":[136],"targets":["ctrl.state"]}
+SIGNAL {"name":"ctrl_nxt.buf_req","entity":"neorv32_cache","kind":"signal","handling":["ORIGINATES","FORWARDS"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":108},{"id":2,"line":137},{"id":3,"line":184}]}
+    {"constant_drivers":[{"at":3,"value":"'0'","lines":[184]}]}
+    {"type":"SELECTED_BY","at":[3],"guard":"ctrl.state = S_LOOKUP","lines":[184],"targets":["ctrl.state"]}
+    {"type":"GATED_BY","at":[2],"guard":"ctrl.buf_req or host_req_i.stb","lines":[137],"targets":["ctrl.buf_req","host_req_i.stb"]}
+SIGNAL {"name":"ctrl_nxt.buf_sync","entity":"neorv32_cache","kind":"signal","handling":["ORIGINATES","FORWARDS"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":108},{"id":2,"line":138},{"id":3,"line":220}]}
+    {"constant_drivers":[{"at":3,"value":"'0'","lines":[220]}]}
+    {"type":"SELECTED_BY","at":[3],"guard":"ctrl.state = S_CLEAR","lines":[220],"targets":["ctrl.state"]}
+    {"type":"GATED_BY","at":[2],"guard":"ctrl.buf_sync or host_req_i.fence","lines":[138],"targets":["ctrl.buf_sync","host_req_i.fence"]}
+SIGNAL {"name":"ctrl_nxt.buf_err","entity":"neorv32_cache","kind":"signal","handling":["ORIGINATES","FORWARDS"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":108},{"id":2,"line":139},{"id":3,"line":183},{"id":4,"line":242}]}
+    {"constant_drivers":[{"at":3,"value":"'0'","lines":[183]}]}
+    {"type":"SELECTED_BY","at":[3],"guard":"ctrl.state = S_LOOKUP","lines":[183],"targets":["ctrl.state"]}
+    {"type":"SELECTED_BY","at":[4],"guard":"ctrl.state = S_DOWNLOAD_RSP","lines":[242],"targets":["ctrl.state"]}
+    {"type":"GATED_BY","at":[4],"guard":"ctrl.buf_err or bus_rsp_i.err","lines":[242],"targets":["bus_rsp_i.err","ctrl.buf_err"]}
+    {"type":"COPIES","at":[2],"lines":[139],"targets":["ctrl.buf_err"]}
+SIGNAL {"name":"ctrl_nxt.buf_dir","entity":"neorv32_cache","kind":"signal","handling":["ORIGINATES","FORWARDS"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":108},{"id":2,"line":140},{"id":3,"line":173}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[140]},{"at":3,"value":"'1'","lines":[173]}]}
+    {"type":"SELECTED_BY","at":[3],"guard":"ctrl.state = S_IDLE","lines":[173],"targets":["ctrl.state"]}
+    {"type":"GATED_BY","at":[3],"guard":"(host_req_i.stb = '1') or (ctrl.buf_req = '1')","lines":[173],"targets":["ctrl.buf_req","host_req_i.stb"]}
+    {"type":"GATED_BY","at":[3],"guard":"not ((host_req_i.fence = '1') or (ctrl.buf_sync = '1'))","lines":[173],"targets":["ctrl.buf_sync","host_req_i.fence"]}
+    {"type":"GATED_BY","at":[3],"guard":"(unsigned(host_req_i.addr(31 downto 28)) >= unsigned(UC_BEGIN)) or (host_req_i.amo = '1') or (host_req_i.debug = '1')","lines":[173],"targets":["host_req_i.addr","host_req_i.amo","host_req_i.debug"]}
+SIGNAL {"name":"ctrl_nxt.tag","entity":"neorv32_cache","kind":"signal","handling":["ORIGINATES","FORWARDS"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":108},{"id":2,"line":141},{"id":3,"line":180}]}
+    {"type":"SELECTED_BY","at":[3],"guard":"ctrl.state = S_LOOKUP","lines":[180],"targets":["ctrl.state"]}
+    {"type":"COPIES","at":[2],"lines":[141],"targets":["ctrl.tag"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[180],"targets":["host_req_i.addr"]}
+SIGNAL {"name":"ctrl_nxt.idx","entity":"neorv32_cache","kind":"signal","handling":["ORIGINATES","FORWARDS"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":108},{"id":2,"line":142},{"id":3,"line":181}]}
+    {"type":"SELECTED_BY","at":[3],"guard":"ctrl.state = S_LOOKUP","lines":[181],"targets":["ctrl.state"]}
+    {"type":"COPIES","at":[2],"lines":[142],"targets":["ctrl.idx"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[181],"targets":["host_req_i.addr"]}
+SIGNAL {"name":"ctrl_nxt.ofs","entity":"neorv32_cache","kind":"signal","handling":["ORIGINATES","FORWARDS"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":108},{"id":2,"line":143},{"id":3,"line":182},{"id":4,"line":244}]}
+    {"constant_drivers":[{"at":3,"value":"(others => '0')","lines":[182]}]}
+    {"type":"SELECTED_BY","at":[3],"guard":"ctrl.state = S_LOOKUP","lines":[182],"targets":["ctrl.state"]}
+    {"type":"SELECTED_BY","at":[4],"guard":"ctrl.state = S_DOWNLOAD_RSP","lines":[244],"targets":["ctrl.state"]}
+    {"type":"GATED_BY","at":[4],"guard":"bus_rsp_i.ack = '1'","lines":[244],"targets":["bus_rsp_i.ack"]}
+    {"type":"COPIES","at":[2],"lines":[143],"targets":["ctrl.ofs"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[244],"targets":["ctrl.ofs"]}
+SIGNAL {"name":"valid_mem","entity":"neorv32_cache_memory","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":344},{"id":2,"line":377},{"id":3,"line":381},{"id":4,"line":383},{"id":5,"line":385},{"id":6,"line":387}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[377]},{"at":3,"value":"(others => '0')","lines":[381]},{"at":4,"value":"'0'","lines":[383]},{"at":5,"value":"'1'","lines":[385]}]}
+    {"type":"SOURCES","at":[6],"lines":[387],"targets":["valid_mem_rd"]}
+    {"type":"CLOCKED_BY","at":[3,4,5],"lines":[381,383,385],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[377],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[4],"guard":"'0'","lines":[383],"targets":["acc_idx"]}
+    {"type":"SELECTED_BY","at":[5],"guard":"'1'","lines":[385],"targets":["acc_idx"]}
+    {"type":"GATED_BY","at":[3],"guard":"clr_i = '1'","lines":[381],"targets":["clr_i"]}
+    {"type":"GATED_BY","at":[4,5],"guard":"not (clr_i = '1')","lines":[383,385],"targets":["clr_i"]}
+    {"type":"GATED_BY","at":[4],"guard":"inv_i = '1'","lines":[383],"targets":["inv_i"]}
+    {"type":"GATED_BY","at":[5],"guard":"not (inv_i = '1')","lines":[385],"targets":["inv_i"]}
+    {"type":"GATED_BY","at":[5],"guard":"new_i = '1'","lines":[385],"targets":["new_i"]}
+SIGNAL {"name":"valid_mem_rd","entity":"neorv32_cache_memory","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":345},{"id":2,"line":378},{"id":3,"line":387},{"id":4,"line":405}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[378]}]}
+    {"type":"GATES","at":[4],"guard":"(valid_mem_rd = '1') and (tag_mem_rd = acc_tag)","lines":[405],"targets":["hit_o"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[387],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[378],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[3],"guard":"valid_mem(to_integer(unsigned(acc_idx)))","lines":[387],"targets":["acc_idx"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[387],"targets":["valid_mem"]}
+SIGNAL {"name":"tag_mem","entity":"neorv32_cache_memory","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":349},{"id":2,"line":398},{"id":3,"line":400}]}
+    {"type":"SOURCES","at":[3],"lines":[400],"targets":["tag_mem_rd"]}
+    {"type":"CLOCKED_BY","at":[2],"lines":[398],"targets":["clk_i"]}
+    {"type":"SELECTED_BY","at":[2],"guard":"acc_tag","lines":[398],"targets":["acc_idx"]}
+    {"type":"GATED_BY","at":[2],"guard":"new_i = '1'","lines":[398],"targets":["new_i"]}
+    {"type":"COPIES","at":[2],"lines":[398],"targets":["acc_tag"]}
+SIGNAL {"name":"tag_mem_rd","entity":"neorv32_cache_memory","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":350},{"id":2,"line":400},{"id":3,"line":405}]}
+    {"type":"CONSTRAINS","at":[3],"guard":"(valid_mem_rd = '1') and (tag_mem_rd = acc_tag)","lines":[405],"targets":["hit_o"]}
+    {"type":"CLOCKED_BY","at":[2],"lines":[400],"targets":["clk_i"]}
+    {"type":"SELECTED_BY","at":[2],"guard":"tag_mem(to_integer(unsigned(acc_idx)))","lines":[400],"targets":["acc_idx"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[400],"targets":["tag_mem"]}
+SIGNAL {"name":"data_mem_b0","entity":"neorv32_cache_memory","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":354},{"id":2,"line":414},{"id":3,"line":425}]}
+    {"type":"SOURCES","at":[3],"lines":[425],"targets":["rdata_o"]}
+    {"type":"CLOCKED_BY","at":[2],"lines":[414],"targets":["clk_i"]}
+    {"type":"SELECTED_BY","at":[2],"guard":"wdata_i(7 downto 0)","lines":[414],"targets":["acc_adr"]}
+    {"type":"GATED_BY","at":[2],"guard":"we_i(0) = '1'","lines":[414],"targets":["we_i"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[414],"targets":["wdata_i"]}
+SIGNAL {"name":"data_mem_b1","entity":"neorv32_cache_memory","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":354},{"id":2,"line":417},{"id":3,"line":426}]}
+    {"type":"SOURCES","at":[3],"lines":[426],"targets":["rdata_o"]}
+    {"type":"CLOCKED_BY","at":[2],"lines":[417],"targets":["clk_i"]}
+    {"type":"SELECTED_BY","at":[2],"guard":"wdata_i(15 downto 8)","lines":[417],"targets":["acc_adr"]}
+    {"type":"GATED_BY","at":[2],"guard":"we_i(1) = '1'","lines":[417],"targets":["we_i"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[417],"targets":["wdata_i"]}
+SIGNAL {"name":"data_mem_b2","entity":"neorv32_cache_memory","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":354},{"id":2,"line":420},{"id":3,"line":427}]}
+    {"type":"SOURCES","at":[3],"lines":[427],"targets":["rdata_o"]}
+    {"type":"CLOCKED_BY","at":[2],"lines":[420],"targets":["clk_i"]}
+    {"type":"SELECTED_BY","at":[2],"guard":"wdata_i(23 downto 16)","lines":[420],"targets":["acc_adr"]}
+    {"type":"GATED_BY","at":[2],"guard":"we_i(2) = '1'","lines":[420],"targets":["we_i"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[420],"targets":["wdata_i"]}
+SIGNAL {"name":"data_mem_b3","entity":"neorv32_cache_memory","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":354},{"id":2,"line":423},{"id":3,"line":428}]}
+    {"type":"SOURCES","at":[3],"lines":[428],"targets":["rdata_o"]}
+    {"type":"CLOCKED_BY","at":[2],"lines":[423],"targets":["clk_i"]}
+    {"type":"SELECTED_BY","at":[2],"guard":"wdata_i(31 downto 24)","lines":[423],"targets":["acc_adr"]}
+    {"type":"GATED_BY","at":[2],"guard":"we_i(3) = '1'","lines":[423],"targets":["we_i"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[423],"targets":["wdata_i"]}
+SIGNAL {"name":"acc_tag","entity":"neorv32_cache_memory","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":357},{"id":2,"line":366},{"id":3,"line":398},{"id":4,"line":405}]}
+    {"type":"CONSTRAINS","at":[4],"guard":"(valid_mem_rd = '1') and (tag_mem_rd = acc_tag)","lines":[405],"targets":["hit_o"]}
+    {"type":"CARRIES","at":[3],"lines":[398],"targets":["tag_mem"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[366],"targets":["addr_i"]}
+SIGNAL {"name":"acc_idx","entity":"neorv32_cache_memory","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":358},{"id":2,"line":367},{"id":3,"line":369},{"id":4,"line":383},{"id":5,"line":385},{"id":6,"line":387},{"id":7,"line":398},{"id":8,"line":400}]}
+    {"type":"SELECTS","at":[4],"guard":"'0'","lines":[383],"targets":["valid_mem"]}
+    {"type":"SELECTS","at":[5],"guard":"'1'","lines":[385],"targets":["valid_mem"]}
+    {"type":"SELECTS","at":[6],"guard":"valid_mem(to_integer(unsigned(acc_idx)))","lines":[387],"targets":["valid_mem_rd"]}
+    {"type":"SELECTS","at":[7],"guard":"acc_tag","lines":[398],"targets":["tag_mem"]}
+    {"type":"SELECTS","at":[8],"guard":"tag_mem(to_integer(unsigned(acc_idx)))","lines":[400],"targets":["tag_mem_rd"]}
+    {"type":"SOURCES","at":[3],"lines":[369],"targets":["acc_adr"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[367],"targets":["addr_i"]}
+SIGNAL {"name":"acc_off","entity":"neorv32_cache_memory","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":359},{"id":2,"line":368},{"id":3,"line":369}]}
+    {"type":"SOURCES","at":[3],"lines":[369],"targets":["acc_adr"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[368],"targets":["addr_i"]}
+SIGNAL {"name":"acc_adr","entity":"neorv32_cache_memory","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":360},{"id":2,"line":369},{"id":3,"line":414},{"id":4,"line":417},{"id":5,"line":420},{"id":6,"line":423},{"id":7,"line":425},{"id":8,"line":426},{"id":9,"line":427},{"id":10,"line":428}]}
+    {"type":"SELECTS","at":[10],"guard":"data_mem_b3(to_integer(unsigned(acc_adr)))","lines":[428],"targets":["rdata_o"]}
+    {"type":"SELECTS","at":[3],"guard":"wdata_i(7 downto 0)","lines":[414],"targets":["data_mem_b0"]}
+    {"type":"SELECTS","at":[4],"guard":"wdata_i(15 downto 8)","lines":[417],"targets":["data_mem_b1"]}
+    {"type":"SELECTS","at":[5],"guard":"wdata_i(23 downto 16)","lines":[420],"targets":["data_mem_b2"]}
+    {"type":"SELECTS","at":[6],"guard":"wdata_i(31 downto 24)","lines":[423],"targets":["data_mem_b3"]}
+    {"type":"SELECTS","at":[7],"guard":"data_mem_b0(to_integer(unsigned(acc_adr)))","lines":[425],"targets":["rdata_o"]}
+    {"type":"SELECTS","at":[8],"guard":"data_mem_b1(to_integer(unsigned(acc_adr)))","lines":[426],"targets":["rdata_o"]}
+    {"type":"SELECTS","at":[9],"guard":"data_mem_b2(to_integer(unsigned(acc_adr)))","lines":[427],"targets":["rdata_o"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[369],"targets":["acc_idx","acc_off"]}
+
+=== RELATIONSHIP MAP: FLOW GRAPH (computed by a program from the records above) ===
+MAP CHECK {"elements":84,"driving records":127,"receiving records":136,"driving without receiving":0,"receiving without driving":9}
+    {"receiving without driving":["ctrl CLOCKED_BY clk_i","ctrl.buf_dir RESET_BY rstn_i","ctrl.buf_err RESET_BY rstn_i","ctrl.buf_req RESET_BY rstn_i","ctrl.buf_sync RESET_BY rstn_i","ctrl.idx RESET_BY rstn_i","ctrl.ofs RESET_BY rstn_i","ctrl.state RESET_BY rstn_i","ctrl.tag RESET_BY rstn_i"]}
+    {"clock or reset (drive SEQUENCES / RESETS)":["clk_i","rstn_i"]}
+    {"whole records (their fields carry the records)":["bus_req_o","bus_rsp_i","cache_i","cache_o","ctrl","ctrl_nxt","host_req_i","host_rsp_o"]}
+PATH {"from":"addr_i","source":"input"}
+    {"stores":["tag_mem","tag_mem_rd"]}
+    {"influence":["acc_idx","new_i"]}
+PATH {"from":"bus_rsp_i.data","source":"input"}
+    {"sub-block":["neorv32_cache_memory_inst.wdata_i"]}
+    {"influence":["ctrl.state"]}
+PATH {"from":"cache_o.cmd_clr","source":"constant-valued"}
+    {"sub-block":["neorv32_cache_memory_inst.clr_i"]}
+    {"influence":["ctrl.state"]}
+PATH {"from":"cache_o.cmd_inv","source":"constant-valued"}
+    {"sub-block":["neorv32_cache_memory_inst.inv_i"]}
+    {"influence":["ctrl.buf_err","ctrl.state"]}
+PATH {"from":"cache_o.cmd_new","source":"constant-valued"}
+    {"sub-block":["neorv32_cache_memory_inst.new_i"]}
+    {"influence":["ctrl.state"]}
+PATH {"from":"ctrl.idx","source":"constant-valued"}
+    {"exits":["bus_req_o.addr"]}
+    {"sub-block":["neorv32_cache_memory_inst.addr_i"]}
+    {"influence":["ctrl.state"]}
+PATH {"from":"ctrl.ofs","source":"constant-valued"}
+    {"exits":["bus_req_o.addr"]}
+    {"sub-block":["neorv32_cache_memory_inst.addr_i"]}
+    {"influence":["bus_rsp_i.ack","ctrl.state"]}
+PATH {"from":"ctrl.tag","source":"constant-valued"}
+    {"exits":["bus_req_o.addr"]}
+    {"sub-block":["neorv32_cache_memory_inst.addr_i"]}
+    {"influence":["ctrl.state"]}
+PATH {"from":"host_req_i.addr","source":"input"}
+    {"sub-block":["neorv32_cache_memory_inst.addr_i"]}
+    {"influence":["ctrl.state"]}
+PATH {"from":"host_req_i.ben","source":"input"}
+    {"sub-block":["neorv32_cache_memory_inst.we_i"]}
+    {"influence":["cache_i.sta_hit","ctrl.buf_dir","ctrl.state","host_req_i.rw"]}
+PATH {"from":"host_req_i.data","source":"input"}
+    {"sub-block":["neorv32_cache_memory_inst.wdata_i"]}
+    {"influence":["ctrl.state"]}
+PATH {"from":"valid_mem","source":"constant-valued"}
+    {"stores":["valid_mem_rd"]}
+    {"influence":["acc_idx","clr_i","inv_i","new_i"]}
+PATH {"from":"wdata_i","source":"input"}
+    {"stores":["data_mem_b0","data_mem_b1","data_mem_b2","data_mem_b3","rdata_o"]}
+    {"exits":["rdata_o"]}
+    {"influence":["acc_adr","we_i"]}
+CONTROL-ONLY {"from":"bus_rsp_i.ack","source":"input","gates or selects":["ctrl_nxt.ofs","ctrl_nxt.state"]}
+CONTROL-ONLY {"from":"bus_rsp_i.err","source":"input","gates or selects":["ctrl_nxt.buf_err"]}
+CONTROL-ONLY {"from":"clr_i","source":"input","gates or selects":["valid_mem"]}
+CONTROL-ONLY {"from":"ctrl.buf_dir","source":"constant-valued","gates or selects":["bus_req_o.stb","cache_o.we","ctrl_nxt.state","host_rsp_o.ack"]}
+CONTROL-ONLY {"from":"ctrl.buf_err","source":"constant-valued","gates or selects":["cache_o.cmd_inv","ctrl_nxt.buf_err","ctrl_nxt.state","host_rsp_o.ack","host_rsp_o.err"]}
+CONTROL-ONLY {"from":"ctrl.buf_req","source":"constant-valued","gates or selects":["ctrl_nxt.buf_dir","ctrl_nxt.buf_req","ctrl_nxt.state"]}
+CONTROL-ONLY {"from":"ctrl.buf_sync","source":"constant-valued","gates or selects":["ctrl_nxt.buf_dir","ctrl_nxt.buf_sync","ctrl_nxt.state"]}
+CONTROL-ONLY {"from":"ctrl.state","source":"constant-valued","gates or selects":["bus_req_o.addr","bus_req_o.fence","bus_req_o.lock","bus_req_o.rw","bus_req_o.stb","cache_o.addr","cache_o.cmd_clr","cache_o.cmd_inv","cache_o.cmd_new","cache_o.data","cache_o.we","ctrl_nxt.buf_dir","ctrl_nxt.buf_err","ctrl_nxt.buf_req","ctrl_nxt.buf_sync","ctrl_nxt.idx","ctrl_nxt.ofs","ctrl_nxt.state","ctrl_nxt.tag","host_rsp_o","host_rsp_o.ack","host_rsp_o.err"]}
+CONTROL-ONLY {"from":"host_req_i.amo","source":"input","gates or selects":["ctrl_nxt.buf_dir"]}
+CONTROL-ONLY {"from":"host_req_i.debug","source":"input","gates or selects":["ctrl_nxt.buf_dir"]}
+CONTROL-ONLY {"from":"host_req_i.fence","source":"input","gates or selects":["ctrl_nxt.buf_dir","ctrl_nxt.buf_sync","ctrl_nxt.state"]}
+CONTROL-ONLY {"from":"host_req_i.rw","source":"input","gates or selects":["bus_req_o.stb","cache_o.we","ctrl_nxt.state","host_rsp_o.ack"]}
+CONTROL-ONLY {"from":"host_req_i.stb","source":"input","gates or selects":["ctrl_nxt.buf_dir","ctrl_nxt.buf_req","ctrl_nxt.state"]}
+CONTROL-ONLY {"from":"inv_i","source":"input","gates or selects":["valid_mem"]}
+CONTROL-ONLY {"from":"new_i","source":"input","gates or selects":["tag_mem","valid_mem"]}
+CONTROL-ONLY {"from":"we_i","source":"input","gates or selects":["data_mem_b0","data_mem_b1","data_mem_b2","data_mem_b3"]}
+    {"no local use (no relationship, connection or constant driver)":["bus_req_o.amo","bus_req_o.amoop","bus_req_o.ben","bus_req_o.data","bus_req_o.debug","bus_req_o.priv","bus_req_o.src","host_req_i.amoop","host_req_i.lock","host_req_i.priv","host_req_i.src"]}
+    {"not reached from an input or constant-valued element":["cache_i.data","cache_i.sta_hit","hit_o","host_rsp_o.data"]}
+
+Identify the primary security assets for 'neorv32_cache' and return the JSON object per the contract.

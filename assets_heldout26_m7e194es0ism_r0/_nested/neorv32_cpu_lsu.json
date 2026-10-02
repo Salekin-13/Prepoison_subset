@@ -1,0 +1,185 @@
+{
+  "module name": "neorv32_cpu_lsu",
+  "conceptual assets": [
+    {
+      "concept": "Stored memory address (MAR) used for LSU operations and response lane selection",
+      "security objective": "Integrity",
+      "reasoning": "The mem_addr_reg process captures the request address into the internal register: on rising edge when ctrl_i.lsu_mo_we = '1' the RTL does 'mar <= addr_i'. The stored mar is used to form the bus address ('dbus_req_o.addr <= mar') and exported ('mar_o <= mar'), and mem_di_reg uses mar(1 downto 0) to select which response byte lane supplies rdata_o. Therefore corrupting mar changes request target or response-lane selection, breaking correctness (Integrity).",
+      "related structural assets": [
+        {
+          "asset rtl": "mar",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "addr_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "mar_o",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Misaligned-access indicator computed from funct3 and address bits",
+      "security objective": "Integrity",
+      "reasoning": "mem_addr_reg computes and stores misaligned from ctrl_i.ir_funct3 and addr_i bits (case on ctrl_i.ir_funct3(1 downto 0) assigns misaligned <= ... or addr_i(0)/addr_i(1)). misaligned is used to gate request issuance ('dbus_req_o.stb <= ... and (not misaligned)') and appears in error conditions (err_o(0/2) include misaligned). Incorrect misaligned flips request gating or error reporting, so Integrity is established.",
+      "related structural assets": [
+        {
+          "asset rtl": "misaligned",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "addr_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Pending outstanding memory-request state",
+      "security objective": "Integrity",
+      "reasoning": "access_arbiter stores the outstanding-request flag: on reset pending <= '0'; on rising edge when pending = '0' it samples ctrl_i.lsu_req (pending <= ctrl_i.lsu_req) and clears pending when dbus_rsp_i.ack = '1' or ctrl_i.cpu_trap = '1'. pending gates rdata production (mem_di_reg checks pending) and affects error reporting and lock clearing. Corrupting pending breaks request lifecycle and reporting consistency (Integrity).",
+      "related structural assets": [
+        {
+          "asset rtl": "pending",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "PMP fault indicator sampled inside LSU",
+      "security objective": "Integrity",
+      "reasoning": "access_arbiter stores pmp_err from the external input ('pmp_err <= pmp_fault_i'). pmp_err is subsequently used in error conditions (err_o(1/3) test '(dbus_rsp_i.err or pmp_err)'). Corrupting this stored fault indicator falsifies error reporting (Integrity).",
+      "related structural assets": [
+        {
+          "asset rtl": "pmp_err",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "pmp_fault_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Atomic memory-op opcode encoding (amo_cmd) computed from funct12",
+      "security objective": "Integrity",
+      "reasoning": "The amo_encode process decodes ctrl_i.ir_funct12(11 downto 7) with an explicit case into the 4-bit amo_cmd signal (multiple when branches assign amo_cmd). mem_do_reg then uses amo_cmd for the outgoing AMO opcode ('dbus_req_o.amoop <= amo_cmd'). Incorrect amo_cmd changes the encoded atomic operation and thus operation semantics: Integrity is established.",
+      "related structural assets": [
+        {
+          "asset rtl": "amo_cmd",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Encoded bus-request payload fields produced by the LSU (rw, priv, debug, amo, amoop, data, ben, fence, src)",
+      "security objective": "Integrity",
+      "reasoning": "mem_do_reg composes request fields when ctrl_i.lsu_mo_we = '1': it assigns rw/priv/debug/amo from ctrl_i, assigns amoop <= amo_cmd, forms data from wdata_i with size-dependent concatenation, computes byte-enables from addr_i bits and assigns fence from ctrl_i.lsu_fence (and dbus_req_o.src <= '0'). These composed values are written into the bus request record. Corruption of these composed fields mis-specifies memory operations (Integrity). The transport port dbus_req_o is a transaction record (transport) and is excluded from reporting, so the internal producers are reported instead.",
+      "related structural assets": [
+        {
+          "asset rtl": "mar",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "amo_cmd",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "wdata_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "addr_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Bus-request issuance decision (strobe) that enables a transfer",
+      "security objective": "Integrity",
+      "reasoning": "The RTL computes the issue predicate explicitly: 'dbus_req_o.stb <= ctrl_i.lsu_req and (not misaligned) and (not pmp_fault_i)'. Whether a transfer is issued or suppressed depends on this decision; incorrect or suppressed strobe would incorrectly allow or block transfers (Integrity). The decision is emitted only to the transport field dbus_req_o.stb, which is excluded from structural reporting, so no eligible internal declaration remains to report.",
+      "related structural assets": []
+    },
+    {
+      "concept": "Bus lock assertion decision",
+      "security objective": "Integrity",
+      "reasoning": "The bus_lock process sets the lock field on the outgoing request under an explicit predicate: if ctrl_i.lsu_mo_we='1' and ctrl_i.lsu_amo='1' and ctrl_i.ir_funct12(8)='0' then dbus_req_o.lock <= '1', and it is cleared when pending = '0'. Corrupting this decision changes observed lock behaviour (Integrity). The lock value is stored only into the transport port field dbus_req_o.lock (transport excluded), so no eligible internal structural reference remains to report.",
+      "related structural assets": []
+    },
+    {
+      "concept": "Read data produced and exported by the LSU",
+      "security objective": "Integrity",
+      "reasoning": "mem_di_reg produces rdata_o on the rising clock: on pending = '1' the RTL selects response lanes and sign/zero-extends dbus_rsp_i.data based on ctrl_i.ir_funct3 and mar bits (case/mapping and replicate_f) and assigns rdata_o accordingly; otherwise rdata_o is zeroed. rdata_o is the exit through which the read result leaves the LSU, so corrupting it violates returned-data correctness (Integrity).",
+      "related structural assets": [
+        {
+          "asset rtl": "rdata_o",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Error-report outputs that signal misalignment and bus/PMP faults (err_o vector)",
+      "security objective": "Integrity",
+      "reasoning": "err_o bits are computed concurrently from explicit RTL predicates: err_o(0) <= pending and (not ctrl_i.lsu_rw) and misaligned; err_o(1) <= pending and (not ctrl_i.lsu_rw) and (dbus_rsp_i.err or pmp_err); err_o(2/3) analogous for writes. These outputs communicate detected error conditions; incorrect err_o falsifies error signaling and handling (Integrity).",
+      "related structural assets": [
+        {
+          "asset rtl": "err_o",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Bus-wait indicator exported by the LSU (wait_o)",
+      "security objective": "Integrity",
+      "reasoning": "The RTL assigns wait_o <= not dbus_rsp_i.ack, directly reflecting the bus acknowledge signal. wait_o leaves the entity as the ready/wait indication; if it is incorrect the observed ready/wait state is wrong (Integrity).",
+      "related structural assets": [
+        {
+          "asset rtl": "wait_o",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "exit port"
+        }
+      ]
+    }
+  ]
+}

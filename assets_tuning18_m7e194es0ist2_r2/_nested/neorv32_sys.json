@@ -1,0 +1,261 @@
+{
+  "module name": "neorv32_sys",
+  "module purpose": "This file implements two system services: a reset/sequencer (neorv32_sys_reset) that synchronises an external reset, generates a timed deassertion (shift-registers) and forwards synchronized watchdog/debug resets; and a clock-control unit (neorv32_sys_clock) that latches an enable vector, runs a counter while enabled, and produces timed clk-enable pulses (clk_en_o) at several divide ratios.",
+  "use-case flows": [
+    {
+      "flow": "reset",
+      "value": "external-reset assertion clears sequencer state and forces reset outputs low",
+      "lines": [
+        44,
+        45,
+        46,
+        47,
+        68,
+        69,
+        70,
+        71
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "external-reset deassertion sequence: sreg_ext shifts ones and rstn_ext_o is derived from sreg_ext; sreg_sys shifts ones unless watchdog or debug reset forces it clear, and rstn_sys_o is derived from sreg_sys",
+      "lines": [
+        51,
+        52,
+        54,
+        55,
+        57,
+        59
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "synchronise watchdog and debug reset inputs into synchronous outputs (captured on clk rising edge)",
+      "lines": [
+        66,
+        71,
+        72,
+        73,
+        74
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "clock generator reset: rstn_i clears en, cnt and cnt2",
+      "lines": [
+        124,
+        125,
+        126,
+        127
+      ]
+    },
+    {
+      "flow": "configure",
+      "value": "enable vector written into en (or_reduce_f(enable_i)) to start/stop counting",
+      "lines": [
+        129,
+        130
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "when enabled, cnt increments on each clk edge and cnt2 follows cnt; these registers implement the timing state",
+      "lines": [
+        131,
+        133,
+        135
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "clk_en_o outputs pulses derived from cnt and cnt2 bits (one-cycle pulse when a selected bit rises)",
+      "lines": [
+        140,
+        141,
+        142,
+        143,
+        144,
+        145,
+        146,
+        147
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "External-reset output and its deassertion sequence (the rstn_ext_o value produced after the external reset release)",
+      "security objective": "Integrity",
+      "reasoning": "The module implements a timed deassertion for the external reset: on each rising clk sreg_ext shifts in '1' (line 51) and rstn_ext_o is assigned from the reduction of sreg_ext (line 52). On external reset assert both sreg_ext and rstn_ext_o are driven to '0' (lines 44-46). The map records rstn_ext_o as DERIVES_FROM sreg_ext at occurrence 3 (port rstn_ext_o, DERIVES_FROM at [3], line 52 -> target sreg_ext) and sreg_ext as CLOCKED_BY clk_i at occurrence 3 (signal sreg_ext, CLOCKED_BY at [3], line 51 -> target clk_i). Corrupting sreg_ext or the derived output would break the implemented deassertion/time relation, so integrity of the produced rstn_ext_o is established by the RTL (lines 44-52) and the cited records.",
+      "related structural assets": [
+        {
+          "asset rtl": "rstn_ext_o",
+          "entity": "neorv32_sys_reset",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "sreg_ext"
+          }
+        },
+        {
+          "asset rtl": "sreg_ext",
+          "entity": "neorv32_sys_reset",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "System-reset value/state that this block produces for the core/peripherals (rstn_sys_o) and the shift-register that implements it",
+      "security objective": "Integrity",
+      "reasoning": "The system-reset output is formed from a 4-bit shift register sreg_sys: if either rstn_wdt_i='0' or rstn_dbg_i='0' the register is cleared (line 54) else it shifts in '1' on clk edges (line 57); rstn_sys_o is assigned from and_reduce_f(sreg_sys) (line 59). The map records that sreg_sys is CLOCKED_BY clk_i (signal sreg_sys, CLOCKED_BY at [4], line 57 -> clk_i) and that rstn_sys_o DERIVES_FROM sreg_sys (port rstn_sys_o, DERIVES_FROM at [3], line 59 -> sreg_sys). The inputs rstn_wdt_i and rstn_dbg_i gate this register (their GATES records at occurrence 2, line 54 -> target sreg_sys). Therefore the RTL establishes that corrupting the shift-register state or the gating inputs would change the produced rstn_sys_o value (lines 54-59 and the cited map records), so integrity of the system-reset output/state is Established.",
+      "related structural assets": [
+        {
+          "asset rtl": "rstn_sys_o",
+          "entity": "neorv32_sys_reset",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "sreg_sys"
+          }
+        },
+        {
+          "asset rtl": "sreg_sys",
+          "entity": "neorv32_sys_reset",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "rstn_wdt_i",
+          "entity": "neorv32_sys_reset",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATES",
+            "partner": "sreg_sys"
+          }
+        },
+        {
+          "asset rtl": "rstn_dbg_i",
+          "entity": "neorv32_sys_reset",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATES",
+            "partner": "sreg_sys"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Synchronized watchdog-reset output (xrstn_wdt_o) delivered to consumers",
+      "security objective": "Integrity",
+      "reasoning": "The RTL copies the asynchronous watchdog reset input into a synchronous output: on external reset the output is forced low (line 69) and on rising clk the module captures rstn_wdt_i into xrstn_wdt_o (line 72). The map records xrstn_wdt_o as COPIES rstn_wdt_i at occurrence 3 (port xrstn_wdt_o, COPIES at [3], line 72 -> target rstn_wdt_i) and rstn_wdt_i as CARRIES to xrstn_wdt_o at occurrence 3 (port rstn_wdt_i, CARRIES at [3], line 72 -> target xrstn_wdt_o). Because the module is responsible for delivering the synchronised value (lines 68-73 and the cited records), the integrity of xrstn_wdt_o is Established from the RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "xrstn_wdt_o",
+          "entity": "neorv32_sys_reset",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "COPIES",
+            "partner": "rstn_wdt_i"
+          }
+        },
+        {
+          "asset rtl": "rstn_wdt_i",
+          "entity": "neorv32_sys_reset",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "xrstn_wdt_o"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Synchronized on-chip-debug/OCD-reset output (xrstn_ocd_o) delivered to consumers",
+      "security objective": "Integrity",
+      "reasoning": "The RTL captures the debug-reset input into a synchronous output: external-reset forces it low (line 70) and on clk rising the module assigns xrstn_ocd_o <= rstn_dbg_i (line 73). The map shows xrstn_ocd_o COPIES rstn_dbg_i at occurrence 3 (port xrstn_ocd_o, COPIES at [3], line 73 -> target rstn_dbg_i) and rstn_dbg_i CARRIES to xrstn_ocd_o at occurrence 3 (port rstn_dbg_i, CARRIES at [3], line 73 -> target xrstn_ocd_o). The RTL and records establish that the module is the source of the synchronized debug-reset output (lines 68-74 and cited records), so its integrity is Established.",
+      "related structural assets": [
+        {
+          "asset rtl": "xrstn_ocd_o",
+          "entity": "neorv32_sys_reset",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "COPIES",
+            "partner": "rstn_dbg_i"
+          }
+        },
+        {
+          "asset rtl": "rstn_dbg_i",
+          "entity": "neorv32_sys_reset",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "xrstn_ocd_o"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Clock-enable pulses produced on clk_en_o (the vector of divide-ratio pulses used to gate clocks)",
+      "security objective": "Integrity",
+      "reasoning": "The clock-control unit latches enable_i into en (en <= or_reduce_f(enable_i), line 129), increments cnt while en='1' (line 131), copies cnt into cnt2 (line 135), and drives clk_en_o entries from bitwise conditions (e.g. clk_en_o(clk_div2_c) <= cnt(0) and (not cnt2(0)); lines 140-147). The map records enable_i SOURCES en at occurrence 2 (port enable_i, SOURCES at [2], line 129 -> target en), cnt and cnt2 as CLOCKED_BY clk_i (signals cnt and cnt2, CLOCKED_BY at [3], lines 131 and 135 -> target clk_i), and clk_en_o as GATED_BY cnt/cnt2 (port clk_en_o, GATED_BY at [2], line 140 -> targets cnt,cnt2). Because the outputs are produced deterministically from the counted state and en (lines 129,131,135,140-147 and cited records), integrity of the clock-enable pulses (correct timing and gating) is Established by the RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "clk_en_o",
+          "entity": "neorv32_sys_clock",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "cnt"
+          }
+        },
+        {
+          "asset rtl": "cnt",
+          "entity": "neorv32_sys_clock",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "cnt2",
+          "entity": "neorv32_sys_clock",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "enable_i",
+          "entity": "neorv32_sys_clock",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "en"
+          }
+        }
+      ]
+    }
+  ]
+}

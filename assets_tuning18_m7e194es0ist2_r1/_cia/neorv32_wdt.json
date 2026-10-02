@@ -1,0 +1,336 @@
+{
+ "module name": "neorv32_wdt",
+ "concepts": [
+  {
+   "concept": "Watchdog enable configuration (whether the WDT is enabled and the exported clock-enable)",
+   "kind": "configuration",
+   "writers": "Reset: ctrl.enable <= '0' on rstn_sys_i = '0' (line 75); Bus write: ctrl.enable <= bus_req_i.data(ctrl_enable_c) when bus_req_i.stb='1' and bus_req_i.rw='1' and bus_req_i.addr(2)='0' and ctrl.lock='0' (line 94).",
+   "observers": "Bus readback: bus_rsp_o.data(ctrl_enable_c) <= ctrl.enable on bus reads (line 109); External output: clkgen_en_o <= ctrl.enable (line 140).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 140,
+     "via": "clkgen_en_o",
+     "reason": "ctrl.enable is copied to the external clkgen_en_o output (line 140) and is also returned on bus reads (line 109), so an outside observer can learn its value."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 94,
+     "via": "bus_req_i.data",
+     "reason": "ctrl.enable is written directly from bus_req_i.data at line 94 under the bus write path (guarded only by ctrl.lock), so an external bus master can change it while the WDT is operating and affect counting (see cnt_started/cnt updates lines 129-135)."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 131,
+     "via": "bus_req_i",
+     "reason": "Clearing ctrl.enable (via a bus write to the enable bit) causes the counter to be reset in wdt_counter (line 131), so an external master can stop counting and prevent timeouts."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 94,
+     "via": "bus_req_i.data",
+     "reason": "ctrl.enable is driven only by the bus write (line 94) and reset (line 75); there is no debug/test override path that substitutes a different assignment."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Configuration lock (whether control fields are frozen against writes)",
+   "kind": "configuration",
+   "writers": "Reset: ctrl.lock <= '0' on rstn_sys_i = '0' (line 76); Bus write: ctrl.lock <= bus_req_i.data(ctrl_lock_c) and ctrl.enable when bus_req_i.stb='1' and bus_req_i.rw='1' and bus_req_i.addr(2)='0' (assignment at line 95, executed only when ctrl.lock = '0' per line 93).",
+   "observers": "Bus readback: bus_rsp_o.data(ctrl_lock_c) <= ctrl.lock on bus reads (line 110).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 110,
+     "via": "bus_rsp_o.data",
+     "reason": "ctrl.lock is returned on bus reads (line 110), so external observers can learn whether controls are locked."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 95,
+     "via": "bus_req_i.data",
+     "reason": "ctrl.lock is written from bus_req_i.data at line 95 and it itself gates whether subsequent control writes are accepted (line 93), so an external writer can set the protection and thereby change integrity of control fields."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 93,
+     "via": "bus_req_i",
+     "reason": "If ctrl.lock is set to '1' the bus-access path rejects configuration writes and sets reset_force instead (lines 93/99), so an external actor that sets lock can prevent further reconfiguration until reset."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 95,
+     "via": "bus_req_i.data",
+     "reason": "ctrl.lock has a single intended driver (the bus write at line 95 and reset at line 76); there is no alternate debug/test override that changes it."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Timeout setting (the programmable timeout value the counter is compared against)",
+   "kind": "configuration",
+   "writers": "Reset: ctrl.timeout <= (others => '0') on rstn_sys_i = '0' (line 78); Bus write: ctrl.timeout <= bus_req_i.data(ctrl_timeout_msb_c downto ctrl_timeout_lsb_c) when bus_req_i.stb='1' and bus_req_i.rw='1' and bus_req_i.addr(2)='0' and ctrl.lock='0' (line 97).",
+   "observers": "Bus readback: bus_rsp_o.data(ctrl_timeout_msb_c downto ctrl_timeout_lsb_c) <= ctrl.timeout on bus reads (line 113); its effect is externally observable because cnt = ctrl.timeout produces cnt_timeout (line 144) which drives hw_rst_timeout (line 155) and rstn_o (line 161).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 113,
+     "via": "bus_rsp_o.data",
+     "reason": "ctrl.timeout is returned on bus reads (line 113), so an outside observer can learn the configured timeout value."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 97,
+     "via": "bus_req_i.data",
+     "reason": "ctrl.timeout is written directly from bus_req_i.data at line 97 and that write can occur while the counter runs (the comparator is at line 144), so external writes can change when a timeout will occur."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 97,
+     "via": "bus_req_i.data",
+     "reason": "An external master can write ctrl.timeout (line 97) to values that either prevent timeouts or cause an immediate cnt = ctrl.timeout and hw_rst_timeout (lines 144/155), enabling external interference with reset availability."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 97,
+     "via": "bus_req_i.data",
+     "reason": "ctrl.timeout is driven only by the bus write (line 97) and reset (line 78); there is no alternate debug/test override for the timeout field."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Strict mode configuration (whether forced-access generates a hardware reset)",
+   "kind": "configuration",
+   "writers": "Reset: ctrl.strict <= '0' on rstn_sys_i = '0' (line 77); Bus write: ctrl.strict <= bus_req_i.data(ctrl_strict_c) when bus_req_i.stb='1' and bus_req_i.rw='1' and bus_req_i.addr(2)='0' and ctrl.lock='0' (line 96).",
+   "observers": "Bus readback: bus_rsp_o.data(ctrl_strict_c) <= ctrl.strict on bus reads (line 112); effect visible externally because ctrl.strict participates in hw_rst_access (line 156) and therefore rstn_o (line 161) and reset_cause (line 176).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 112,
+     "via": "bus_rsp_o.data",
+     "reason": "ctrl.strict is readable on bus reads (line 112), so external observers can learn whether strict mode is enabled."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 96,
+     "via": "bus_req_i.data",
+     "reason": "ctrl.strict is written from bus_req_i.data at line 96 and is used to compute hw_rst_access (line 156), so external writes can change whether forced-access escalates to a reset."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 156,
+     "via": "bus_req_i",
+     "reason": "Changing ctrl.strict (via bus writes at line 96) controls whether reset_force escalates to hw_rst_access (line 156) and thus whether rstn_o will be asserted, enabling an external actor to affect system availability."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 96,
+     "via": "bus_req_i.data",
+     "reason": "ctrl.strict is only driven by the bus write (line 96) and reset (line 77); there is no debug/test bypass that substitutes a different assignment."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Watchdog reload request (the reload/clear signal that resets the WDT counter)",
+   "kind": "event",
+   "writers": "Reset/clear: reset_wdt <= '0' on rstn_sys_i = '0' (line 79) and bus_access clears it each cycle (line 87); Bus write: reset_wdt <= '1' when bus_req_i.stb='1' and bus_req_i.rw='1' and not bus_req_i.addr(2) and bus_req_i.data(31 downto 0) = reset_pwd_c (lines 101-103).",
+   "observers": "No direct readback of reset_wdt; its effect is externally observable because it clears cnt (wdt_counter line 131), which changes cnt_timeout (line 144), hw_rst_timeout (line 155) and therefore the external rstn_o (line 161) and observed reset behavior.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 161,
+     "via": "rstn_o",
+     "reason": "reset_wdt clears the internal counter (line 131) which alters cnt_timeout and hw_rst_timeout (line 155) and thus the external rstn_o output (line 161), so an outside observer can infer reload events and whether a password-matching write occurred."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 103,
+     "via": "bus_req_i.data",
+     "reason": "reset_wdt is asserted by a bus write when the bus data equals the hard-coded reset_pwd_c (line 103), so an external master that supplies that data can change the reload state while the WDT runs."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 103,
+     "via": "bus_req_i.data",
+     "reason": "An external master that can provide the matching password (line 103) can repeatedly assert reset_wdt and continuously clear the counter (line 131), preventing timeouts and affecting availability of reset behavior."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 103,
+     "via": "bus_req_i.data",
+     "reason": "reset_wdt has a single intended driver (the passworded bus write at line 103 and reset/clear at lines 79/87) and there is no debug/test bypass."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Forced-reset indicator (reset_force) set on disallowed or incorrect bus accesses",
+   "kind": "event",
+   "writers": "Reset/clear: reset_force <= '0' on rstn_sys_i = '0' (line 80) and bus_access clears it each cycle (line 88); Set to '1' by bus-access branches on disallowed writes when ctrl.lock /= '0' (line 99) and on wrong-password writes (line 105) under bus write conditions.",
+   "observers": "No direct readback of reset_force; its effect is visible externally because it participates in hw_rst_access (line 156) which asserts rstn_o (line 161) and causes reset_cause to be set to \"11\" (line 176) that is readable via bus reads (line 111).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 161,
+     "via": "rstn_o",
+     "reason": "reset_force can cause hw_rst_access (line 156) and a system reset (rstn_o at line 161) and later reset_cause='11' (line 176) readable on the bus (line 111), so external observers can learn when forced-reset conditions occurred."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 99,
+     "via": "bus_req_i",
+     "reason": "reset_force is set directly by the bus-access logic on disallowed or incorrect writes (lines 99/105), so an external master can cause the forced-reset indicator to change."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 99,
+     "via": "bus_req_i",
+     "reason": "An external master can trigger reset_force (lines 99/105) which can be escalated (line 156) to assert rstn_o (line 161) and thereby cause system resets, enabling denial-of-service."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 99,
+     "via": "bus_req_i",
+     "reason": "reset_force is driven only by the bus-access branches (lines 99/105) and reset; there is no alternate debug/test override path that substitutes a different assignment."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Watchdog counter state (current counter value used to detect timeout)",
+   "kind": "state",
+   "writers": "Reset: cnt <= (others => '0') on rstn_sys_i = '0' (line 127); During operation: cnt <= (others => '0') if (ctrl.enable = '0') or (reset_wdt = '1') (lines 131-132); cnt <= std_ulogic_vector(unsigned(cnt) + 1) when cnt_inc = '1' (line 134); cnt_inc is computed from prsc_tick and cnt_started (line 129).",
+   "observers": "No direct readback; its value affects cnt_timeout (line 144) and hw_rst_timeout (line 155) and therefore rstn_o (line 161) and reset_cause (line 174) which are externally visible, so counter progress/timing can be inferred externally.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 161,
+     "via": "rstn_o",
+     "reason": "cnt equality to ctrl.timeout produces cnt_timeout (line 144) and hw_rst_timeout (line 155) which change the external rstn_o (line 161), so outside observers can infer the counter's progress/timing."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 134,
+     "via": "prsc_tick (clkgen_i) and reset_wdt (bus_req_i)",
+     "reason": "cnt is incremented at line 134 under cnt_inc and cleared by reset_wdt (line 131); external-influenced signals (prsc_tick from clkgen_i and reset_wdt from bus writes) can therefore change cnt while it is in use."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 129,
+     "via": "clkgen_i (prsc_tick)",
+     "reason": "cnt_inc depends on prsc_tick (line 129) which is derived from clkgen_i (line 141), so if the external clock source stops or is manipulated the counter will not advance and timeouts are prevented."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 134,
+     "via": "cnt_inc",
+     "reason": "cnt's drivers are the intended increment (line 134) and clears (line 131); there is no debug/test mode that substitutes a different driver for cnt."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Counter-started flag (whether the watchdog counter is active)",
+   "kind": "state",
+   "writers": "Reset: cnt_started <= '0' on rstn_sys_i = '0' (line 126); Update: cnt_started <= ctrl.enable and (cnt_started or prsc_tick) on rising edge (line 130).",
+   "observers": "No direct readback; it controls cnt_inc (line 129) and participates in cnt_timeout (line 144) and hw_rst_timeout (line 155), so its activity is externally inferable through rstn_o (line 161) and reset behavior.",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 161,
+     "via": "rstn_o",
+     "reason": "cnt_started gates counting (line 129) and thereby affects cnt_timeout and hw_rst_timeout (line 155) and the external rstn_o (line 161), so external observers can infer whether the counter is active."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 130,
+     "via": "ctrl.enable (bus_req_i) and prsc_tick (clkgen_i)",
+     "reason": "cnt_started is driven from ctrl.enable and prsc_tick at line 130; both are influenced by external inputs, so outsiders can change whether the counter is active while it is used."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 130,
+     "via": "clkgen_i / bus_req_i",
+     "reason": "External inputs can prevent cnt_started from becoming '1' by clearing ctrl.enable (bus write) or by stopping prsc_tick (clkgen_i), halting counter activity (line 130) and affecting availability."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 130,
+     "via": "cnt_started update",
+     "reason": "cnt_started is driven only by its update expression (line 130) and reset; there is no debug/test bypass that selects an alternate assignment."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "Reset cause register (the recorded source of the last reset)",
+   "kind": "state",
+   "writers": "Reset: reset_cause <= \"00\" on rstn_ext_i = '0' (line 169); On clock: if rstn_dbg_i = '0' then reset_cause <= \"01\" (line 172); elsif hw_rst_timeout = '1' then reset_cause <= \"10\" (line 174); elsif hw_rst_access = '1' then reset_cause <= \"11\" (line 176).",
+   "observers": "Bus readback: bus_rsp_o.data(ctrl_rcause_hi_c downto ctrl_rcause_lo_c) <= reset_cause on bus reads (line 111).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 111,
+     "via": "bus_rsp_o.data",
+     "reason": "reset_cause is returned on the bus (line 111), so external observers can learn the recorded reason for the last reset."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 171,
+     "via": "rstn_dbg_i",
+     "reason": "reset_cause is written from external rstn_dbg_i (lines 171-172) and from internal hw_rst_timeout/hw_rst_access (lines 173-176), so external inputs can change the recorded cause."
+    },
+    "availability": {
+     "answer": "no",
+     "line": 169,
+     "via": "rstn_ext_i",
+     "reason": "reset_cause is a reporting register updated by reset and internal flags (lines 169,172,174,176) and nothing in the RTL depends on this register for forward progress, so its value does not block module progress."
+    },
+    "undermined behavior": {
+     "answer": "yes-RTL",
+     "line": 171,
+     "via": "rstn_dbg_i",
+     "reason": "The debug input rstn_dbg_i = '0' forces reset_cause to the debug code (line 172), selecting a different assignment path that overrides other conditions."
+    }
+   },
+   "security objective": "Confidentiality"
+  },
+  {
+   "concept": "System reset output (the rstn_o value derived from internal reset flags)",
+   "kind": "decision",
+   "writers": "Derived assignment rstn_o <= not (hw_rst_timeout or hw_rst_access) (line 161); hw_rst_timeout is driven at line 155 (hw_rst_timeout <= ctrl.enable and cnt_timeout and prsc_tick) and hw_rst_access at line 156 (hw_rst_access <= ctrl.enable and ctrl.strict and reset_force); both hw_rst_* are reset by rstn_sys_i (lines 152-153).",
+   "observers": "External output pin rstn_o (line 161) is observed by the rest of the system; reset causes that affect rstn_o are also visible via reset_cause (lines 174/176) which is readable on the bus (line 111).",
+   "answers": {
+    "confidentiality": {
+     "answer": "yes-assumed",
+     "line": 161,
+     "via": "rstn_o",
+     "reason": "rstn_o is an externally visible output (line 161) so outside components can observe the reset assertion and its timing."
+    },
+    "integrity": {
+     "answer": "yes-RTL",
+     "line": 161,
+     "via": "hw_rst_timeout/hw_rst_access",
+     "reason": "rstn_o is computed directly from hw_rst_timeout and hw_rst_access (line 161) which are driven by signals that external inputs can influence (lines 155/156), so outside actors can cause or prevent system resets."
+    },
+    "availability": {
+     "answer": "yes-RTL",
+     "line": 156,
+     "via": "bus_req_i / clkgen_i",
+     "reason": "External inputs (e.g. bus writes that set reset_force or reset_wdt, and the clkgen_i prescaler that affects cnt_timeout) can assert hw_rst_access or hw_rst_timeout (lines 155/156) and thereby assert rstn_o (line 161), enabling forced resets and denial-of-service."
+    },
+    "undermined behavior": {
+     "answer": "no",
+     "line": 161,
+     "via": null,
+     "reason": "rstn_o is driven by the single combinational expression not (hw_rst_timeout or hw_rst_access) (line 161); there is no special debug/test mode that substitutes a different source."
+    }
+   },
+   "security objective": "Confidentiality"
+  }
+ ],
+ "_problems": []
+}

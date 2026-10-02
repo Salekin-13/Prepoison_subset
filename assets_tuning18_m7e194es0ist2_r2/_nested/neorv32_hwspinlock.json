@@ -1,0 +1,91 @@
+{
+  "module name": "neorv32_hwspinlock",
+  "module purpose": "A 32-bit hardware spinlock array accessed over a bus: each lock bit lock_q(i) is reset to 0, can be written on a bus request whose address selects an index (sel(i)), and the module replies on the bus with ack/err/data derived from the stored lock bits.",
+  "use-case flows": [
+    {
+      "flow": "start",
+      "value": "bus request strobe begins a bus transaction that the module observes (start of read or write)",
+      "lines": [
+        44,
+        63
+      ]
+    },
+    {
+      "flow": "configure",
+      "value": "write operation that sets or clears a lock bit: on a qualifying bus request the chosen lock_q(i) is updated from the request (not bus_req_i.rw) on the clock edge",
+      "lines": [
+        44,
+        45
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "bus-response production: on each clock the module drives bus_rsp_o.ack, bus_rsp_o.err and bus_rsp_o.data and implements read logic when stb and rw indicate a read",
+      "lines": [
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        70
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "return of lock state: when a read to the locks is performed the reply data is either the masked single-bit vector (lock_q and sel) or the full lock_q vector",
+      "lines": [
+        66,
+        67,
+        68,
+        70
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "synchronous/asynchronous clear of state and response on reset: lock_q bits are cleared and bus_rsp_o is set to rsp_terminate_c on rstn_i = '0'",
+      "lines": [
+        41,
+        42,
+        60,
+        61
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Spinlock state (the 32-bit lock file) \u2014 the stored per-index lock bits that the module keeps and reports",
+      "security objective": "Integrity",
+      "reasoning": "The RTL implements the lock bits as the register lock_q which the module relies on for both update and readback: reset forces lock_q(i) <= '0' (RTL line 42; map: lock_q constant driver / RESET_BY at occurrence id 2, line 42), writes update lock_q(i) on a clock edge under the guarding condition `if (bus_req_i.stb = '1') and (bus_req_i.addr(7) = '0') and (sel(i) = '1') then lock_q(i) <= not bus_req_i.rw;` (RTL lines 44-45; map: lock_q has GATED_BY and DERIVES_FROM records at occurrence id 3, line 45). The stored bits are the source of the bus read reply: `bus_rsp_o.data <= lock_q and sel` (RTL line 68; map: lock_q SOURCES bus_rsp_o.data at occurrence id 4, line 68 and CARRIES to bus_rsp_o.data at occurrence id 5, line 70). Thus the module's correct operation (which bit is held and what the bus returns) depends on the integrity of lock_q. The register is clocked (map: lock_q CLOCKED_BY at occurrence id 3, line 45, partner 'clk_i') and reset (map: lock_q RESET_BY at occurrence id 2, line 42, partner 'rstn_i').",
+      "related structural assets": [
+        {
+          "asset rtl": "lock_q",
+          "entity": "neorv32_hwspinlock",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Address-to-index decode decision (sel) \u2014 which lock bit index a bus request targets",
+      "security objective": "Integrity",
+      "reasoning": "The RTL computes a per-index selector sel(i) from the address bits: `sel(i) <= '1' when (bus_req_i.addr(6 downto 2) = std_ulogic_vector(to_unsigned(i, 5))) else '0';` (RTL line 51). That selector is used to gate updates (`if ... and (sel(i) = '1') then` at RTL line 44) and to form the masked read reply (`bus_rsp_o.data <= lock_q and sel` at RTL line 68). Corruption of the decode would make reads and writes target the wrong bit, so integrity of this decision is established. The map records sel as computed from the address (sel GATED_BY at occurrence id 3, line 51, target 'bus_req_i.addr') and as a source for the reply (sel SOURCES bus_rsp_o.data at occurrence id 4, line 68).",
+      "related structural assets": [
+        {
+          "asset rtl": "sel",
+          "entity": "neorv32_hwspinlock",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "bus_req_i.addr"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,451 @@
+{
+  "module name": "neorv32_spi",
+  "module purpose": "neorv32_spi implements a bus-controlled SPI engine with programmable mode, clocking and interrupt enables. It stores control settings, queues transmit entries through a TX FIFO, shifts data between spi_dat_o and spi_dat_i with generated spi_clk_o and chip-select outputs, returns control/status and received data on bus_rsp_o, and raises clkgen_en_o and irq_o.",
+  "use-case flows": [
+    {
+      "flow": "configure",
+      "value": "control settings written into stored control fields (enable, phase, polarity, prescaler, divider, high-speed, and interrupt-enable bits)",
+      "lines": [
+        137,
+        138,
+        139,
+        140,
+        141,
+        142,
+        143,
+        144,
+        145,
+        146,
+        147,
+        148,
+        149
+      ]
+    },
+    {
+      "flow": "start",
+      "value": "a queued transmit entry formed from bus_req_i.data(31) and bus_req_i.data(7 downto 0), later consumed either as chip-select control or as the next shift-register byte",
+      "lines": [
+        212,
+        213,
+        214,
+        288,
+        289,
+        290,
+        292,
+        293
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "serial transfer sequencing: clock-enable pulses are generated, the transceiver state advances, spi_dat_i is sampled, the shift register is updated, and transfer completion is signaled",
+      "lines": [
+        281,
+        286,
+        288,
+        292,
+        293,
+        299,
+        301,
+        303,
+        308,
+        309,
+        310,
+        311,
+        312,
+        317,
+        318,
+        319,
+        320,
+        321,
+        322,
+        324,
+        325,
+        340,
+        343,
+        344,
+        369,
+        371,
+        372,
+        373,
+        376
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "interrupt request and clock-generator enable outputs derived from stored control and runtime status",
+      "lines": [
+        255,
+        256,
+        257,
+        258,
+        259,
+        383
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "stored control bits, runtime status, active chip-select state, busy status, and received FIFO data returned on bus_rsp_o.data",
+      "lines": [
+        153,
+        154,
+        155,
+        156,
+        157,
+        158,
+        160,
+        161,
+        162,
+        163,
+        164,
+        165,
+        166,
+        167,
+        169,
+        171,
+        172,
+        174
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "control fields, IRQ output, transceiver state, chip-select output, divider counter, and clock-enable pulse state forced to known values while rstn_i is low",
+      "lines": [
+        118,
+        119,
+        120,
+        121,
+        122,
+        123,
+        124,
+        125,
+        126,
+        127,
+        128,
+        129,
+        252,
+        253,
+        268,
+        269,
+        270,
+        271,
+        272,
+        273,
+        274,
+        275,
+        349,
+        350,
+        364,
+        365,
+        366
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "SPI controller enable state",
+      "security objective": "Integrity",
+      "reasoning": "The configure flow stores an enable bit in `ctrl.enable` at line 140, and multiple operations depend on that exact state: disabling clears both FIFOs (`tx_fifo.clear <= not ctrl.enable;` line 211, `rx_fifo.clear <= not ctrl.enable;` line 243), gates interrupt generation (line 255), is copied into the transceiver state at line 281, controls divider reset/operation at lines 369-373, and leaves the entity on `clkgen_en_o` at line 383. Corruption would mis-enable or disable transfers, FIFO retention, IRQ generation, and the exported clock-generator request. Availability is also established because the bit is held in a register until rewritten or reset and is continuously exported on line 383.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.enable",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "clkgen_en_o",
+          "entity": "neorv32_spi",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "ctrl.enable"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "SPI clock format and rate configuration",
+      "security objective": "Integrity",
+      "reasoning": "The configure flow stores the phase, polarity and rate fields in `ctrl.cpha`, `ctrl.cpol`, `ctrl.prsc`, `ctrl.cdiv`, and `ctrl.highspeed` at lines 141-145. The operate flow then uses them to generate the serial clock behavior: `ctrl.cpol` sets idle/terminal `rtx_engine.sck` levels at lines 286, 320 and 331, `ctrl.cpha` and `ctrl.cpol` define transfer-phase clock levels at lines 301, 309 and 324, and `ctrl.prsc`, `ctrl.cdiv`, and `ctrl.highspeed` decide when `spi_clk_en` is produced at lines 371-376. Integrity requires the driven SPI timing and clocking decisions to match these stored settings; a wrong value changes the implemented waveform and transfer pacing. Availability is also established because the settings are stored registers and read back on lines 154-158.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.cpha",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl.cpol",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl.prsc",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl.cdiv",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl.highspeed",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Interrupt-condition enable configuration",
+      "security objective": "Integrity",
+      "reasoning": "The configure flow stores four interrupt-enable bits at lines 146-149. The report flow uses them directly in the IRQ formula at lines 255-259: each stored bit qualifies one runtime condition before `irq_o` is asserted. Integrity requires the selected conditions for interrupt generation to match the stored enables; corruption would make the module assert or suppress IRQs under the wrong FIFO or idle conditions. Availability is also established because these bits are held in registers and are read back on lines 164-167.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.irq_rx_avail",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl.irq_tx_empty",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl.irq_tx_nhalf",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl.irq_idle",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Serial transfer progress and completion state",
+      "security objective": "Integrity",
+      "reasoning": "The operate flow depends on internal state and timing decisions that sequence each transfer. `cdiv_cnt` is reset or incremented at lines 370 and 376 and compared with `ctrl.cdiv` at line 372; `spi_clk_en` is pulsed at line 373; `rtx_engine.state` advances through the case branches at lines 293, 303, 312, 322 and 325; `rtx_engine.bitcnt` is incremented at line 311; `rtx_engine.done` is asserted at line 321; and `rtx_engine.busy` is computed from the state at line 340. These values specifically decide when a TX FIFO entry is consumed (`tx_fifo.re` line 214), when bits are sampled and shifted (lines 308-318), and when the received byte is committed (`rx_fifo.we <= rtx_engine.done;` line 245). Integrity requires this sequencing and completion logic to follow the implemented transitions and comparisons. Availability is also established under the RTL-visible conditions: with `ctrl.enable` active and the divider condition met, the counter, enable pulse, FSM, and bit counter advance through the transfer.",
+      "related structural assets": [
+        {
+          "asset rtl": "cdiv_cnt",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 6,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "spi_clk_en",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 7,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "rtx_engine.state",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 6,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "rtx_engine.bitcnt",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "rtx_engine.done",
+          "entity": "neorv32_spi",
+          "realization": "computes",
+          "occurrence": 5,
+          "edge": {
+            "type": "SELECTED_BY",
+            "partner": "rtx_engine.state"
+          }
+        },
+        {
+          "asset rtl": "rtx_engine.busy",
+          "entity": "neorv32_spi",
+          "realization": "computes",
+          "occurrence": 4,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "rtx_engine.state"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Active chip-select state",
+      "security objective": "Integrity",
+      "reasoning": "In the start/operate flow, when the queued entry is marked as a control entry, the transceiver stores `tx_fifo.rdata(3 downto 0)` into `rtx_engine.cs_ctrl` at line 290. The chip-select process then drives all outputs inactive at line 352 and conditionally asserts one selected line low at lines 353-355. The same state is also reported on the control read path through `bus_rsp_o.data(ctrl_cs_active_c) <= rtx_engine.cs_ctrl(3);` at line 171. Integrity requires the selected chip and active/inactive decision to match the latched control state; corruption would drive the wrong external slave selection. Availability is also established because the state is stored until changed or reset and is emitted on `spi_csn_o` each clock cycle.",
+      "related structural assets": [
+        {
+          "asset rtl": "rtx_engine.cs_ctrl",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "spi_csn_o",
+          "entity": "neorv32_spi",
+          "realization": "exit port",
+          "occurrence": 4,
+          "edge": {
+            "type": "SELECTED_BY",
+            "partner": "rtx_engine.cs_ctrl"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Serial transfer data byte in the shift register",
+      "security objective": "Integrity",
+      "reasoning": "The operate flow uses one register to hold transfer data. In state `\"100\"`, a data entry loads `rtx_engine.sreg <= tx_fifo.rdata(7 downto 0);` at line 292; during transfer, sampled input bits are shifted in by `rtx_engine.sreg <= rtx_engine.sreg(6 downto 0) & rtx_engine.sdi_sync;` at line 318 after `rtx_engine.sdi_sync <= spi_dat_i;` at line 310. That register directly drives the serial output (`spi_dat_o <= rtx_engine.sreg(7);` line 343) and is forwarded to the RX FIFO input at line 244 when the transfer completes. Integrity requires this byte state to evolve exactly by the implemented load and shift rules, because both the transmitted bit stream and the received byte depend on it. Availability is also established while transfers are active, because the sampled input bit is captured and the shift register is updated on enabled transfer steps. The bus readback of the received byte exists at line 174, but the bus response port is a transport record and is not a structural reference.",
+      "related structural assets": [
+        {
+          "asset rtl": "spi_dat_i",
+          "entity": "neorv32_spi",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "rtx_engine.sdi_sync"
+          }
+        },
+        {
+          "asset rtl": "rtx_engine.sreg",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 5,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "spi_dat_o",
+          "entity": "neorv32_spi",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "rtx_engine.sreg"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Serial clock level driven on the SPI interface",
+      "security objective": "Integrity",
+      "reasoning": "The operate flow computes `rtx_engine.sck` from the configured polarity/phase and transfer progress: it is set to `ctrl.cpol` at lines 286, 320 and 331, to `not ctrl.cpol` at line 301, to `not (ctrl.cpha xor ctrl.cpol)` at line 309, and to `ctrl.cpha xor ctrl.cpol` at line 324. That registered value leaves the entity through `spi_clk_o <= rtx_engine.sck;` at line 344. Integrity requires the externally delivered clock level to match these implemented rules, because the serial data flow depends on that exact waveform relation. Availability is also established because `rtx_engine.sck` is held as state and updated whenever the enabled transfer phases occur.",
+      "related structural assets": [
+        {
+          "asset rtl": "rtx_engine.sck",
+          "entity": "neorv32_spi",
+          "realization": "stores",
+          "occurrence": 5,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "spi_clk_o",
+          "entity": "neorv32_spi",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "rtx_engine.sck"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Interrupt request event",
+      "security objective": "Integrity",
+      "reasoning": "The report flow computes the interrupt output at lines 255-259: `irq_o <= ctrl.enable and ((ctrl.irq_rx_avail and rx_fifo.avail) or (ctrl.irq_tx_empty and (not tx_fifo.avail)) or (ctrl.irq_tx_nhalf and (not tx_fifo.half)) or (ctrl.irq_idle and (not tx_fifo.avail) and (not rtx_engine.busy)));`. Integrity requires the reported IRQ event to reflect exactly these configured and runtime conditions; corruption would assert or suppress the event for the wrong SPI state. Availability is also established because, with reset inactive, the registered output updates on each rising edge according to that formula and is driven out of the entity.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_o",
+          "entity": "neorv32_spi",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "ctrl.enable"
+          }
+        }
+      ]
+    }
+  ]
+}

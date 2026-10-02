@@ -1,0 +1,273 @@
+{
+  "module name": "neorv32_trng",
+  "module purpose": "A bus-accessible true-random-number generator: it accepts bus writes to control sampling and FIFO clear, instantiates a neoTRNG that produces debiased random bytes, buffers those bytes into a rnd_pool_fifo, and responds to bus reads with status (FIFO available/size) or FIFO data.",
+  "use-case flows": [
+    {
+      "flow": "configure",
+      "value": "control registers written from the bus: sampling enable and FIFO-clear bits",
+      "lines": [
+        103,
+        104,
+        105,
+        106,
+        170
+      ]
+    },
+    {
+      "flow": "start",
+      "value": "sampling enable propagated into the neoTRNG (start/stop sampling)",
+      "lines": [
+        105,
+        137,
+        311,
+        354
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "neoTRNG samples, combines and debiases ring-oscillator bits, assembles bytes and emits data/valid to the FIFO",
+      "lines": [
+        315,
+        320,
+        328,
+        334,
+        341,
+        347,
+        354,
+        360,
+        366,
+        367,
+        138,
+        139,
+        161,
+        162,
+        163
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "bus response: ack, status fields (enable, fifo size, sim_mode, fifo.avail) returned on reads",
+      "lines": [
+        98,
+        99,
+        100,
+        108,
+        109,
+        110,
+        111,
+        112
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "consumer reads a FIFO entry: bus read asserts fifo.re, FIFO produces rdata which is copied to bus_rsp_o.data",
+      "lines": [
+        114,
+        115,
+        116,
+        117,
+        165,
+        166,
+        171
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "top-level reset forces known values (bus_rsp_o <= rsp_terminate_c; fifo_clr, enable cleared) and resets are passed to subunits",
+      "lines": [
+        92,
+        93,
+        94,
+        95,
+        136,
+        156,
+        331,
+        352
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Bus request decode (strobe / read-write / addr[2]) that decides register writes, reads and FIFO operations",
+      "security objective": "Integrity",
+      "reasoning": "The bus_access process uses bus_req_i.stb, bus_req_i.rw and bus_req_i.addr(2) to choose write vs read and which field to update or return: ack is driven from stb (line 98), the write branch (stb='1' and rw='1') assigns enable and fifo_clr from bus_req_i.data (lines 103-106), and the read branch uses addr(2) to select control fields or FIFO data (lines 108-117). The relationship map records GATES/SOURCES from bus_req_i fields onto bus_rsp_o.data, enable and fifo_clr (e.g. bus_req_i GATES at line 103 and bus_req_i.data SOURCES at lines 105-106). Therefore the integrity of the decoded bus request (stb/rw/addr) is established by these RTL statements and is required for correct control and readout behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "bus_req_i",
+          "entity": "neorv32_trng",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATES",
+            "partner": "bus_rsp_o.data"
+          }
+        },
+        {
+          "asset rtl": "fifo.re",
+          "entity": "neorv32_trng",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "bus_req_i.stb"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Sampling enable setting stored by the module (controls whether the TRNG samples)",
+      "security objective": "Integrity",
+      "reasoning": "A bus write with bus_req_i.rw='1' writes the enable bit from bus_req_i.data(ctrl_en_c) into the internal register (assignment in the write branch, line 105). The register is clocked (enable CLOCKED_BY clk_i at line 105) and the signal is connected into the neoTRNG instance (port map at line 137). Inside neoTRNG the sampled-enable is used (sample_en <= enable_i at line 354 and cell_en_in chaining at line 311). The relationship map shows bus_req_i.data SOURCES enable (line 105) and enable CLOCKED_BY clk_i (line 105) and the CONNECTS to neoTRNG_inst.enable_i (line 137). Corrupting enable would change whether sampling runs, so its integrity is established by these RTL lines.",
+      "related structural assets": [
+        {
+          "asset rtl": "bus_req_i",
+          "entity": "neorv32_trng",
+          "realization": "sets",
+          "occurrence": 5,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "enable"
+          }
+        },
+        {
+          "asset rtl": "enable",
+          "entity": "neorv32_trng",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "FIFO-clear control (the fifo_clr bit and the computed fifo.clear) that clears the random-data buffer",
+      "security objective": "Integrity",
+      "reasoning": "A bus write places fifo_clr <= bus_req_i.data(ctrl_fifo_clr_c) (line 106); the fifo_clr register is clocked (CLOCKED_BY clk_i at line 106). The actual clear signal presented to the FIFO is computed here as fifo.clear <= '1' when (enable = '0') or (fifo_clr = '1') else '0' (line 170) and connected to the FIFO's clear_i port (line 157). The relationship map records bus_req_i.data SOURCES fifo_clr (line 106), fifo_clr CLOCKED_BY clk_i (line 106) and fifo.clear GATED_BY (enable or fifo_clr) (line 170). Thus the integrity/availability of the clear control is established: it determines whether stored entropy in the FIFO is discarded.",
+      "related structural assets": [
+        {
+          "asset rtl": "bus_req_i",
+          "entity": "neorv32_trng",
+          "realization": "sets",
+          "occurrence": 6,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "fifo_clr"
+          }
+        },
+        {
+          "asset rtl": "fifo_clr",
+          "entity": "neorv32_trng",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "fifo.clear",
+          "entity": "neorv32_trng",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "fifo_clr"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Random bytes as delivered to a consumer (data written by neoTRNG into the FIFO and returned on bus reads)",
+      "security objective": "Integrity",
+      "reasoning": "The neoTRNG instance produces data_o and valid_o (mapped to fifo.wdata and fifo.we at lines 138-139); the rnd_pool_fifo instance accepts wdata/we and later presents rdata/avail (port map lines 161-167). On a bus read (stb='1', rw='0', addr(2)='1') the module asserts fifo.re (line 171) to fetch an entry and then copies fifo.rdata into bus_rsp_o.data (line 117). The relationship map records neoTRNG outputs connected to fifo inputs (lines 138-139, 161-162), the FIFO rdata connection (line 166) and the bus_rsp_o.data COPIES fifo.rdata at line 117. Therefore the RTL establishes the integrity property that a bus read receives the FIFO entry produced by the TRNG pipeline unless the read conditions or FIFO state differ.",
+      "related structural assets": [
+        {
+          "asset rtl": "data_o",
+          "entity": "neoTRNG",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "sample_sreg"
+          }
+        },
+        {
+          "asset rtl": "fifo.re",
+          "entity": "neorv32_trng",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "bus_req_i.stb"
+          }
+        },
+        {
+          "asset rtl": "bus_rsp_o",
+          "entity": "neorv32_trng",
+          "realization": "exit port",
+          "occurrence": 11,
+          "edge": {
+            "type": "COPIES",
+            "partner": "fifo.rdata"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Assembled TRNG output byte (sample_sreg) inside neoTRNG before it leaves the subunit",
+      "security objective": "Integrity",
+      "reasoning": "Inside neoTRNG the sampling_control shifts in debiased bits to form sample_sreg (assignment at line 360: sample_sreg <= sample_sreg(6 downto 0) & (sample_sreg(7) xor debias_data)), sample_cnt and gating govern when bytes are produced (lines 355-361). The result is exposed as data_o (data_o <= sample_sreg at line 366). The relationship map records sample_sreg CLOCKED_BY clk_i (lines 357/360) and data_o COPIES sample_sreg (line 366). Corruption of sample_sreg would directly alter the bytes emitted to the FIFO, so its integrity is established by the RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "sample_sreg",
+          "entity": "neoTRNG",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "data_o",
+          "entity": "neoTRNG",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "sample_sreg"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "FIFO availability flag (fifo.avail) used to report whether data exists and to select returned data vs zeros",
+      "security objective": "Integrity",
+      "reasoning": "bus_access returns the control-field bit ctrl_avail from fifo.avail (line 112) and uses fifo.avail in the read-data branch to choose between zeros and fifo.rdata (lines 114-117). fifo.avail is produced by the FIFO submodule (rnd_pool_fifo.avail_o connected at line 167). The relationship map records fifo.avail CONNECTS to rnd_pool_fifo_inst.avail_o (line 167) and CARRIES into bus_rsp_o.data at line 112. Thus the integrity of fifo.avail is established: an incorrect avail bit would make the module return zeros or stale data incorrectly.",
+      "related structural assets": [
+        {
+          "asset rtl": "fifo.avail",
+          "entity": "neorv32_trng",
+          "realization": "sets",
+          "occurrence": 4,
+          "edge": {
+            "type": "CONNECTS",
+            "partner": "rnd_pool_fifo_inst.avail_o"
+          }
+        },
+        {
+          "asset rtl": "bus_rsp_o",
+          "entity": "neorv32_trng",
+          "realization": "exit port",
+          "occurrence": 9,
+          "edge": {
+            "type": "COPIES",
+            "partner": "fifo.avail"
+          }
+        }
+      ]
+    }
+  ]
+}

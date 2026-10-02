@@ -1,0 +1,123 @@
+{
+ "module name": "neorv32_cpu_frontend",
+ "module purpose": "neorv32_cpu_frontend runs a fetch state machine that holds a fetch address and privilege level, issues instruction-bus requests when both prefetch buffers have space, advances the address by 4 on each acknowledged response and writes the response half-words with their error bit into two prefetch buffer sub-units; on a restart request (ctrl_i.if_reset) it reloads address and privilege from ctrl_i and clears the buffers. Its issue logic tracks half-word alignment, routes compressed parcels through a decompressor sub-unit, and drives the instruction with valid, compressed, fault and halted qualifiers on frontend_o, dequeuing buffer halves on ctrl_i.if_ack.",
+ "use-case flows": [
+  {"flow": "start", "value": "fetch restart request: ctrl_i.if_reset recorded in fetch.restart, returning the fetch state machine to S_RESTART and clearing the prefetch buffers", "lines": [91, 94, 95, 100, 104, 105, 113, 164]},
+  {"flow": "configure", "value": "fetch privilege level taken from ctrl_i.cpu_priv at restart, held in fetch.priv and attached to every instruction-bus request", "lines": [85, 115, 129]},
+  {"flow": "operate", "value": "fetch address: loaded from ctrl_i.pc_nxt at restart, advanced by 4 with bit 1 cleared on each acknowledged response, driven as the request address", "lines": [101, 102, 103, 114, 123]},
+  {"flow": "operate", "value": "fetch sequencing: request issued in S_REQUEST when both buffers are free, response awaited in S_PENDING, restart taken in S_RESTART", "lines": [87, 92, 93, 95, 101, 105, 107, 116, 124]},
+  {"flow": "operate", "value": "capture of response half-words with the bus error bit into the two prefetch buffers", "lines": [137, 138, 141, 142, 168, 169]},
+  {"flow": "operate", "value": "instruction issue: half-word alignment tracking, parcel selection and decompression, instruction assembly, and buffer dequeue on ctrl_i.if_ack", "lines": [190, 191, 195, 205, 206, 207, 208, 219, 221, 222, 223, 225, 228, 230, 236, 237, 238, 240, 243, 245, 252, 253, 266, 268]},
+  {"flow": "report", "value": "issue qualifiers and fetch status delivered on frontend_o: valid, compressed, fault and halted", "lines": [145, 220, 224, 226, 229, 231, 235, 239, 241, 244, 246, 267, 269, 270]},
+  {"flow": "reset", "value": "fetch.state S_RESTART, fetch.restart '1', fetch.pc zero, fetch.priv priv_mode_m_c and issue.algn '0' while rstn_i is low", "lines": [81, 82, 83, 84, 85, 202, 203]}
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Instruction fetch address -- the address of the next instruction word requested from the instruction bus",
+   "security objective": "Integrity",
+   "reasoning": "The restart arm loads `fetch.pc <= ctrl_i.pc_nxt;` (line 114); in S_PENDING, only when ibus_rsp_i.ack is '1' (line 101), `fetch.pc <= std_ulogic_vector(unsigned(fetch.pc) + 4);` and `fetch.pc(1) <= '0';` advance it (lines 102-103); `ibus_req_o.addr <= fetch.pc(XLEN-1 downto 2) & \"00\";` (line 123) drives it as the request address, and fetch.pc(1) decides whether the lower half of a response is buffered (GATES ipb.we, line 141). Integrity is Established: the requested address must be the redirect target followed by consecutive words; a corrupted value fetches and issues instructions from another address. The value is delivered to a bus consumer that is not supplied, and it is also used here (line 141). Availability: the address is held between edges and advanced under the stated acknowledge condition. fetch.pc stores (CLOCKED_BY clk_i at occurrence 3; its use records are SOURCES ibus_req_o.addr and GATES ipb.we); it is self-updating, so the copy rule does not apply. ctrl_i sets: its field pc_nxt CARRIES fetch.pc at line 114 (ctrl_i occurrence 6); ctrl_i is a control record without an address/write-data/byte-enable/acknowledge transaction, so it is not transport. ibus_req_o carries complete bus requests (address, data, byte enables, strobe, rw) and is a transport record, so it is not listed as the exit.",
+   "related structural assets": [
+    {"asset rtl": "fetch.pc", "entity": "neorv32_cpu_frontend", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_frontend", "realization": "sets", "occurrence": 6, "edge": {"type": "CARRIES", "partner": "fetch.pc"}}
+   ]
+  },
+  {
+   "concept": "Fetch privilege level -- the privilege attached to every instruction fetch request",
+   "security objective": "Integrity",
+   "reasoning": "The restart arm captures `fetch.priv <= ctrl_i.cpu_priv;` (line 115), reset gives priv_mode_m_c (line 85), and `ibus_req_o.priv <= fetch.priv;` (line 129) attaches it to every request. fetch.priv is assigned only at lines 85 and 115, so it is held across all fetches until the next restart. The consumer of the request is not supplied, so Integrity is Established: each request must carry exactly the level captured at the last restart. fetch.priv stores (CLOCKED_BY clk_i at occurrence 3; CARRIES ibus_req_o.priv is its use record into an output field). It copies a field of an input port, so the copy rule does not remove it. ctrl_i sets through cpu_priv CARRIES fetch.priv (line 115, ctrl_i occurrence 7). The exit ibus_req_o is a transport record and is not listed.",
+   "related structural assets": [
+    {"asset rtl": "fetch.priv", "entity": "neorv32_cpu_frontend", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_frontend", "realization": "sets", "occurrence": 7, "edge": {"type": "CARRIES", "partner": "fetch.priv"}}
+   ]
+  },
+  {
+   "concept": "Fetch sequencing state -- whether the frontend is restarting, may issue a request, or is waiting for a response",
+   "security objective": "Integrity",
+   "reasoning": "fetch.state is a self-updating state register (case at line 87): S_REQUEST goes to S_PENDING when ipb.free is \"11\" (lines 92-93) or to S_RESTART on a restart (lines 94-95); S_PENDING goes to S_REQUEST or S_RESTART on an acknowledged response (lines 101-107); S_RESTART loads address and privilege and goes to S_REQUEST (lines 113-116). It decides the request strobe (line 124), the buffer write enables (lines 141-142), the halted status (line 145) and which arm updates fetch.pc, fetch.priv and fetch.restart (SELECTS, line 87). Integrity is Established: a wrong state issues requests without buffer space, accepts responses outside S_PENDING, or skips a restart. Availability holds under the RTL conditions only: the REQUEST-PENDING-REQUEST cycle proceeds when ipb.free is \"11\" and an acknowledge arrives; no bus response is assumed. fetch.state stores (CLOCKED_BY clk_i at occurrence 4; GATES ipb.we, ibus_req_o.stb and frontend_o.halted). ctrl_i sets because its field if_reset decides the transition to S_RESTART (GATES fetch.state, line 94, ctrl_i occurrence 3). ipb.free only gates the transitions; ibus_rsp_i is a transport record.",
+   "related structural assets": [
+    {"asset rtl": "fetch.state", "entity": "neorv32_cpu_frontend", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_frontend", "realization": "sets", "occurrence": 3, "edge": {"type": "GATES", "partner": "fetch.state"}}
+   ]
+  },
+  {
+   "concept": "Pending fetch restart request -- a redirect that must flush the buffers and reload address and privilege",
+   "security objective": "Integrity",
+   "reasoning": "`fetch.restart <= fetch.restart or ctrl_i.if_reset;` (lines 91, 100) records a restart request; it is cleared only in the restart arm (line 113) and set to '1' by reset (line 83). While set it forces the next transition to S_RESTART (lines 94-95, 104-105), clears both prefetch buffers through clear_i (line 164), and reloads the alignment from ctrl_i.pc_nxt(1) (lines 205-206). Integrity is Established: a lost request leaves the frontend fetching and issuing from the old address after a redirect, and a spurious one flushes buffered instructions; the clear is delivered to a sub-unit that is not supplied. Availability: once set the request persists until the S_RESTART arm, so a request raised in S_REQUEST or S_PENDING is not dropped (lines 91, 100). fetch.restart stores (CLOCKED_BY clk_i at occurrence 3; GATES fetch.state, GATES issue.algn, and the connection of mode in to prefetch_buffer_inst.clear_i). ctrl_i sets through if_reset GATES fetch.restart (line 91, ctrl_i occurrence 2).",
+   "related structural assets": [
+    {"asset rtl": "fetch.restart", "entity": "neorv32_cpu_frontend", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_frontend", "realization": "sets", "occurrence": 2, "edge": {"type": "GATES", "partner": "fetch.restart"}}
+   ]
+  },
+  {
+   "concept": "Response capture decision -- whether an acknowledged bus response is written into each prefetch buffer",
+   "security objective": "Integrity",
+   "reasoning": "`ipb.we(0) <= '1' when (fetch.state = S_PENDING) and (ibus_rsp_i.ack = '1') and ((fetch.pc(1) = '0') or (not RVC_EN)) else '0';` (line 141) and the upper-half counterpart (line 142) decide when a response is written into each buffer through we_i (line 169). The buffers are a sub-unit that is not supplied, so Integrity is Established: each buffer must receive exactly this write decision; a wrong one drops a fetched half-word or enqueues data that was never acknowledged. ipb.we computes the decision (GATED_BY fetch.state at occurrence 2); it is computed here from a condition, so the sub-unit wiring exception applies. Its operands fetch.state and fetch.pc are reported under their own concepts, and ibus_rsp_i.ack is a transport field. ipb.wdata only packs ibus_rsp_i.err with a data half (lines 137-138) and passes it to wdata_i (line 168), so it is a carrier and is not listed.",
+   "related structural assets": [
+    {"asset rtl": "ipb.we", "entity": "neorv32_cpu_frontend", "realization": "computes", "occurrence": 2, "edge": {"type": "GATED_BY", "partner": "fetch.state"}}
+   ]
+  },
+  {
+   "concept": "Issued instruction word -- the instruction presented to the CPU for execution",
+   "security objective": "Integrity",
+   "reasoning": "The issue flow drives frontend_o.instr from the decompressed parcel `frontend_o.instr <= issue.cmd32;` (lines 225, 240) or from two buffered halves `ipb.rdata(1)(15 downto 0) & ipb.rdata(0)(15 downto 0)` (line 230; lines 245 and 268 likewise), chosen by issue.algn and the parcel's low bits (lines 219, 221, 236). The consumer is outside this entity, so Integrity is Established: the issued word must be exactly the fetched instruction at the current alignment. frontend_o is the exit port (frontend_o.instr DERIVES_FROM ipb.rdata at line 230, frontend_o occurrence 8); it is an issue interface without address, write data or byte enables, not a transport record. ipb.rdata sets: it brings the buffered half-words out of prefetch_buffer_inst (CONNECTS rdata_o, occurrence 2), and this block tests it in if conditions (lines 221, 236), so the sub-unit wiring exception holds. Not listed: issue.cmd16 only routes a selected half into the decompressor (line 195); issue.cmd32 only carries the decompressor output (line 191, CARRIES frontend_o.instr); buffer and decompressor internals are not supplied; the response enters through ibus_rsp_i, a transport record.",
+   "related structural assets": [
+    {"asset rtl": "frontend_o", "entity": "neorv32_cpu_frontend", "realization": "exit port", "occurrence": 8, "edge": {"type": "DERIVES_FROM", "partner": "ipb.rdata"}},
+    {"asset rtl": "ipb.rdata", "entity": "neorv32_cpu_frontend", "realization": "sets", "occurrence": 2, "edge": {"type": "CONNECTS", "partner": "prefetch_buffer_inst.rdata_o"}}
+   ]
+  },
+  {
+   "concept": "Instruction fetch fault flag -- the bus error status reported with the issued instruction",
+   "security objective": "Integrity",
+   "reasoning": "`ipb.wdata(0) <= ibus_rsp_i.err & ibus_rsp_i.data(15 downto 0);` (line 137; line 138 for the upper half) stores the bus error bit with each half-word, and the issue flow reports it as `frontend_o.fault <= ipb.rdata(0)(16);` (line 220), ipb.rdata(1)(16) (line 235), or line 270 when RVC_EN is false. Integrity is Established for this error flag delivered to a consumer outside the entity: it must be the error bit of the parcel being issued; a cleared bit presents a failed fetch as a good instruction. frontend_o is the exit port (frontend_o.fault DERIVES_FROM ipb.rdata at line 220, frontend_o occurrence 3). ipb.rdata sets, bringing the stored bit out of the buffer (CONNECTS rdata_o, occurrence 2), and is tested here (lines 221, 236).",
+   "related structural assets": [
+    {"asset rtl": "frontend_o", "entity": "neorv32_cpu_frontend", "realization": "exit port", "occurrence": 3, "edge": {"type": "DERIVES_FROM", "partner": "ipb.rdata"}},
+    {"asset rtl": "ipb.rdata", "entity": "neorv32_cpu_frontend", "realization": "sets", "occurrence": 2, "edge": {"type": "CONNECTS", "partner": "prefetch_buffer_inst.rdata_o"}}
+   ]
+  },
+  {
+   "concept": "Instruction-valid decision -- whether a complete instruction is available for issue",
+   "security objective": "Integrity",
+   "reasoning": "frontend_o.valid is `ipb.avail(0)` for a compressed lower parcel (line 224), `ipb.avail(1) and ipb.avail(0)` for an uncompressed one (line 229), and is formed likewise at lines 239, 244 and 267. Integrity is Established for this decision delivered across the boundary: valid without both needed halves issues a partial instruction, and a missing valid withholds a complete one. frontend_o is the exit port (frontend_o.valid DERIVES_FROM ipb.avail at line 224, frontend_o occurrence 4). ipb.avail only receives the buffer's avail_o (line 174) and is used as data or as an and operand, never in an if, case or when condition, so it is a carrier and is not listed.",
+   "related structural assets": [
+    {"asset rtl": "frontend_o", "entity": "neorv32_cpu_frontend", "realization": "exit port", "occurrence": 4, "edge": {"type": "DERIVES_FROM", "partner": "ipb.avail"}}
+   ]
+  },
+  {
+   "concept": "Compressed-instruction indication -- whether the issued instruction was expanded from a 16-bit parcel",
+   "security objective": "Integrity",
+   "reasoning": "Under RVC_EN frontend_o.compr is '1' when the issued parcel's low bits are not \"11\" (lines 221, 226; 236, 241) and '0' otherwise (lines 231, 246); with RVC_EN false it is '0' (line 269). Integrity is Established for this decision delivered to a consumer that is not supplied: it must match the format of the word issued on frontend_o.instr (lines 225, 230). frontend_o is the exit port (frontend_o.compr GATED_BY ipb.rdata at line 226, frontend_o occurrence 6). ipb.rdata is the condition operand, not the result, so it is not listed for this concept.",
+   "related structural assets": [
+    {"asset rtl": "frontend_o", "entity": "neorv32_cpu_frontend", "realization": "exit port", "occurrence": 6, "edge": {"type": "GATED_BY", "partner": "ipb.rdata"}}
+   ]
+  },
+  {
+   "concept": "Instruction half-word alignment state -- whether the next instruction starts in the upper half of the buffered word",
+   "security objective": "Integrity",
+   "reasoning": "Under RVC_EN issue.algn is loaded from ctrl_i.pc_nxt(1) while fetch.restart is set (lines 205-206) and otherwise updated on each ctrl_i.if_ack as `(issue.algn and (not issue.aclr)) or issue.aset` (lines 207-208). It selects the half fed to the decompressor (line 195) and the branch that forms instr, valid, compr, fault and issue.ack (line 219). Integrity is Established: a wrong alignment shifts instruction boundaries, so every issued word and its qualifiers become wrong. issue.algn stores (CLOCKED_BY clk_i at occurrence 4; GATES the frontend_o fields and issue.cmd16); it is self-updating. issue.aset (line 222) and issue.aclr (line 237) compute the move to the upper or lower half when a compressed parcel is consumed (each GATED_BY ipb.rdata at occurrence 4). ctrl_i sets through pc_nxt SOURCES issue.algn (line 206, ctrl_i occurrence 10). Configuration: with RVC_EN false, issue.algn, issue.aset and issue.aclr are tied to '0' (lines 261-263) and this state does not exist.",
+   "related structural assets": [
+    {"asset rtl": "issue.algn", "entity": "neorv32_cpu_frontend", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "issue.aset", "entity": "neorv32_cpu_frontend", "realization": "computes", "occurrence": 4, "edge": {"type": "GATED_BY", "partner": "ipb.rdata"}},
+    {"asset rtl": "issue.aclr", "entity": "neorv32_cpu_frontend", "realization": "computes", "occurrence": 4, "edge": {"type": "GATED_BY", "partner": "ipb.rdata"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_frontend", "realization": "sets", "occurrence": 10, "edge": {"type": "SOURCES", "partner": "issue.algn"}}
+   ]
+  },
+  {
+   "concept": "Instruction consumption decision -- which prefetch buffer halves are removed when the CPU accepts an instruction",
+   "security objective": "Integrity",
+   "reasoning": "Under RVC_EN issue.ack records which halves the presented instruction occupies: \"01\" (line 223), \"10\" (line 238) or \"11\" (lines 228, 243); `ipb.re(0) <= issue.ack(0) and ctrl_i.if_ack;` and its upper counterpart (lines 252-253) dequeue those halves when the consumer acknowledges; with RVC_EN false both halves are read on ctrl_i.if_ack (line 266). The read enables go to re_i of the buffer sub-unit (line 172), which is not supplied, so Integrity is Established: exactly the halves of the issued instruction must be removed; a wrong decision drops or repeats instruction parcels. issue.ack computes the halves decision (GATED_BY ipb.rdata at occurrence 2). ipb.re computes the dequeue decision here (GATED_BY ctrl_i.if_ack at occurrence 3), so the sub-unit wiring exception applies. ctrl_i sets it through if_ack GATES ipb.re (line 252, ctrl_i occurrence 12).",
+   "related structural assets": [
+    {"asset rtl": "issue.ack", "entity": "neorv32_cpu_frontend", "realization": "computes", "occurrence": 2, "edge": {"type": "GATED_BY", "partner": "ipb.rdata"}},
+    {"asset rtl": "ipb.re", "entity": "neorv32_cpu_frontend", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "ctrl_i.if_ack"}},
+    {"asset rtl": "ctrl_i", "entity": "neorv32_cpu_frontend", "realization": "sets", "occurrence": 12, "edge": {"type": "GATES", "partner": "ipb.re"}}
+   ]
+  },
+  {
+   "concept": "Fetch stall status -- the report that fetching waits for prefetch buffer space",
+   "security objective": "Integrity",
+   "reasoning": "`frontend_o.halted <= '1' when (fetch.state = S_REQUEST) and (ipb.free /= \"11\") else '0';` (line 145) reports that a request is being held back. Integrity is Established for this status delivered to a consumer outside the entity: it must be '1' exactly when the same state withholds the request strobe for lack of space (line 124). frontend_o is the exit port (frontend_o.halted GATED_BY fetch.state at line 145, frontend_o occurrence 2). fetch.state is listed under the fetch sequencing concept; ipb.free is a condition operand, not the result, and its records are only GATES, so it is not listed.",
+   "related structural assets": [
+    {"asset rtl": "frontend_o", "entity": "neorv32_cpu_frontend", "realization": "exit port", "occurrence": 2, "edge": {"type": "GATED_BY", "partner": "fetch.state"}}
+   ]
+  }
+ ]
+}

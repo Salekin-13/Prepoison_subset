@@ -1,0 +1,1602 @@
+{
+ "module": "neorv32_cpu_cp_muldiv",
+ "purpose": "RISC-V M-extension multiply/divide co-processor: on a decoded command it multiplies (fast DSP or 32-step serial) or divides (32-step restoring) the operands rs1_i and rs2_i, signals completion on valid_o and releases the result on res_o for one cycle.",
+ "flows": [
+  {
+   "name": "accept and start a command",
+   "value": "the multiply/divide instruction encoding (which operation, and whether this unit accepts it)",
+   "path": [
+    {
+     "element": "ctrl_i.alu_cp_alu",
+     "occ": [
+      2
+     ],
+     "line": [
+      97
+     ],
+     "edge": "GATES valid_cmd (L97)"
+    },
+    {
+     "element": "ctrl_i.ir_opcode",
+     "occ": [
+      2
+     ],
+     "line": [
+      97
+     ],
+     "edge": "GATES valid_cmd (L97)"
+    },
+    {
+     "element": "ctrl_i.ir_funct12",
+     "occ": [
+      2
+     ],
+     "line": [
+      98
+     ],
+     "edge": "GATES valid_cmd (L98)"
+    },
+    {
+     "element": "ctrl_i.ir_funct3",
+     "occ": [
+      2,
+      3
+     ],
+     "line": [
+      99
+     ],
+     "edge": "GATES valid_cmd (L99, division only when DIVISION_EN)"
+    },
+    {
+     "element": "valid_cmd",
+     "occ": [
+      2,
+      3,
+      4,
+      5
+     ],
+     "line": [
+      97,
+      120,
+      154,
+      155
+     ],
+     "edge": "GATES ctrl.state (L120), mul.start (L154), div.start (L155)"
+    },
+    {
+     "element": "mul.start",
+     "occ": [
+      2
+     ],
+     "line": [
+      154
+     ],
+     "edge": "GATED_BY valid_cmd, ctrl_i.ir_funct3 (L154)"
+    },
+    {
+     "element": "div.start",
+     "occ": [
+      2
+     ],
+     "line": [
+      155
+     ],
+     "edge": "GATED_BY valid_cmd, ctrl_i.ir_funct3 (L155)"
+    },
+    {
+     "element": "ctrl.state",
+     "occ": [
+      4,
+      5
+     ],
+     "line": [
+      122,
+      124
+     ],
+     "edge": "GATED_BY valid_cmd and ctrl_i.ir_funct3: S_DONE for fast multiply, else S_BUSY (L122, L124)"
+    }
+   ],
+   "controls": [
+    {
+     "element": "ctrl_i.ir_funct3",
+     "edge": "GATES ctrl.state / mul.start / div.start",
+     "decided_by": "instruction field bit 2 (multiply vs divide) and generic FAST_MUL_EN",
+     "occ": [
+      4,
+      12,
+      13
+     ]
+    },
+    {
+     "element": "valid_cmd",
+     "edge": "GATES mul.start, div.start",
+     "decided_by": "ctrl_i fields only; no ctrl.state term, so a start is possible while busy (source check, L154-155)",
+     "occ": [
+      4,
+      5
+     ]
+    }
+   ]
+  },
+  {
+   "name": "operand load",
+   "value": "operand values rs1 and rs2",
+   "path": [
+    {
+     "element": "rs1_i",
+     "occ": [
+      2,
+      4
+     ],
+     "line": [
+      171
+     ],
+     "edge": "SOURCES mul.dsp_x (L171, fast multiplier)"
+    },
+    {
+     "element": "mul.dsp_x",
+     "occ": [
+      3
+     ],
+     "line": [
+      171
+     ],
+     "edge": "stores sign-extended rs1 (L171)"
+    },
+    {
+     "element": "rs2_i",
+     "occ": [
+      2,
+      4
+     ],
+     "line": [
+      172
+     ],
+     "edge": "SOURCES mul.dsp_y (L172, fast multiplier)"
+    },
+    {
+     "element": "mul.dsp_y",
+     "occ": [
+      3
+     ],
+     "line": [
+      172
+     ],
+     "edge": "stores sign-extended rs2 (L172)"
+    },
+    {
+     "element": "rs1_i",
+     "occ": [
+      5
+     ],
+     "line": [
+      212
+     ],
+     "edge": "CARRIES mul.prod(31..0) (L212, serial multiplier)"
+    },
+    {
+     "element": "mul.prod",
+     "occ": [
+      5
+     ],
+     "line": [
+      212
+     ],
+     "edge": "stores rs1 at start (L212)"
+    },
+    {
+     "element": "rs2_i",
+     "occ": [
+      6,
+      9
+     ],
+     "line": [
+      225,
+      227
+     ],
+     "edge": "SOURCES mul.add in every serial step (L225, L227) - read live, not latched"
+    },
+    {
+     "element": "rs1_i",
+     "occ": [
+      8,
+      9
+     ],
+     "line": [
+      264,
+      266
+     ],
+     "edge": "SOURCES / CARRIES div.quotient (L264, L266)"
+    },
+    {
+     "element": "div.quotient",
+     "occ": [
+      3,
+      4
+     ],
+     "line": [
+      264,
+      266
+     ],
+     "edge": "stores |rs1| as dividend (L264, L266)"
+    },
+    {
+     "element": "rs2_i",
+     "occ": [
+      14,
+      15
+     ],
+     "line": [
+      270,
+      272
+     ],
+     "edge": "SOURCES / CARRIES div.rs2_abs (L270, L272)"
+    },
+    {
+     "element": "div.rs2_abs",
+     "occ": [
+      3,
+      4
+     ],
+     "line": [
+      270,
+      272
+     ],
+     "edge": "stores |rs2| as divisor (L270, L272)"
+    },
+    {
+     "element": "rs1_i",
+     "occ": [
+      10,
+      12
+     ],
+     "line": [
+      276,
+      278
+     ],
+     "edge": "SOURCES div.sign_mod (L276, L278)"
+    },
+    {
+     "element": "rs2_i",
+     "occ": [
+      16,
+      18
+     ],
+     "line": [
+      276
+     ],
+     "edge": "SOURCES div.sign_mod (L276)"
+    },
+    {
+     "element": "div.sign_mod",
+     "occ": [
+      3,
+      4,
+      5
+     ],
+     "line": [
+      276,
+      278,
+      280
+     ],
+     "edge": "stores result sign (L276, L278, L280)"
+    }
+   ],
+   "controls": [
+    {
+     "element": "mul.start",
+     "edge": "GATES mul.dsp_x, mul.dsp_y, mul.prod",
+     "decided_by": "valid_cmd and ctrl_i.ir_funct3(2)",
+     "occ": [
+      3,
+      4
+     ]
+    },
+    {
+     "element": "div.start",
+     "edge": "GATES div.quotient, div.rs2_abs, div.sign_mod, div.remainder",
+     "decided_by": "valid_cmd and ctrl_i.ir_funct3(2)",
+     "occ": [
+      3
+     ]
+    },
+    {
+     "element": "ctrl.rs1_is_signed",
+     "edge": "SOURCES sign bit of mul.dsp_x; GATES negation of div.quotient",
+     "decided_by": "live ctrl_i.ir_funct3 (L148-149)",
+     "occ": [
+      3,
+      5
+     ]
+    },
+    {
+     "element": "ctrl.rs2_is_signed",
+     "edge": "SOURCES sign bit of mul.dsp_y / mul.add; GATES negation of div.rs2_abs",
+     "decided_by": "live ctrl_i.ir_funct3 (L150-151)",
+     "occ": [
+      3,
+      4,
+      5,
+      7
+     ]
+    },
+    {
+     "element": "ctrl_i.ir_funct3",
+     "edge": "GATES div.sign_mod",
+     "decided_by": "instruction field bits 1..0 (div vs rem)",
+     "occ": [
+      14,
+      15
+     ]
+    }
+   ]
+  },
+  {
+   "name": "multiply",
+   "value": "64-bit product",
+   "path": [
+    {
+     "element": "mul.dsp_x",
+     "occ": [
+      4
+     ],
+     "line": [
+      178
+     ],
+     "edge": "SOURCES mul.dsp_z (L178)"
+    },
+    {
+     "element": "mul.dsp_y",
+     "occ": [
+      4
+     ],
+     "line": [
+      178
+     ],
+     "edge": "SOURCES mul.dsp_z (L178)"
+    },
+    {
+     "element": "mul.dsp_z",
+     "occ": [
+      2,
+      3
+     ],
+     "line": [
+      178,
+      184
+     ],
+     "edge": "computes dsp_x*dsp_y (L178), SOURCES mul.prod (L184)"
+    },
+    {
+     "element": "mul.prod",
+     "occ": [
+      2
+     ],
+     "line": [
+      184
+     ],
+     "edge": "stores product every clock in the fast build (L184, no reset)"
+    },
+    {
+     "element": "mul.prod",
+     "occ": [
+      10,
+      11,
+      12
+     ],
+     "line": [
+      225,
+      227,
+      230
+     ],
+     "edge": "SOURCES mul.add (L225, L227, L230)"
+    },
+    {
+     "element": "mul.p_sext",
+     "occ": [
+      2,
+      3,
+      4
+     ],
+     "line": [
+      225,
+      227,
+      230
+     ],
+     "edge": "SOURCES mul.add as accumulator sign bit"
+    },
+    {
+     "element": "mul.add",
+     "occ": [
+      2,
+      3,
+      4,
+      5
+     ],
+     "line": [
+      214,
+      225,
+      227,
+      230
+     ],
+     "edge": "computes partial sum (L225-230), SOURCES mul.prod (L214)"
+    },
+    {
+     "element": "mul.prod",
+     "occ": [
+      6,
+      7
+     ],
+     "line": [
+      214,
+      215
+     ],
+     "edge": "stores shifted partial product (L214, L215)"
+    }
+   ],
+   "controls": [
+    {
+     "element": "mul.prod",
+     "edge": "GATES mul.add (add or pass)",
+     "decided_by": "product LSB mul.prod(0) - data dependent choice, same cycle count",
+     "occ": [
+      9
+     ]
+    },
+    {
+     "element": "ctrl.state",
+     "edge": "GATES mul.add (subtract in S_DONE if signed) and mul.prod step (state /= S_IDLE)",
+     "decided_by": "FSM",
+     "occ": [
+      9,
+      10
+     ]
+    },
+    {
+     "element": "ctrl.rs1_is_signed",
+     "edge": "GATES mul.add",
+     "decided_by": "live ctrl_i.ir_funct3",
+     "occ": [
+      4
+     ]
+    },
+    {
+     "element": "ctrl.rs2_is_signed",
+     "edge": "GATES mul.p_sext",
+     "decided_by": "live ctrl_i.ir_funct3",
+     "occ": [
+      6
+     ]
+    },
+    {
+     "element": "mul.start",
+     "edge": "GATES mul.prod (start has priority over the step)",
+     "decided_by": "valid_cmd and ctrl_i.ir_funct3(2)",
+     "occ": [
+      4
+     ]
+    }
+   ]
+  },
+  {
+   "name": "divide",
+   "value": "quotient and remainder, then signed result",
+   "path": [
+    {
+     "element": "div.remainder",
+     "occ": [
+      7
+     ],
+     "line": [
+      296
+     ],
+     "edge": "SOURCES div.sub (L296)"
+    },
+    {
+     "element": "div.quotient",
+     "occ": [
+      8
+     ],
+     "line": [
+      296
+     ],
+     "edge": "SOURCES div.sub (L296)"
+    },
+    {
+     "element": "div.rs2_abs",
+     "occ": [
+      5
+     ],
+     "line": [
+      296
+     ],
+     "edge": "SOURCES div.sub (L296)"
+    },
+    {
+     "element": "div.sub",
+     "occ": [
+      2,
+      4,
+      5
+     ],
+     "line": [
+      285,
+      287,
+      296
+     ],
+     "edge": "computes trial subtraction (L296), SOURCES div.quotient (L285) and div.remainder (L287)"
+    },
+    {
+     "element": "div.quotient",
+     "occ": [
+      5
+     ],
+     "line": [
+      285
+     ],
+     "edge": "stores next quotient bit (L285)"
+    },
+    {
+     "element": "div.remainder",
+     "occ": [
+      4,
+      5
+     ],
+     "line": [
+      287,
+      289
+     ],
+     "edge": "stores remainder (L287, L289)"
+    },
+    {
+     "element": "div.quotient",
+     "occ": [
+      9
+     ],
+     "line": [
+      299
+     ],
+     "edge": "SOURCES div.res_u (L299)"
+    },
+    {
+     "element": "div.remainder",
+     "occ": [
+      8
+     ],
+     "line": [
+      299
+     ],
+     "edge": "SOURCES div.res_u (L299)"
+    },
+    {
+     "element": "div.res_u",
+     "occ": [
+      2,
+      3,
+      4
+     ],
+     "line": [
+      299,
+      300
+     ],
+     "edge": "forwards quotient or remainder (L299), SOURCES div.res (L300)"
+    },
+    {
+     "element": "div.res",
+     "occ": [
+      2
+     ],
+     "line": [
+      300
+     ],
+     "edge": "computes sign-corrected result (L300)"
+    }
+   ],
+   "controls": [
+    {
+     "element": "ctrl.state",
+     "edge": "GATES div.quotient, div.remainder step",
+     "decided_by": "FSM (S_BUSY or S_DONE)",
+     "occ": [
+      11,
+      12
+     ]
+    },
+    {
+     "element": "div.sub",
+     "edge": "GATES div.remainder (restore or not)",
+     "decided_by": "borrow bit div.sub(32)",
+     "occ": [
+      3
+     ]
+    },
+    {
+     "element": "ctrl_i.ir_funct3",
+     "edge": "GATES div.res_u (quotient vs remainder)",
+     "decided_by": "live instruction field at release time",
+     "occ": [
+      16
+     ]
+    },
+    {
+     "element": "div.sign_mod",
+     "edge": "GATES div.res (negate)",
+     "decided_by": "operand sign bits latched at start (L276-280)",
+     "occ": [
+      6
+     ]
+    }
+   ]
+  },
+  {
+   "name": "result read-out",
+   "value": "the instruction result on res_o",
+   "path": [
+    {
+     "element": "mul.prod",
+     "occ": [
+      16,
+      17
+     ],
+     "line": [
+      325,
+      327
+     ],
+     "edge": "SOURCES res_o (L325 low half, L327 high half)"
+    },
+    {
+     "element": "div.res",
+     "occ": [
+      5
+     ],
+     "line": [
+      329
+     ],
+     "edge": "CARRIES res_o (L329)"
+    },
+    {
+     "element": "res_o",
+     "occ": [
+      2,
+      3,
+      4,
+      5
+     ],
+     "line": [
+      321,
+      325,
+      327,
+      329
+     ],
+     "edge": "exit port; constant zero by default (L321)"
+    }
+   ],
+   "controls": [
+    {
+     "element": "ctrl.out_en",
+     "edge": "GATES res_o",
+     "decided_by": "ctrl.state = S_DONE one cycle earlier (L137)",
+     "occ": [
+      5
+     ]
+    },
+    {
+     "element": "ctrl_i.ir_funct3",
+     "edge": "SELECTS res_o slice / divider result",
+     "decided_by": "live instruction field at release time (L323)",
+     "occ": [
+      18
+     ]
+    }
+   ]
+  },
+  {
+   "name": "completion and status",
+   "value": "operation state and completion signal",
+   "path": [
+    {
+     "element": "ctrl.cnt",
+     "occ": [
+      3,
+      5
+     ],
+     "line": [
+      113,
+      130
+     ],
+     "edge": "stores step counter: constant reload XLEN-2 (L113), decrement in S_BUSY (L130)"
+    },
+    {
+     "element": "ctrl.cnt",
+     "occ": [
+      7
+     ],
+     "line": [
+      131
+     ],
+     "edge": "GATES ctrl.state (L131)"
+    },
+    {
+     "element": "ctrl.state",
+     "occ": [
+      2,
+      4,
+      5,
+      6,
+      7
+     ],
+     "line": [
+      107,
+      122,
+      124,
+      132,
+      138
+     ],
+     "edge": "stores FSM state (L107, L122, L124, L132, L138)"
+    },
+    {
+     "element": "ctrl.state",
+     "occ": [
+      3
+     ],
+     "line": [
+      116
+     ],
+     "edge": "SELECTS ctrl.out_en (L116 case)"
+    },
+    {
+     "element": "ctrl.out_en",
+     "occ": [
+      4
+     ],
+     "line": [
+      137
+     ],
+     "edge": "stores release enable (L137)"
+    },
+    {
+     "element": "ctrl.state",
+     "occ": [
+      8
+     ],
+     "line": [
+      145
+     ],
+     "edge": "GATES valid_o (L145)"
+    },
+    {
+     "element": "valid_o",
+     "occ": [
+      2
+     ],
+     "line": [
+      145
+     ],
+     "edge": "exit port (L145)"
+    }
+   ],
+   "controls": [
+    {
+     "element": "valid_cmd",
+     "edge": "GATES ctrl.state",
+     "decided_by": "ctrl_i instruction fields",
+     "occ": [
+      3
+     ]
+    },
+    {
+     "element": "ctrl_i.ir_funct3",
+     "edge": "GATES ctrl.state (fast multiply skips S_BUSY)",
+     "decided_by": "instruction field bit 2 and FAST_MUL_EN",
+     "occ": [
+      4
+     ]
+    },
+    {
+     "element": "ctrl_i.cpu_trap",
+     "edge": "GATES ctrl.state (forces S_DONE)",
+     "decided_by": "CPU trap input",
+     "occ": [
+      2
+     ]
+    },
+    {
+     "element": "ctrl.cnt",
+     "edge": "GATES ctrl.state",
+     "decided_by": "counter reaches zero",
+     "occ": [
+      7
+     ]
+    }
+   ]
+  },
+  {
+   "name": "abort on trap",
+   "value": "trap request that ends an operation early",
+   "path": [
+    {
+     "element": "ctrl_i.cpu_trap",
+     "occ": [
+      2
+     ],
+     "line": [
+      131
+     ],
+     "edge": "GATES ctrl.state (L131)"
+    },
+    {
+     "element": "ctrl.state",
+     "occ": [
+      6
+     ],
+     "line": [
+      132
+     ],
+     "edge": "set to S_DONE (L132)"
+    },
+    {
+     "element": "ctrl.out_en",
+     "occ": [
+      4,
+      5
+     ],
+     "line": [
+      137,
+      322
+     ],
+     "edge": "set to '1' (L137), GATES res_o (L322)"
+    },
+    {
+     "element": "res_o",
+     "occ": [
+      3,
+      4,
+      5
+     ],
+     "line": [
+      325,
+      327,
+      329
+     ],
+     "edge": "exports the partial mul.prod / div.res (L325-329)"
+    }
+   ],
+   "controls": [
+    {
+     "element": "ctrl_i.cpu_trap",
+     "edge": "GATES ctrl.state",
+     "decided_by": "outside CPU",
+     "occ": [
+      2
+     ]
+    }
+   ]
+  },
+  {
+   "name": "reset",
+   "value": "initial state",
+   "path": [
+    {
+     "element": "rstn_i",
+     "occ": [
+      3,
+      5,
+      7,
+      9
+     ],
+     "line": [
+      106,
+      166,
+      207,
+      255
+     ],
+     "edge": "RESETS ctrl.state/cnt/out_en, mul.dsp_x/dsp_y, mul.prod (serial build only), div.quotient/rs2_abs/sign_mod/remainder"
+    }
+   ],
+   "controls": []
+  }
+ ],
+ "conceptual_assets": [
+  {
+   "name": "Operand values (register data read on rs1_i, rs2_i)",
+   "flow": "operand load",
+   "C": {
+    "answer": "yes",
+    "line": 322,
+    "why": "Operands are stored in mul.dsp_x/dsp_y (L171-172), mul.prod (L212), div.quotient (L264-266) and div.rs2_abs (L270-272) and are not cleared at completion; they can leave only through res_o, which is zero unless ctrl.out_en = 1 (L321-322). Latency is fixed at 32 steps by the constant reload at L113 and the count test at L131, which read no operand bit, so operand values do not leak through timing (cycle model of L112-140). Register data can be secret."
+   },
+   "I": {
+    "answer": "yes",
+    "line": 225,
+    "why": "The stored copies feed every later step (L178, L296), and rs2_i is read again in every serial multiply step (L225, L227) instead of being latched; a changed or faulted operand changes the value exported at L325-329."
+   },
+   "A": {
+    "answer": "no",
+    "line": 170,
+    "why": "No line blocks or delays operand intake: operands are sampled on the start pulse only (L170, L210, L261)."
+   },
+   "U": {
+    "answer": "no",
+    "line": 154,
+    "why": "No mode or override exposes operands other than through the result path. The start-while-busy reload at L154/L210/L261 harms the result, so it is recorded under that asset."
+   },
+   "attack_effect": "Reading the stored copies (L171-172, L212, L264-272), or forcing res_o open outside the release cycle (L322), discloses register data; corrupting rs2_i during a serial multiply (L225-227) or any stored copy changes the result the CPU writes back."
+  },
+  {
+   "name": "Arithmetic result (product, quotient, remainder and its sign)",
+   "flow": "multiply / divide / result read-out",
+   "C": {
+    "answer": "yes",
+    "line": 322,
+    "why": "The result and partial results in mul.prod, div.quotient and div.remainder are functions of the operands and are held after completion; res_o carries them only in the release cycle and is zero otherwise (L321-322)."
+   },
+   "I": {
+    "answer": "yes",
+    "line": 300,
+    "why": "div.res is computed from div.res_u and the stored sign div.sign_mod (L300) and exported at L329; mul.prod (stored at L184/L214-215) is exported at L325/L327. The CPU takes res_o as the instruction result, so a corrupted register, sign bit or selector changes architectural state. L276 also checks for a zero divisor (or_reduce_f(rs2_i)), which fixes the divide-by-zero result."
+   },
+   "A": {
+    "answer": "yes",
+    "line": 131,
+    "why": "The result is released only after ctrl.state passes S_DONE (L131-132, L137); if the FSM does not get there, res_o stays zero."
+   },
+   "U": {
+    "answer": "yes",
+    "line": 131,
+    "why": "ctrl_i.cpu_trap forces S_DONE whatever ctrl.cnt holds (L131-132); L137 then sets ctrl.out_en and L322-329 exports a partial product or quotient (cycle model: a trap in cycle 5 releases after 6 of 32 steps). Also, mul.start and div.start carry no ctrl.state term (L154-155) and take priority over the step (L170, L210, L261), so a second command while busy reloads the operands while ctrl.cnt keeps counting, and a truncated result is released."
+   },
+   "attack_effect": "Faulting mul.prod, div.quotient, div.remainder or div.sign_mod, flipping ctrl_i.ir_funct3 at release (L299, L323), or asserting cpu_trap early (L131) changes or truncates the value res_o exports at L325-329, which is the value written back."
+  },
+  {
+   "name": "Completion and release state (FSM state, step counter, output enable)",
+   "flow": "completion and status / abort on trap",
+   "C": {
+    "answer": "no",
+    "line": 131,
+    "why": "The state sequence depends only on valid_cmd, ctrl_i.ir_funct3(2), ctrl.cnt and ctrl_i.cpu_trap (L120-131); no operand bit enters it, so the state and its timing carry no operand information."
+   },
+   "I": {
+    "answer": "yes",
+    "line": 322,
+    "why": "ctrl.out_en (set at L137 from ctrl.state) is the only gate on res_o (L322); ctrl.state also gates the datapath steps (L213, L284) and valid_o (L145). Forcing S_DONE or out_en early releases a partial result; corrupting ctrl.cnt changes the number of steps."
+   },
+   "A": {
+    "answer": "yes",
+    "line": 145,
+    "why": "valid_o is driven only from ctrl.state = S_DONE (L145); if ctrl.state never reaches S_DONE, completion is never signalled. Normal completion is bounded by the counter reloaded at L113 and tested at L131."
+   },
+   "U": {
+    "answer": "yes",
+    "line": 131,
+    "why": "ctrl_i.cpu_trap overrides the counter-based completion and forces S_DONE (L131-132)."
+   },
+   "attack_effect": "Forcing ctrl.state to S_DONE or ctrl.out_en to '1' (L132, L137) puts a partial or stale value on res_o (L322-329) and asserts valid_o early (L145); holding ctrl.state in S_BUSY or S_IDLE keeps valid_o low and withholds the result."
+  }
+ ],
+ "primary": [
+  {
+   "element": "rs1_i",
+   "entity": "neorv32_cpu_cp_muldiv",
+   "role": "sets",
+   "concept": "Operand values (register data read on rs1_i, rs2_i)",
+   "occ": [
+    2,
+    5,
+    8,
+    9,
+    10,
+    12
+   ],
+   "line": [
+    171,
+    212,
+    264,
+    266,
+    276,
+    278
+   ],
+   "edge": "SOURCES mul.dsp_x; CARRIES mul.prod; SOURCES/CARRIES div.quotient; SOURCES div.sign_mod",
+   "why": "Input port the module reads and stores: mul.dsp_x (L171), mul.prod(31..0) (L212), div.quotient (L264, L266); its sign bit sets div.sign_mod (L276, L278)."
+  },
+  {
+   "element": "rs2_i",
+   "entity": "neorv32_cpu_cp_muldiv",
+   "role": "sets",
+   "concept": "Operand values (register data read on rs1_i, rs2_i)",
+   "occ": [
+    2,
+    6,
+    9,
+    14,
+    15,
+    16
+   ],
+   "line": [
+    172,
+    225,
+    227,
+    270,
+    272,
+    276
+   ],
+   "edge": "SOURCES mul.dsp_y, mul.add, div.rs2_abs, div.sign_mod; CARRIES div.rs2_abs",
+   "why": "Input port stored in mul.dsp_y (L172) and div.rs2_abs (L270, L272) and read live in every serial multiply step (L225, L227)."
+  },
+  {
+   "element": "mul.dsp_x",
+   "entity": "neorv32_cpu_cp_muldiv",
+   "role": "stores",
+   "concept": "Operand values (register data read on rs1_i, rs2_i)",
+   "occ": [
+    3
+   ],
+   "line": [
+    171
+   ],
+   "edge": "DERIVES_FROM rs1_i, ctrl.rs1_is_signed; SOURCES mul.dsp_z",
+   "why": "Register holding sign-extended rs1 in the fast build (L171); kept until the next start or reset (L167)."
+  },
+  {
+   "element": "mul.dsp_y",
+   "entity": "neorv32_cpu_cp_muldiv",
+   "role": "stores",
+   "concept": "Operand values (register data read on rs1_i, rs2_i)",
+   "occ": [
+    3
+   ],
+   "line": [
+    172
+   ],
+   "edge": "DERIVES_FROM rs2_i, ctrl.rs2_is_signed; SOURCES mul.dsp_z",
+   "why": "Register holding sign-extended rs2 in the fast build (L172); kept until the next start or reset (L168)."
+  },
+  {
+   "element": "div.rs2_abs",
+   "entity": "neorv32_cpu_cp_muldiv",
+   "role": "stores",
+   "concept": "Operand values (register data read on rs1_i, rs2_i)",
+   "occ": [
+    3,
+    4
+   ],
+   "line": [
+    270,
+    272
+   ],
+   "edge": "DERIVES_FROM / COPIES rs2_i; SOURCES div.sub",
+   "why": "Register holding the divisor magnitude for the whole division (L270, L272), used by every step at L296."
+  },
+  {
+   "element": "div.quotient",
+   "entity": "neorv32_cpu_cp_muldiv",
+   "role": "stores",
+   "concept": "Arithmetic result (product, quotient, remainder and its sign)",
+   "occ": [
+    3,
+    4,
+    5
+   ],
+   "line": [
+    264,
+    266,
+    285
+   ],
+   "edge": "COPIES / DERIVES_FROM rs1_i; DERIVES_FROM div.sub; SOURCES div.res_u",
+   "why": "Register that holds |rs1| at start (L264, L266) and is shifted into the quotient (L285); exported via div.res_u/div.res (L299-300, L329)."
+  },
+  {
+   "element": "div.remainder",
+   "entity": "neorv32_cpu_cp_muldiv",
+   "role": "stores",
+   "concept": "Arithmetic result (product, quotient, remainder and its sign)",
+   "occ": [
+    4,
+    5
+   ],
+   "line": [
+    287,
+    289
+   ],
+   "edge": "DERIVES_FROM div.sub, div.quotient, div.remainder; SOURCES div.res_u, div.sub",
+   "why": "Register holding the running and final remainder (L287, L289); exported for rem instructions via L299-300, L329."
+  },
+  {
+   "element": "div.sign_mod",
+   "entity": "neorv32_cpu_cp_muldiv",
+   "role": "stores",
+   "concept": "Arithmetic result (product, quotient, remainder and its sign)",
+   "occ": [
+    3,
+    4,
+    5
+   ],
+   "line": [
+    276,
+    278,
+    280
+   ],
+   "edge": "DERIVES_FROM rs1_i, rs2_i; GATES div.res",
+   "why": "Register holding the result sign computed from the operand sign bits and funct3 at start (L276-280); decides negation at L300. L276 excludes a zero divisor."
+  },
+  {
+   "element": "mul.prod",
+   "entity": "neorv32_cpu_cp_muldiv",
+   "role": "stores",
+   "concept": "Arithmetic result (product, quotient, remainder and its sign)",
+   "occ": [
+    2,
+    5,
+    6,
+    7
+   ],
+   "line": [
+    184,
+    212,
+    214,
+    215
+   ],
+   "edge": "DERIVES_FROM mul.dsp_z, mul.add; COPIES rs1_i; SOURCES res_o",
+   "why": "Product register (L184 fast, L212-215 serial); both halves exported at L325/L327. In the fast build it has no reset (L181-185)."
+  },
+  {
+   "element": "mul.dsp_z",
+   "entity": "neorv32_cpu_cp_muldiv",
+   "role": "computes",
+   "concept": "Arithmetic result (product, quotient, remainder and its sign)",
+   "occ": [
+    2
+   ],
+   "line": [
+    178
+   ],
+   "edge": "DERIVES_FROM mul.dsp_x, mul.dsp_y; SOURCES mul.prod",
+   "why": "Assigned the full product (L178), registered into mul.prod (L184)."
+  },
+  {
+   "element": "mul.add",
+   "entity": "neorv32_cpu_cp_muldiv",
+   "role": "computes",
+   "concept": "Arithmetic result (product, quotient, remainder and its sign)",
+   "occ": [
+    3,
+    4,
+    5
+   ],
+   "line": [
+    225,
+    227,
+    230
+   ],
+   "edge": "DERIVES_FROM mul.prod, mul.p_sext, rs2_i, ctrl.rs2_is_signed; SOURCES mul.prod",
+   "why": "Assigned the serial partial sum or difference (L225, L227, L230), stored into mul.prod(63..31) (L214)."
+  },
+  {
+   "element": "div.sub",
+   "entity": "neorv32_cpu_cp_muldiv",
+   "role": "computes",
+   "concept": "Arithmetic result (product, quotient, remainder and its sign)",
+   "occ": [
+    5
+   ],
+   "line": [
+    296
+   ],
+   "edge": "DERIVES_FROM div.remainder, div.quotient, div.rs2_abs; SOURCES div.quotient, div.remainder; GATES div.remainder",
+   "why": "Assigned the trial subtraction (L296) whose borrow bit becomes the quotient bit (L285) and whose value becomes the remainder (L287)."
+  },
+  {
+   "element": "div.res",
+   "entity": "neorv32_cpu_cp_muldiv",
+   "role": "computes",
+   "concept": "Arithmetic result (product, quotient, remainder and its sign)",
+   "occ": [
+    2
+   ],
+   "line": [
+    300
+   ],
+   "edge": "DERIVES_FROM div.res_u; GATED_BY div.sign_mod; CARRIES res_o",
+   "why": "Assigned the sign-corrected division result (L300), exported at L329."
+  },
+  {
+   "element": "res_o",
+   "entity": "neorv32_cpu_cp_muldiv",
+   "role": "exit port",
+   "concept": "Arithmetic result (product, quotient, remainder and its sign)",
+   "occ": [
+    3,
+    4,
+    5
+   ],
+   "line": [
+    325,
+    327,
+    329
+   ],
+   "edge": "DERIVES_FROM mul.prod; COPIES div.res; GATED_BY ctrl.out_en; SELECTED_BY ctrl_i.ir_funct3",
+   "why": "The only port through which the result (and anything derived from the operands) leaves (L325, L327, L329); zero unless ctrl.out_en (L321-322)."
+  },
+  {
+   "element": "ctrl.state",
+   "entity": "neorv32_cpu_cp_muldiv",
+   "role": "stores",
+   "concept": "Completion and release state (FSM state, step counter, output enable)",
+   "occ": [
+    2,
+    4,
+    5,
+    6,
+    7
+   ],
+   "line": [
+    107,
+    122,
+    124,
+    132,
+    138
+   ],
+   "edge": "GATES valid_o, mul.prod, mul.add, div.quotient, div.remainder; SELECTS ctrl.out_en, ctrl.cnt",
+   "why": "FSM register (L107, L122, L124, L132, L138); decides when the datapath steps (L213, L284), when the result is released (L137) and valid_o (L145)."
+  },
+  {
+   "element": "ctrl.cnt",
+   "entity": "neorv32_cpu_cp_muldiv",
+   "role": "stores",
+   "concept": "Completion and release state (FSM state, step counter, output enable)",
+   "occ": [
+    3,
+    5
+   ],
+   "line": [
+    113,
+    130
+   ],
+   "edge": "GATES ctrl.state; DERIVES_FROM ctrl.cnt",
+   "why": "Step counter: constant reload at L113, decrement at L130, zero test at L131. It fixes the operation at 32 steps regardless of operand values."
+  },
+  {
+   "element": "ctrl.out_en",
+   "entity": "neorv32_cpu_cp_muldiv",
+   "role": "stores",
+   "concept": "Completion and release state (FSM state, step counter, output enable)",
+   "occ": [
+    4,
+    5
+   ],
+   "line": [
+    137,
+    322
+   ],
+   "edge": "GATES res_o; SELECTED_BY ctrl.state",
+   "why": "Release-enable register set only in S_DONE (L137); the only gate that lets a value out on res_o (L322)."
+  },
+  {
+   "element": "valid_o",
+   "entity": "neorv32_cpu_cp_muldiv",
+   "role": "exit port",
+   "concept": "Completion and release state (FSM state, step counter, output enable)",
+   "occ": [
+    2
+   ],
+   "line": [
+    145
+   ],
+   "edge": "GATED_BY ctrl.state",
+   "why": "Completion signal to the CPU, driven only from ctrl.state = S_DONE (L145)."
+  }
+ ],
+ "secondary": [
+  {
+   "element": "valid_cmd",
+   "influences": "ctrl.state, mul.start, div.start",
+   "edge": "GATES",
+   "occ": [
+    2,
+    3,
+    4,
+    5
+   ],
+   "why": "Command check (L97-99): accepts only the M-extension encoding and rejects division unless DIVISION_EN. It starts the FSM (L120) and the datapath (L154-155). It has no ctrl.state term."
+  },
+  {
+   "element": "mul.start",
+   "influences": "mul.dsp_x, mul.dsp_y, mul.prod",
+   "edge": "GATES",
+   "occ": [
+    2,
+    3,
+    4
+   ],
+   "why": "Start pulse that loads operands (L170, L210); it has priority over the serial step, so a start while busy reloads mid-operation."
+  },
+  {
+   "element": "div.start",
+   "influences": "div.quotient, div.rs2_abs, div.sign_mod, div.remainder",
+   "edge": "GATES",
+   "occ": [
+    2,
+    3
+   ],
+   "why": "Start pulse that loads divider registers (L261); it has priority over the step at L284."
+  },
+  {
+   "element": "ctrl.rs1_is_signed",
+   "influences": "mul.dsp_x, div.quotient, mul.add",
+   "edge": "GATES (single-bit sign operand; map types the dsp_x edge SOURCES)",
+   "occ": [
+    2,
+    3,
+    4,
+    5
+   ],
+   "why": "Decoded signedness from live funct3 (L148-149), not latched; decides the sign extension (L171), negation (L263) and the final signed step (L224)."
+  },
+  {
+   "element": "ctrl.rs2_is_signed",
+   "influences": "mul.dsp_y, mul.add, mul.p_sext, div.rs2_abs",
+   "edge": "GATES (single-bit sign operand; map types the dsp_y/mul.add edges SOURCES)",
+   "occ": [
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "why": "Decoded signedness from live funct3 (L150-151), not latched; used in every serial multiply step (L225, L227, L235) and at divider start (L269)."
+  },
+  {
+   "element": "mul.p_sext",
+   "influences": "mul.add",
+   "edge": "SOURCES (sign bit)",
+   "occ": [
+    2,
+    3,
+    4,
+    5
+   ],
+   "why": "Forwards mul.prod(63) masked by ctrl.rs2_is_signed (L235) as the accumulator sign bit; holds no value of its own."
+  },
+  {
+   "element": "div.res_u",
+   "influences": "div.res",
+   "edge": "SOURCES (value arm of a select)",
+   "occ": [
+    2,
+    3,
+    4
+   ],
+   "why": "Forwards div.quotient or div.remainder chosen by live funct3 (L299); holds or computes nothing new."
+  },
+  {
+   "element": "ctrl_i.ir_funct3",
+   "influences": "res_o, div.res_u, div.sign_mod, ctrl.state, ctrl.rs1_is_signed, ctrl.rs2_is_signed, mul.start, div.start, valid_cmd",
+   "edge": "SELECTS / GATES",
+   "occ": [
+    2,
+    4,
+    5,
+    9,
+    12,
+    13,
+    14,
+    16,
+    18
+   ],
+   "why": "Operation selector. It is read live at release (L299, L323) and during every step (via L148-151), never latched, so the result depends on it staying stable."
+  },
+  {
+   "element": "ctrl_i.cpu_trap",
+   "influences": "ctrl.state",
+   "edge": "GATES",
+   "occ": [
+    2
+   ],
+   "why": "Override that forces S_DONE mid-operation (L131-132), which releases a partial result (L137, L322)."
+  },
+  {
+   "element": "ctrl_i.alu_cp_alu",
+   "influences": "valid_cmd",
+   "edge": "GATES",
+   "occ": [
+    2
+   ],
+   "why": "Co-processor select bit in the command check (L97)."
+  },
+  {
+   "element": "ctrl_i.ir_opcode",
+   "influences": "valid_cmd",
+   "edge": "GATES",
+   "occ": [
+    2
+   ],
+   "why": "Opcode bit 5 in the command check (L97)."
+  },
+  {
+   "element": "ctrl_i.ir_funct12",
+   "influences": "valid_cmd",
+   "edge": "GATES",
+   "occ": [
+    2
+   ],
+   "why": "funct7 = 0000001 test in the command check (L98)."
+  }
+ ],
+ "excluded": [
+  {
+   "element": "clk_i",
+   "reason": "clock: decides when, not what (SEQUENCES only)."
+  },
+  {
+   "element": "rstn_i",
+   "reason": "reset: decides when, not what (RESETS only). Note: it clears every datapath register except mul.prod in the fast build (L181-185)."
+  },
+  {
+   "element": "ctrl_i",
+   "reason": "record port carrying the whole CPU control bus; its five consumed fields are reported individually."
+  },
+  {
+   "element": "ctrl",
+   "reason": "record container; every use is a field access reported under the field."
+  },
+  {
+   "element": "div",
+   "reason": "record container; every use is a field access reported under the field."
+  },
+  {
+   "element": "mul",
+   "reason": "record container; every use is a field access reported under the field."
+  },
+  {
+   "element": "ctrl_i.if_fence",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.if_reset",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.if_ack",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.pc_cur",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.pc_nxt",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.pc_ret",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.rf_wb_en",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.rf_rs1",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.rf_rs2",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.rf_rd",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.rf_zero_we",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.alu_op",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.alu_sub",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.alu_opa_mux",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.alu_opb_mux",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.alu_unsigned",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.alu_imm",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.alu_cp_cfu",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.alu_cp_fpu",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.lsu_req",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.lsu_rw",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.lsu_amo",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.lsu_mo_we",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.lsu_fence",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.lsu_priv",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.csr_we",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.csr_re",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.csr_addr",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.csr_wdata",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.cnt_halt",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.cnt_event",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.cpu_priv",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.cpu_sleep",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  },
+  {
+   "element": "ctrl_i.cpu_debug",
+   "reason": "only occurrence is the port declaration (L32); no local use."
+  }
+ ],
+ "hypotheses": [
+  "Operand secrecy: rs1_i/rs2_i may carry secret data (e.g. key material in software arithmetic). Nothing in this source marks an operand as secret; the C answers rest on the unit storing and exporting register data.",
+  "The CPU keeps ctrl_i.ir_funct3 and rs2_i stable from start to release. The module does not latch them (L148-151 combinational, L225-227 live rs2_i, L299 and L323 live funct3); if they change mid-operation, the result is wrong.",
+  "The CPU discards the partial result released after cpu_trap (L131-137, L322-329); not visible in this source.",
+  "The CPU never issues a second command while this unit is busy; the start pulses have no ctrl.state term (L154-155).",
+  "When DIVISION_EN is false, L99 rejects division encodings; that the CPU then raises an illegal-instruction exception is outside this module.",
+  "Residual operand and result data stay in mul.dsp_x/dsp_y, mul.prod and div.* after completion (no clear except reset or the next start); harm needs a read path to internal registers, which this source does not have.",
+  "ctrl_i.cpu_priv, ctrl_i.cpu_debug, ctrl_i.lsu_priv and similar fields look security-related by name but are unused here, so they are not reported."
+ ],
+ "map_assessment": {
+  "used_for": "Listing all 70 elements and the 5 used of 39 ctrl_i fields; walking every data edge from rs1_i/rs2_i to res_o and every control edge onto ctrl.state, ctrl.out_en and res_o; locating the 10 registers from storage kinds; citing occurrence ids. Checks: 399/399 occurrence texts match the source, 524/524 relationship ids resolve, 0 edges lack an inverse.",
+  "insufficient_for": "Answering the four questions. The map has no cross-cycle semantics: it could not show that latency is fixed (needed a cycle model of L112-140), that the start pulses lack a state qualifier (an absent edge, found only by asking the question), that funct3 and rs2_i are read live rather than latched, or that cpu_trap releases a partial result one cycle later via out_en. It cannot say whether an operand is secret.",
+  "errors_found": "ctrl.cnt: the constant reload at L113 (occ 3, 4) is missing from constant_drivers, which lists only the reset value (occ 2); that line is what makes the latency constant. Hints: mul.dsp_z is said to 'store' the product but it is combinational (storage none); ctrl.cnt is said to be 'loaded on start' but L113 reloads it every cycle outside S_BUSY. Edge typing: ctrl.rs1_is_signed -> mul.dsp_x and ctrl.rs2_is_signed -> mul.dsp_y/mul.add are typed SOURCES though they are single-bit AND operands (GATES by the prompt's definition). No wrong edge target found."
+ },
+ "process_notes": "1) Read the prompt, then the whole source (small: one entity, 228 lines). 2) Indexed the map with Python; self-tested occurrence texts against source lines (399/399), relationship ids (524/524) and inverse edges (0 missing); confirmed 7 hand-read lines. 3) Stated purpose and flows from the ports and source. 4) Traced each flow on map edges and confirmed each on its line. 5) Asked the four questions per value. Two answers needed the source, not the map: the constant-latency claim (L113 constant is absent from the map's constant_drivers; confirmed with a cycle model: 32 steps for serial multiply and divide, 1 for fast multiply, 6 when a trap arrives in cycle 5), and the start-while-busy reload (the map shows mul.start/div.start/valid_cmd have no GATED_BY ctrl.state edge; the absence mattered only once the question was asked). 6) Assigned roles. Rule applied: registers that hold operand or result data store; signals assigned an arithmetic transform compute; pure selects or masked bit forwards (div.res_u, mul.p_sext) are influence points; control inputs that only condition a transition (cpu_trap, funct3, decode fields) are influence points even though they are consumed ports. Where the map changed a decision: storage kinds moved mul.dsp_x/dsp_y, div.rs2_abs and div.sign_mod to 'stores'; the absent state edge on the start pulses produced the U finding; the map's kind=signal/storage none for ctrl.rs*_is_signed confirmed they are not latched."
+}

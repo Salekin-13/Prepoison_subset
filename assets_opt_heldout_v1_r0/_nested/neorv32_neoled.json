@@ -1,0 +1,154 @@
+{
+ "module name": "neorv32_neoled",
+ "module purpose": "neorv32_neoled stores control settings (enable, word mode, strobe, time-base select, interrupt configuration, bit timing) written over its bus interface, pushes tagged data words into a TX buffer sub-unit (data_buffer), and runs a serial engine that pops each word and encodes its bits as timed high/low pulses on neoled_o; it also drives clkgen_en_o from the enable, raises irq_o from the buffer level, and returns settings and status on a bus read.",
+ "use-case flows": [
+  {
+   "flow": "configure",
+   "value": "control word from the bus write data stored into the enable, mode, strobe, prescaler-select, interrupt-configuration and bit-timing settings on a write with addr(2) = '0'; the enable is exported on clkgen_en_o",
+   "lines": [127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 160]
+  },
+  {
+   "flow": "start",
+   "value": "data word, tagged with the current strobe and mode settings, pushed into the TX buffer on a write with addr(2) = '1'",
+   "lines": [181, 182, 191, 192]
+  },
+  {
+   "flow": "operate",
+   "value": "word fetch and decode: buffer read request in the enabled idle state, shift-register load, word width (24 or 32 bits) and data-versus-strobe branch chosen from the word's tag bits when the buffer holds a word",
+   "lines": [190, 231, 232, 234, 239, 240, 241, 242, 244, 245, 247, 248, 249, 251, 308, 310, 311]
+  },
+  {
+   "flow": "operate",
+   "value": "bit serialization: current bit selected by the word mode, its high time chosen from t0_high or t1_high, pulse counter advanced on the selected time-base tick and compared with the high time and the total bit period, neoled_o driven high then low, bit counter decremented until the word ends",
+   "lines": [225, 255, 257, 258, 260, 261, 263, 265, 266, 267, 268, 270, 271, 274, 278, 279, 281, 282, 285, 286, 318]
+  },
+  {
+   "flow": "operate",
+   "value": "strobe interval: neoled_o held low while the strobe counter counts whole bit periods until all its bits are set",
+   "lines": [290, 293, 295, 296, 297, 299, 303, 304, 305]
+  },
+  {
+   "flow": "report",
+   "value": "interrupt request: while enabled, buffer empty (irq_conf = '0') or buffer below half (irq_conf = '1'), registered on irq_o",
+   "lines": [196, 199, 200, 201, 202, 203]
+  },
+  {
+   "flow": "report",
+   "value": "status bits (buffer empty, half, full, engine busy) returned on a bus read",
+   "lines": [150, 151, 152, 153, 321]
+  },
+  {
+   "flow": "read out",
+   "value": "stored settings and the buffer size returned on a bus read",
+   "lines": [140, 141, 142, 143, 144, 145, 146, 147, 148]
+  },
+  {
+   "flow": "reset",
+   "value": "settings, bus response, interrupt, serial engine registers and neoled_o forced to zero while rstn_i = '0'; a cleared enable also clears the buffer and keeps the engine out of its active states",
+   "lines": [111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 193, 198, 199, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 231]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Module enable setting -- whether the interface is active: engine allowed to run, buffer kept, clock generator requested, interrupt allowed",
+   "security objective": "Integrity",
+   "reasoning": "Configure flow: `ctrl.enable <= bus_req_i.data(ctrl_en_c);` (line 130) under the stb, rw and addr(2) = '0' conditions (lines 127-129), reset to '0' (line 112). This entity uses the held value in four places: `clkgen_en_o <= ctrl.enable;` (line 160), `tx_fifo.clear <= not ctrl.enable;` (line 193, clearing the buffer when the enable is 0), `serial.state(2) <= ctrl.enable;` (line 231, so the case at line 232 reaches the active states only with the enable set, otherwise the others arm at lines 310-311 holds neoled_o at '0'), and the GATES record on irq_o (line 201). Integrity: these effects must follow the written value. Availability is also established: while the enable is 0 no word is sent and the buffer is held clear (lines 193, 231). No line restricts readback (line 140), so confidentiality is not established. ctrl.enable stores (occurrence 3, CLOCKED_BY clk_i, line 130; use records GATES irq_o and CARRIES clkgen_en_o). clkgen_en_o is the exit port (occurrence 2, COPIES ctrl.enable, line 160); it exports an enable, which section 7 does not exclude. Not listed: bus_req_i is a transport record; tx_fifo.clear only passes the inverted setting to data_buffer.clear_i (line 177); serial.state copies only bit 2 of it and is listed under its own concept.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.enable", "entity": "neorv32_neoled", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "clkgen_en_o", "entity": "neorv32_neoled", "realization": "exit port", "occurrence": 2, "edge": {"type": "COPIES", "partner": "ctrl.enable"}}
+   ]
+  },
+  {
+   "concept": "Serial pulse timing configuration -- time-base select, total bit period, and high time for a 0 bit and for a 1 bit",
+   "security objective": "Integrity",
+   "reasoning": "Configure flow: written at lines 133 and 135-137, reset at lines 115 and 117-119. ctrl.clk_prsc chooses which clkgen_i bit becomes the pulse tick (`serial.pulse_clk <= clkgen_i(to_integer(unsigned(ctrl.clk_prsc)));`, line 225, SELECTS serial.pulse_clk). ctrl.t_total ends each bit period and each strobe step (`if (serial.pulse_cnt = ctrl.t_total)`, lines 285 and 295; CONSTRAINS serial.state, serial.pulse_cnt and serial.strobe_cnt). ctrl.t0_high and ctrl.t1_high are chosen per bit into serial.t_high (lines 260-264, CARRIES), which ends the high phase of neoled_o (lines 281-282). Integrity: the pulse widths and periods on neoled_o must follow these settings. Each field stores (occurrence 3, CLOCKED_BY clk_i). Each also has a use record: SELECTS (clk_prsc), CONSTRAINS (t_total), and CARRIES into the output field bus_rsp_o.data plus a read by the per-bit selection (t0_high, t1_high). Not listed: clkgen_i is only sampled into serial.pulse_clk, which only gates the counter, state and output updates (lines 278, 293), so it acts as a clock-enable input (section 7); serial.pulse_clk holds that sampled tick and only gates; readback (lines 143, 146-148) goes through the transport record bus_rsp_o.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.clk_prsc", "entity": "neorv32_neoled", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.t_total", "entity": "neorv32_neoled", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.t0_high", "entity": "neorv32_neoled", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.t1_high", "entity": "neorv32_neoled", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Word format tags -- data width (24 or 32 bits) and data-versus-strobe command attached to each buffered word and applied when it is sent",
+   "security objective": "Integrity",
+   "reasoning": "The settings written at lines 131-132 are appended to every pushed word: `tx_fifo.wdata <= ctrl.strobe & ctrl.mode & bus_req_i.data;` (line 192). After the buffer, `if (tx_fifo.rdata(32) = '0')` (line 240) sets serial.mode and loads bit_cnt with 24 or 32 (lines 241-245), and `if (tx_fifo.rdata(33) = '0')` (line 248) picks the data sequence or the strobe sequence (lines 249, 251). serial.mode then picks sreg(23) or sreg(31) as the current bit (line 318, GATES serial.next_bit). Integrity: how many bits are sent from a word, and whether the word is a strobe, must follow its tag. ctrl.mode and ctrl.strobe store (occurrence 3, CLOCKED_BY clk_i; use record CARRIES bus_rsp_o.data, and SOURCES tx_fifo.wdata). serial.mode stores (occurrence 3, CLOCKED_BY clk_i, line 241; GATES serial.next_bit). tx_fifo.rdata sets (occurrence 2, CONNECTS data_buffer.rdata_o, line 186): it brings the tag bits back from the buffer, and this block tests it in the if conditions at lines 240 and 248, so the sub-unit wiring exception holds. Not listed: tx_fifo.wdata only concatenates the tags with the bus data and passes them to data_buffer.wdata_i (line 181), so it is a carrier.",
+   "related structural assets": [
+    {"asset rtl": "ctrl.mode", "entity": "neorv32_neoled", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "ctrl.strobe", "entity": "neorv32_neoled", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "tx_fifo.rdata", "entity": "neorv32_neoled", "realization": "sets", "occurrence": 2, "edge": {"type": "CONNECTS", "partner": "data_buffer.rdata_o"}},
+    {"asset rtl": "serial.mode", "entity": "neorv32_neoled", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Transmitted pixel data -- the buffered data bits and the serial waveform that encodes them on neoled_o",
+   "security objective": "Integrity",
+   "reasoning": "The operate flow loads the word from the buffer (`serial.sreg <= tx_fifo.rdata(31 downto 0);`, line 239), shifts it (line 257), selects the current bit (`serial.next_bit <= serial.sreg(23) when (serial.mode = '0') else serial.sreg(31);`, line 318), and encodes it as a high time (lines 260-264). neoled_o goes high at the start of each bit (line 270), low when serial.pulse_cnt equals serial.t_high (lines 281-282), and low at the end of the word (line 266). Integrity: the level sequence leaving through neoled_o must encode exactly the buffered bits. The value leaves this entity through an output port, so its delivery integrity is Established from these lines. tx_fifo.rdata sets (occurrence 2, CONNECTS data_buffer.rdata_o; tested at lines 240 and 248). serial.next_bit computes the current bit (occurrence 3, DERIVES_FROM serial.sreg, line 318). serial.t_high stores the high time chosen for that bit (occurrence 3, CLOCKED_BY clk_i, line 261). It copies two different settings depending on next_bit, so it is not a copy of one element, and it CONSTRAINS neoled_o (line 281). neoled_o is the exit port (occurrence 6, CONSTRAINED_BY serial.t_high, line 282). Not listed: serial.sreg's records show only SOURCES to itself (line 257) and to the internal signal serial.next_bit (line 318), with no use record of section 6, so it holds one step that next_bit carries on; tx_fifo.wdata is a carrier; bus_req_i is transport.",
+   "related structural assets": [
+    {"asset rtl": "tx_fifo.rdata", "entity": "neorv32_neoled", "realization": "sets", "occurrence": 2, "edge": {"type": "CONNECTS", "partner": "data_buffer.rdata_o"}},
+    {"asset rtl": "serial.next_bit", "entity": "neorv32_neoled", "realization": "computes", "occurrence": 3, "edge": {"type": "DERIVES_FROM", "partner": "serial.sreg"}},
+    {"asset rtl": "serial.t_high", "entity": "neorv32_neoled", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "neoled_o", "entity": "neorv32_neoled", "realization": "exit port", "occurrence": 6, "edge": {"type": "CONSTRAINED_BY", "partner": "serial.t_high"}}
+   ]
+  },
+  {
+   "concept": "Transmission phase and word progress -- serial engine state and the count of bits left in the current word",
+   "security objective": "Integrity",
+   "reasoning": "serial.state selects every action of the serial engine (case at line 232; SELECTS neoled_o, serial.sreg, serial.bit_cnt and the other engine registers). It moves through fetch, bit start, high/low phase and strobe (lines 249, 251, 268, 271, 286, 305, 311). It also decides the buffer read request (line 190) and the busy status (line 321). serial.bit_cnt is loaded with 24 or 32 (lines 242, 245) and decremented per bit (line 258). At zero it ends the word: neoled_o goes '0', done is set, and the state returns to idle (lines 265-268; GATES neoled_o, serial.state, serial.done). Integrity: which phase runs, and how many bits of a word are sent, must follow these transitions. Availability is also established: a corrupted phase or count stops or truncates transmission. serial.state stores (occurrence 4, CLOCKED_BY clk_i, line 231; use record SELECTS neoled_o). serial.bit_cnt stores (occurrence 5, CLOCKED_BY clk_i, line 258; use record GATES neoled_o). Not listed: serial.done is assigned (lines 228, 267, 304) but has no driving record, so nothing in this file reads it.",
+   "related structural assets": [
+    {"asset rtl": "serial.state", "entity": "neorv32_neoled", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "serial.bit_cnt", "entity": "neorv32_neoled", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Pulse and strobe timing progress -- position within the current bit period and within the strobe interval",
+   "security objective": "Integrity",
+   "reasoning": "serial.pulse_cnt advances on each selected time-base tick (lines 279, 299). It is compared with the per-bit high time to end the high phase (line 281, CONSTRAINS neoled_o) and with the total period to end the bit (line 285) or a strobe step (line 295). serial.strobe_cnt counts whole periods in the strobe state (line 297). When all its bits are set it ends the strobe interval (lines 303-305, GATES serial.state and serial.done). Integrity: the high width, the bit period and the strobe length on neoled_o must follow these counts against the configured settings. Availability: the engine leaves its timed phases only when these counts reach their limits (lines 286, 305). serial.pulse_cnt stores (occurrence 5, CLOCKED_BY clk_i, line 279; use record CONSTRAINS neoled_o). serial.strobe_cnt stores (occurrence 4, CLOCKED_BY clk_i, line 297; use record GATES serial.state).",
+   "related structural assets": [
+    {"asset rtl": "serial.pulse_cnt", "entity": "neorv32_neoled", "realization": "stores", "occurrence": 5, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}},
+    {"asset rtl": "serial.strobe_cnt", "entity": "neorv32_neoled", "realization": "stores", "occurrence": 4, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "TX buffer write decision -- whether a bus access pushes a word into the data buffer",
+   "security objective": "Integrity",
+   "reasoning": "Start flow: `tx_fifo.we <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '1') else '0';` (line 191). The decision is delivered to data_buffer.we_i (line 182), a sub-unit not supplied. So the integrity property, that the buffer receives exactly this write decision, is Established from lines 182 and 191. tx_fifo.we computes it here from that condition (occurrence 3, GATED_BY bus_req_i.stb, line 191), which satisfies the sub-unit wiring exception. The bus_req_i fields it tests belong to a transport record and are not reported.",
+   "related structural assets": [
+    {"asset rtl": "tx_fifo.we", "entity": "neorv32_neoled", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "bus_req_i.stb"}}
+   ]
+  },
+  {
+   "concept": "TX buffer read request -- the engine's decision to pop the next word from the data buffer",
+   "security objective": "Integrity",
+   "reasoning": "`tx_fifo.re <= '1' when (serial.state = 100) else '0';` (line 190, state value 100) asserts the read request in the enabled idle state, where the engine also loads the word it receives (line 239). The request is delivered to data_buffer.re_i (line 185), a sub-unit not supplied. So the integrity property, that the buffer receives exactly this request, is Established from lines 185 and 190. tx_fifo.re computes it here from a state decision (occurrence 3, GATED_BY serial.state, line 190), which satisfies the sub-unit wiring exception.",
+   "related structural assets": [
+    {"asset rtl": "tx_fifo.re", "entity": "neorv32_neoled", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "serial.state"}}
+   ]
+  },
+  {
+   "concept": "TX buffer data-available status -- whether the buffer holds a word to send",
+   "security objective": "Integrity",
+   "reasoning": "The status comes in from data_buffer.avail_o (line 187). This block tests it in `if (tx_fifo.avail = '1')` (line 247) to start sending a word (lines 249, 251; GATES serial.state). It also uses it in the interrupt condition (line 202) and returns it inverted as the empty flag (line 150). Integrity: whether a word transfer starts, and whether the empty interrupt fires, must follow the buffer's real occupancy. tx_fifo.avail sets this value in the entity (occurrence 3, CONNECTS data_buffer.avail_o). Its test at line 247 satisfies the sub-unit wiring exception. Not listed: tx_fifo.half and tx_fifo.free only receive sub-unit outputs and are read as data (lines 151-152, 203), never tested in an if, case or when condition, so they are carriers.",
+   "related structural assets": [
+    {"asset rtl": "tx_fifo.avail", "entity": "neorv32_neoled", "realization": "sets", "occurrence": 3, "edge": {"type": "CONNECTS", "partner": "data_buffer.avail_o"}}
+   ]
+  },
+  {
+   "concept": "Buffer-level interrupt request and its condition setting",
+   "security objective": "Integrity",
+   "reasoning": "Report flow: `irq_o <= ctrl.enable and (((not ctrl.irq_conf) and (not tx_fifo.avail)) or ((ctrl.irq_conf) and (not tx_fifo.half)));` (lines 201-203), registered on clk_i and reset to '0' (line 199). ctrl.irq_conf, written at line 134, chooses between the buffer-empty condition and the below-half condition. Integrity: the interrupt raised must follow this condition and setting. Availability: when the condition holds and the enable is set, irq_o is asserted at the next clock edge. The irq_conf readback is forced to 1 when the generic FIFO_DEPTH = 1 (line 144), but irq_o reads ctrl.irq_conf itself (lines 202-203). irq_o is the exit port (occurrence 3, DERIVES_FROM ctrl.irq_conf, line 201). ctrl.irq_conf stores (occurrence 3, CLOCKED_BY clk_i, line 134; use record SOURCES irq_o). ctrl.enable also gates irq_o and is listed under the enable concept.",
+   "related structural assets": [
+    {"asset rtl": "irq_o", "entity": "neorv32_neoled", "realization": "exit port", "occurrence": 3, "edge": {"type": "DERIVES_FROM", "partner": "ctrl.irq_conf"}},
+    {"asset rtl": "ctrl.irq_conf", "entity": "neorv32_neoled", "realization": "stores", "occurrence": 3, "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}}
+   ]
+  },
+  {
+   "concept": "Transmitter busy status -- whether the serial engine is in an active phase",
+   "security objective": "Integrity",
+   "reasoning": "`serial.busy <= '0' when (serial.state(1 downto 0) = 00) else '1';` (line 321, bits 00) computes the decision. It is returned on a status read (line 153, CARRIES bus_rsp_o.data), so it leaves the entity through an output port. Its integrity property, that the reported busy bit matches the engine phase, is Established from lines 153 and 321. serial.busy computes it (occurrence 3, GATED_BY serial.state, line 321).",
+   "related structural assets": [
+    {"asset rtl": "serial.busy", "entity": "neorv32_neoled", "realization": "computes", "occurrence": 3, "edge": {"type": "GATED_BY", "partner": "serial.state"}}
+   ]
+  }
+ ]
+}

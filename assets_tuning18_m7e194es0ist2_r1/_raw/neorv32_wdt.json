@@ -1,0 +1,280 @@
+{
+  "module name": "neorv32_wdt",
+  "module purpose": "The watchdog block accepts bus configuration and reload requests, runs a prescaled counter when enabled, compares the counter against a programmable timeout and, on timeout or forced-access conditions, asserts a hardware reset output; it also reports control fields and the reset cause on the bus and exports a clock-enable signal.",
+  "use-case flows": [
+    {
+      "flow": "configure",
+      "value": "Control register fields (enable, lock, strict, timeout) written into internal ctrl record by bus writes to the control address",
+      "lines": [
+        90,
+        93,
+        94,
+        95,
+        96,
+        97
+      ]
+    },
+    {
+      "flow": "start",
+      "value": "Watchdog reload / clear request (reset_wdt) set by a bus write of the correct password",
+      "lines": [
+        101,
+        102,
+        103,
+        104
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "Prescaler tick (from clkgen_i) drives cnt_started and increments cnt; when cnt equals ctrl.timeout (cnt_timeout) hw_rst_timeout is produced",
+      "lines": [
+        141,
+        129,
+        130,
+        131,
+        133,
+        134,
+        135,
+        144,
+        155
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "Readback of control fields and reset cause returned on bus reads into bus_rsp_o.data",
+      "lines": [
+        108,
+        109,
+        110,
+        111,
+        112,
+        113
+      ]
+    },
+    {
+      "flow": "lock",
+      "value": "The lock bit freezes control writes (attempts to write while locked cause reset_force)",
+      "lines": [
+        93,
+        94,
+        95,
+        99
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "System reset output rstn_o asserted when hw_rst_timeout or hw_rst_access are set; reset_cause captured accordingly",
+      "lines": [
+        155,
+        156,
+        161,
+        171,
+        172,
+        174,
+        176
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Watchdog enable configuration (whether the WDT is enabled and the exported clock-enable)",
+      "security objective": "Integrity",
+      "reasoning": "The enable bit is written by bus writes into ctrl.enable (assignment at RTL line 94) and is stored in a clocked register (map: ctrl.enable occurrence 3 CLOCKED_BY clk_i). The WDT counting logic depends on this bit (cnt_started and cnt updates at lines 129-135) and hw_rst_timeout uses it (line 155). The same setting is exported outside the block as clkgen_en_o (assignment at line 140; map: clkgen_en_o occurrence 2 COPIES ctrl.enable). Therefore the module's counting behavior and the external clock-enable it drives depend on the integrity of ctrl.enable.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.enable",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "clkgen_en_o",
+          "entity": "neorv32_wdt",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "ctrl.enable"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Configuration lock (whether control fields are frozen against writes)",
+      "security objective": "Integrity",
+      "reasoning": "ctrl.lock determines whether writes to the control register are accepted: bus_access checks ctrl.lock and, if it is '1', sets reset_force instead of updating control fields (RTL lines 93 and 99). ctrl.lock is itself a clocked register written at line 95 (map: ctrl.lock occurrence 4 CLOCKED_BY clk_i). Thus the module's acceptance or rejection of remote configuration writes depends on the integrity of ctrl.lock.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.lock",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Timeout setting (the programmable timeout value the counter is compared against)",
+      "security objective": "Integrity",
+      "reasoning": "The timeout field is written into ctrl.timeout from bus data (assignment at RTL line 97) and is held in a clocked register (map: ctrl.timeout occurrence 3 CLOCKED_BY clk_i). The equality cnt = ctrl.timeout produces cnt_timeout (line 144) which is used to generate hw_rst_timeout (line 155). Therefore the timeout value's integrity determines when a timeout-based reset will occur.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.timeout",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Strict mode configuration (whether forced-access generates a hardware reset)",
+      "security objective": "Integrity",
+      "reasoning": "ctrl.strict is written from bus data into a clocked register (RTL line 96; map: ctrl.strict occurrence 3 CLOCKED_BY clk_i) and is used together with ctrl.enable and reset_force to produce hw_rst_access (RTL line 156). The integrity of ctrl.strict therefore determines whether an access that sets reset_force will result in a system reset.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.strict",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Watchdog reload request (the reload/clear signal that resets the WDT counter)",
+      "security objective": "Integrity",
+      "reasoning": "A bus write with the correct password sets reset_wdt <= '1' (RTL lines 101-104) and reset_wdt is clocked into a register (map: reset_wdt occurrence 4 CLOCKED_BY clk_i). wdt_counter uses reset_wdt to clear cnt (lines 131-133). The integrity of reset_wdt therefore controls whether the counter is reloaded/cleared and so affects timeout availability.",
+      "related structural assets": [
+        {
+          "asset rtl": "reset_wdt",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Forced-reset indicator (reset_force) set on disallowed or incorrect bus accesses",
+      "security objective": "Integrity",
+      "reasoning": "reset_force is set by the bus-access logic on writes that are disallowed (writes while ctrl.lock = '1' or wrong password writes) (RTL lines 99 and 105) and is stored in a clocked register (map: reset_force occurrence 5 CLOCKED_BY clk_i). reset_force participates in producing hw_rst_access (RTL line 156). Thus integrity of reset_force determines whether an invalid access is escalated to a hardware reset.",
+      "related structural assets": [
+        {
+          "asset rtl": "reset_force",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 5,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Watchdog counter state (current counter value used to detect timeout)",
+      "security objective": "Integrity",
+      "reasoning": "The cnt register holds the running watchdog count (wdt_counter updates at lines 129-135) and is clocked (map: cnt occurrence 4 CLOCKED_BY clk_i). When cnt equals ctrl.timeout the combinational cnt_timeout becomes '1' (line 144) which leads to hw_rst_timeout (line 155). The integrity of cnt therefore directly determines when a timeout-based reset is triggered.",
+      "related structural assets": [
+        {
+          "asset rtl": "cnt",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Counter-started flag (whether the watchdog counter is active)",
+      "security objective": "Integrity",
+      "reasoning": "cnt_started is set from ctrl.enable and prescaler activity (wdt_counter lines 129-131) and is stored (map: cnt_started occurrence 4 CLOCKED_BY clk_i). cnt_started gates counter increments and the timeout condition (lines 129 and 144), so its integrity affects whether the WDT actually advances toward a timeout.",
+      "related structural assets": [
+        {
+          "asset rtl": "cnt_started",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Reset cause register (the recorded source of the last reset)",
+      "security objective": "Integrity",
+      "reasoning": "reset_cause is set by the reset_identifier process to indicate external debug reset, timeout, or forced-access (RTL lines 171-176) and is stored in a clocked register (map: reset_cause occurrence 4 CLOCKED_BY clk_i). The value is returned on bus reads (copied into bus_rsp_o.data at line 111), so the integrity of reset_cause is required for correct reporting of why a reset occurred.",
+      "related structural assets": [
+        {
+          "asset rtl": "reset_cause",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "System reset output (the rstn_o value derived from internal reset flags)",
+      "security objective": "Integrity",
+      "reasoning": "The block drives rstn_o from the internal reset flags (rstn_o <= not (hw_rst_timeout or hw_rst_access), RTL line 161; map: rstn_o occurrence 2 DERIVES_FROM hw_rst_access and hw_rst_timeout). The internal flags hw_rst_timeout and hw_rst_access are produced by reset_generator (lines 155-156) and are stored in clocked registers (map: hw_rst_timeout occurrence 3 CLOCKED_BY clk_i; hw_rst_access occurrence 3 CLOCKED_BY clk_i). The integrity of those stored decisions and the derived rstn_o output is therefore established by the RTL: corrupting them changes the reset delivered to the system.",
+      "related structural assets": [
+        {
+          "asset rtl": "rstn_o",
+          "entity": "neorv32_wdt",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "hw_rst_access"
+          }
+        },
+        {
+          "asset rtl": "hw_rst_timeout",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "hw_rst_access",
+          "entity": "neorv32_wdt",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    }
+  ]
+}

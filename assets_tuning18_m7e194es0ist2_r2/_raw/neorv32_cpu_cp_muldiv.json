@@ -1,0 +1,136 @@
+{
+ "module name": "neorv32_cpu_cp_muldiv",
+ "module purpose": "Decode multiply/divide coprocessor instructions from the control bus, start and sequence multi-cycle multiply or divide operations (fast parallel or serial variants depending on FAST_MUL_EN / DIVISION_EN), compute multiplication product or division quotient/remainder (signed/unsigned variants), and drive the 32-bit result (res_o) and a completion valid signal (valid_o).",
+ "use-case flows": [
+   {
+     "flow": "start",
+     "value": "coprocessor command validity and start indicators (valid_cmd; mul.start or div.start) that begin an operation",
+     "lines": [97, 120, 154, 155]
+   },
+   {
+     "flow": "operate",
+     "value": "multiplication: capture operands (mul.dsp_x / mul.dsp_y), form dsp_z (product) and register mul.prod (parallel DSP path) or shift-accumulate serial path (mul.prod, mul.add, mul_update)",
+     "lines": [164, 170, 171, 172, 178, 181, 184, 201, 205, 210, 211, 212, 221, 225, 230]
+   },
+   {
+     "flow": "operate",
+     "value": "division: initialize dividend/abs-divisor then iterate shift/subtract to produce div.quotient / div.remainder and derive final div.res",
+     "lines": [253, 261, 263, 270, 275, 283, 284, 285, 287, 289, 296, 299, 300]
+   },
+   {
+     "flow": "report",
+     "value": "completion flag valid_o asserted when FSM reaches S_DONE",
+     "lines": [104, 120, 131, 137, 145]
+   },
+   {
+     "flow": "read out",
+     "value": "selected 32-bit result driven on res_o (low 32 bits of product, high 32 bits for MULH variants, or div.res for divide/remainder variants) when ctrl.out_en is set",
+     "lines": [319, 321, 323, 325, 327, 329]
+   },
+   {
+     "flow": "reset",
+     "value": "what is cleared to a known value by rstn_i: FSM (ctrl.state, ctrl.cnt, ctrl.out_en), multiplier input/accumulators (mul.dsp_x, mul.dsp_y, mul.prod) and divider registers (div.quotient, div.remainder, div.rs2_abs, div.sign_mod)",
+     "lines": [106, 107, 108, 109, 166, 167, 168, 169, 207, 208, 209, 255, 256, 257, 258, 259]
+   }
+ ],
+ "conceptual assets": [
+   {
+     "concept": "Coprocessor command decode and operation-start decision (whether an incoming control packet starts a multiply or divide)",
+     "security objective": "Integrity",
+     "reasoning": "The RTL computes a local command-valid decision valid_cmd from control-bus fields and uses it to enter the operation FSM and to assert the per-operation start signals. valid_cmd is assigned from ctrl_i fields (assignment at lines 97-99) and is used by the control process to choose S_DONE or S_BUSY (control FSM, lines 120-126) and to drive mul.start/div.start (lines 154-155). The relationship map records this decision and its inputs: valid_cmd has a receiving GATED_BY record at its occurrence on line 97 (map occurrence 2) that references the ctrl_i fields; the ctrl_i fields expose GATES records that drive valid_cmd. Corrupting this decision would cause the unit to start, skip or wrongly ignore operations, violating the integrity of operation start.",
+     "related structural assets": [
+       {
+         "asset rtl": "valid_cmd",
+         "entity": "neorv32_cpu_cp_muldiv",
+         "realization": "computes",
+         "occurrence": 2,
+         "edge": {"type": "GATED_BY", "partner": "ctrl_i.alu_cp_alu"}
+       },
+       {
+         "asset rtl": "ctrl_i",
+         "entity": "neorv32_cpu_cp_muldiv",
+         "realization": "sets",
+         "occurrence": 2,
+         "edge": {"type": "GATES", "partner": "valid_cmd"}
+       }
+     ]
+   },
+   {
+     "concept": "Operation sequencing and completion state (FSM state and cycle counter that determine operation duration and when results become valid)",
+     "security objective": "Integrity",
+     "reasoning": "The control FSM and its counter implement the operation sequencing that ensures multi-cycle multiply/divide algorithms run for the correct number of cycles and that outputs are reported only when complete. The control process initializes and updates ctrl.state and ctrl.cnt (reset branch and rising-edge assignments, lines 106-113), enters S_BUSY on a start (lines 118-126), decrements ctrl.cnt in S_BUSY and tests or_reduce_f(ctrl.cnt) and cpu_trap to finish (lines 130-132), and sets ctrl.out_en in the 'others' branch to allow result output (lines 135-138). The map shows ctrl.state and ctrl.cnt are edge-stored: ctrl.state has CLOCKED_BY records (occurrence 4 at line 122) and selects/gates many behaviors including valid_o; ctrl.cnt is CLOCKED_BY (occurrence 3 at line 113) and gates the transition back to S_DONE. These records are cited in the structural assets below. The integrity of the FSM/counter is established by the RTL as necessary for correct operation timing and correct valid_o/res_o behavior.",
+     "related structural assets": [
+       {
+         "asset rtl": "ctrl.state",
+         "entity": "neorv32_cpu_cp_muldiv",
+         "realization": "stores",
+         "occurrence": 4,
+         "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+       },
+       {
+         "asset rtl": "ctrl.cnt",
+         "entity": "neorv32_cpu_cp_muldiv",
+         "realization": "stores",
+         "occurrence": 3,
+         "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+       },
+       {
+         "asset rtl": "ctrl_i",
+         "entity": "neorv32_cpu_cp_muldiv",
+         "realization": "sets",
+         "occurrence": 8,
+         "edge": {"type": "GATES", "partner": "ctrl.state"}
+       }
+     ]
+   },
+   {
+     "concept": "Computed arithmetic result (the 32-bit value the unit delivers: product low/high or division result) that the core exports on res_o",
+     "security objective": "Integrity",
+     "reasoning": "The RTL selects and drives the 32-bit result res_o from either parts of the multiplier result or the divider result only when ctrl.out_en indicates completion (operation_result process, lines 319-332; selection arms at lines 325, 327, 329). The multiplier produces mul.prod from dsp_z in the parallel path (mul.dsp_z multiplication at line 178 and mul.prod registered at line 184) or from the serial shift/accumulate path (lines 205-216 and mul_update 221-232). The divider computes div.res from div.res_u and div.sign_mod (lines 299-300). The map shows the result path to the outside: res_o is driven by mul.prod (DERIVES_FROM at res_o occurrence 3,line 325) or by div.res (COPIES at res_o occurrence 5,line 329); mul.prod is a clocked store (CLOCKED_BY at mul.prod occurrence 2,line 184) and div.res is computed (DERIVES_FROM at div.res occurrence 2,line 300). The RTL therefore establishes integrity requirements for these computed values: if mul.prod or div.res are corrupted the value exported on res_o will be incorrect.",
+     "related structural assets": [
+       {
+         "asset rtl": "res_o",
+         "entity": "neorv32_cpu_cp_muldiv",
+         "realization": "exit port",
+         "occurrence": 3,
+         "edge": {"type": "DERIVES_FROM", "partner": "mul.prod"}
+       },
+       {
+         "asset rtl": "mul.prod",
+         "entity": "neorv32_cpu_cp_muldiv",
+         "realization": "stores",
+         "occurrence": 2,
+         "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+       },
+       {
+         "asset rtl": "div.res",
+         "entity": "neorv32_cpu_cp_muldiv",
+         "realization": "computes",
+         "occurrence": 2,
+         "edge": {"type": "DERIVES_FROM", "partner": "div.res_u"}
+       }
+     ]
+   },
+   {
+     "concept": "Operand signedness interpretation (the per-operation flags that decide signed vs unsigned semantics for rs1 and rs2)",
+     "security objective": "Integrity",
+     "reasoning": "The RTL computes ctrl.rs1_is_signed and ctrl.rs2_is_signed from instruction fields (assignments at lines 148-151) and uses them to change arithmetic semantics: sign-extend/capture multiplier inputs (mul.dsp_x, mul.dsp_y assignments at lines 171-173), modify serial multiply accumulation (mul.add logic lines 221-231, mul.p_sext at line 235), and initialize / adjust divider operands and final sign (div initialization lines 263-273 and div.sign_mod lines 275-281). The map records show these signals are derived from the instruction field: ctrl.rs1_is_signed has a GATED_BY record at occurrence 2 (line 148) targeting ctrl_i.ir_funct3 and SOURCES to mul.dsp_x (line 171); ctrl.rs2_is_signed has a GATED_BY record at occurrence 2 (line 150) targeting ctrl_i.ir_funct3 and sources to mul.add (lines 225,227). The RTL therefore establishes their integrity as necessary for correct signed/unsigned arithmetic behavior.",
+     "related structural assets": [
+       {
+         "asset rtl": "ctrl.rs1_is_signed",
+         "entity": "neorv32_cpu_cp_muldiv",
+         "realization": "computes",
+         "occurrence": 2,
+         "edge": {"type": "GATED_BY", "partner": "ctrl_i.ir_funct3"}
+       },
+       {
+         "asset rtl": "ctrl.rs2_is_signed",
+         "entity": "neorv32_cpu_cp_muldiv",
+         "realization": "computes",
+         "occurrence": 2,
+         "edge": {"type": "GATED_BY", "partner": "ctrl_i.ir_funct3"}
+       }
+     ]
+   }
+ ]
+}

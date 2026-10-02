@@ -1,0 +1,178 @@
+{
+ "module name": "neorv32_cpu_cp_shifter",
+ "module purpose": "neorv32_cpu_cp_shifter decides from fields of ctrl_i whether the current instruction is a shift (lines 65-69), shifts operand rs1_i by shamt_i left or right, logically or arithmetically, either serially one bit per clock with a counter (not FAST_SHIFT_EN, lines 77-111) or through a registered barrel shifter (FAST_SHIFT_EN, lines 122-144), and drives the result on res_o and a completion/valid flag on valid_o.",
+ "use-case flows": [
+  {
+   "flow": "start",
+   "value": "acceptance of a shift instruction (valid_cmd), which marks the unit busy and loads the shift amount and the operand",
+   "lines": [65, 66, 67, 68, 69, 87, 88, 93, 94, 95]
+  },
+  {
+   "flow": "operate",
+   "value": "serial shift: while the remaining count is non-zero the shift register moves one position per clock, left or right, with zero or sign fill, and the count decrements",
+   "lines": [96, 97, 98, 99, 100, 101, 108, 109]
+  },
+  {
+   "flow": "operate",
+   "value": "barrel shift: the operand (bit-reversed for left shifts, zero when no valid command) passes through stages selected by the bits of shamt_i, with sign fill, and is registered in bs_result",
+   "lines": [122, 123, 128, 129, 138]
+  },
+  {
+   "flow": "report",
+   "value": "operation status: busy state set on acceptance and cleared on completion or trap, completion decision, and the valid flag valid_o",
+   "lines": [86, 88, 89, 90, 109, 110, 144]
+  },
+  {
+   "flow": "read out",
+   "value": "shifted result returned on res_o (serial: shift register when done_ff is set, else zero; barrel: bs_result, bit-reversed for left shifts)",
+   "lines": [111, 143]
+  },
+  {
+   "flow": "reset",
+   "value": "busy, done_ff, counter, shift register and bs_result forced to zero while rstn_i is '0'",
+   "lines": [79, 80, 81, 82, 83, 135, 136]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Shift command acceptance -- the decision that the current instruction is a shift this unit must execute",
+   "security objective": "Integrity",
+   "reasoning": "valid_cmd is computed at lines 65-69 from ctrl_i.alu_cp_alu, ctrl_i.ir_funct3 and ctrl_i.ir_funct12 (valid_cmd occurrence 2, GATED_BY ctrl_i.alu_cp_alu and GATED_BY ctrl_i.ir_funct3/ir_funct12). In the serial build it sets shifter.busy (lines 87-88) and loads shifter.cnt and shifter.sreg (lines 93-95); in the barrel build it decides whether bs_level(0) takes the operand or zero (line 122), qualifies the sign fill (line 123) and is driven out unchanged as `valid_o <= valid_cmd;` (line 144). Integrity is Established: a wrong decision starts the unit on a non-shift instruction or ignores a shift, corrupting the loaded state, the result and the reported valid; valid_o goes to a consumer not supplied, so the delivered value must equal the decision. Availability also holds under the RTL conditions: an accepted command sets busy at the next rising edge of clk_i (line 88). Roles: ctrl_i sets (occurrence 2, line 65, where its field alu_cp_alu GATES valid_cmd); ctrl_i is a CPU control record read only for decisions here, not a record of complete bus transactions, so the transport rule does not apply. valid_cmd computes the decision. valid_o is the exit port in FAST_SHIFT_EN builds (configuration [generic] FAST_SHIFT_EN, COPIES valid_cmd, line 144). The flow graph lists valid_cmd as not reached from an input only because it is reached by control edges.",
+   "related structural assets": [
+    {
+     "asset rtl": "ctrl_i",
+     "entity": "neorv32_cpu_cp_shifter",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "GATES", "partner": "valid_cmd"}
+    },
+    {
+     "asset rtl": "valid_cmd",
+     "entity": "neorv32_cpu_cp_shifter",
+     "realization": "computes",
+     "occurrence": 2,
+     "edge": {"type": "GATED_BY", "partner": "ctrl_i.alu_cp_alu"}
+    },
+    {
+     "asset rtl": "valid_o",
+     "entity": "neorv32_cpu_cp_shifter",
+     "realization": "exit port",
+     "occurrence": 3,
+     "edge": {"type": "COPIES", "partner": "valid_cmd"}
+    }
+   ]
+  },
+  {
+   "concept": "Shift amount -- the number of bit positions to shift and the per-cycle decision to take another shift step",
+   "security objective": "Integrity",
+   "reasoning": "On acceptance `shifter.cnt <= shamt_i;` (line 94) captures the amount; `shifter.run <= or_reduce_f(shifter.cnt);` (line 108) decides each step, and while run is '1' the count decrements (line 97) and the shift register moves one position (lines 99, 101). In the barrel build each bit shamt_i(i) selects whether stage i shifts (lines 128-129). Integrity is Established: the shift distance of the result returned on res_o must equal shamt_i; a corrupted amount or step decision yields a wrong result and wrong completion timing (shifter.done, line 109). Roles: shamt_i sets, read by this entity to store it (occurrence 2, CARRIES shifter.cnt, line 94) and to decide barrel stages (occurrences 3-4, GATES bs_level). shifter.run computes the step decision (occurrence 3, DERIVES_FROM shifter.cnt, line 108; it GATES shifter.cnt and shifter.sreg at line 96); it exists only when not FAST_SHIFT_EN. shifter.cnt is not listed: its records are only SOURCES to itself, shifter.run and shifter.done (lines 97, 108, 109), with no GATES, SELECTS or CONSTRAINS record and no path to an output, so under section 6 it is a secondary register whose value run and done carry on.",
+   "related structural assets": [
+    {
+     "asset rtl": "shamt_i",
+     "entity": "neorv32_cpu_cp_shifter",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "CARRIES", "partner": "shifter.cnt"}
+    },
+    {
+     "asset rtl": "shifter.run",
+     "entity": "neorv32_cpu_cp_shifter",
+     "realization": "computes",
+     "occurrence": 3,
+     "edge": {"type": "DERIVES_FROM", "partner": "shifter.cnt"}
+    }
+   ]
+  },
+  {
+   "concept": "Shift operation status -- the in-progress state and the completion decision reported as result valid",
+   "security objective": "Integrity",
+   "reasoning": "In the serial build busy is set on acceptance (line 88) and cleared by `elsif (shifter.done = '1') or (ctrl_i.cpu_trap = '1')` (lines 89-90); `shifter.done <= not or_reduce_f(shifter.cnt(shifter.cnt'left downto 1));` (line 109) decides completion; `valid_o <= shifter.busy and shifter.done;` (line 110) reports it; `shifter.done_ff <= shifter.busy and shifter.done;` (line 86) holds it one clock and enables the result on res_o (line 111). Integrity is Established: valid_o must assert exactly when an accepted shift finishes and res_o must carry the result only when done_ff is set; a corrupted busy, done or done_ff gives a spurious or missing completion to a consumer not supplied. Availability is also Established under the RTL conditions: busy leaves the in-progress state when done or ctrl_i.cpu_trap is '1' (lines 89-90), and valid_o is produced when busy and done hold. Roles: shifter.busy stores (occurrence 4, CLOCKED_BY clk_i; it GATES shifter.done_ff and valid_o); shifter.done computes (occurrence 4, DERIVES_FROM shifter.cnt); shifter.done_ff stores (occurrence 3, CLOCKED_BY clk_i; it GATES res_o, line 111); valid_o is the exit port (occurrence 2, GATED_BY shifter.busy, line 110); ctrl_i sets the abort condition (occurrence 9, line 89, where its field cpu_trap GATES shifter.busy). busy, done and done_ff exist only when not FAST_SHIFT_EN; in the FAST_SHIFT_EN build valid_o copies valid_cmd (line 144).",
+   "related structural assets": [
+    {
+     "asset rtl": "shifter.busy",
+     "entity": "neorv32_cpu_cp_shifter",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "shifter.done",
+     "entity": "neorv32_cpu_cp_shifter",
+     "realization": "computes",
+     "occurrence": 4,
+     "edge": {"type": "DERIVES_FROM", "partner": "shifter.cnt"}
+    },
+    {
+     "asset rtl": "shifter.done_ff",
+     "entity": "neorv32_cpu_cp_shifter",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "valid_o",
+     "entity": "neorv32_cpu_cp_shifter",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "GATED_BY", "partner": "shifter.busy"}
+    },
+    {
+     "asset rtl": "ctrl_i",
+     "entity": "neorv32_cpu_cp_shifter",
+     "realization": "sets",
+     "occurrence": 9,
+     "edge": {"type": "GATES", "partner": "shifter.busy"}
+    }
+   ]
+  },
+  {
+   "concept": "Shift operand and shifted result -- the data word taken from rs1_i, transformed, held and returned on res_o",
+   "security objective": "Integrity",
+   "reasoning": "Serial build: `shifter.sreg <= rs1_i;` (line 95) captures the operand, lines 99 and 101 shift it, and `res_o <= shifter.sreg when (shifter.done_ff = '1') else (others => '0');` (line 111) returns it. Barrel build: bs_level(0) is formed from rs1_i (line 122), shifted through the stages (lines 128-129), registered by `bs_result <= bs_level(bs_level'left);` (line 138) and returned by `res_o <= bit_rev_f(bs_result) when (ctrl_i.ir_funct3(2) = '0') else bs_result;` (line 143). Integrity is Established: res_o goes to a consumer not supplied and must carry exactly the shift of rs1_i the flow defines. Availability: the result is held between edges and presented when done_ff is set (line 111) or continuously from bs_result (line 143). Confidentiality is not established: no line restricts who reads res_o. Roles: rs1_i sets (occurrence 2, CARRIES shifter.sreg, line 95; it also SOURCES bs_level at line 122); shifter.sreg stores (occurrence 3, CLOCKED_BY clk_i; SOURCES res_o at occurrence 12, line 111; not FAST_SHIFT_EN); bs_result stores (occurrence 3, CLOCKED_BY clk_i; SOURCES res_o at line 143; FAST_SHIFT_EN); res_o is the exit port (occurrence 2, DERIVES_FROM shifter.sreg; in the other build occurrence 3, DERIVES_FROM bs_result). bs_level and bs_sign are parts of the barrel computation whose result is stored in bs_result, so they are not additional references; bs_result's DERIVES_FROM names bs_level, which is not listed, so the copy rule does not remove it.",
+   "related structural assets": [
+    {
+     "asset rtl": "rs1_i",
+     "entity": "neorv32_cpu_cp_shifter",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "CARRIES", "partner": "shifter.sreg"}
+    },
+    {
+     "asset rtl": "shifter.sreg",
+     "entity": "neorv32_cpu_cp_shifter",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "bs_result",
+     "entity": "neorv32_cpu_cp_shifter",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "res_o",
+     "entity": "neorv32_cpu_cp_shifter",
+     "realization": "exit port",
+     "occurrence": 2,
+     "edge": {"type": "DERIVES_FROM", "partner": "shifter.sreg"}
+    }
+   ]
+  },
+  {
+   "concept": "Shift type -- direction (left or right) and logical versus arithmetic fill, taken from the instruction fields",
+   "security objective": "Integrity",
+   "reasoning": "ctrl_i.ir_funct3(2) selects a left shift (line 99) or a right shift (line 101) in the serial build, and bit reversal of the operand and result in the barrel build (lines 122, 143); ctrl_i.ir_funct12(10) selects sign fill for right shifts (line 101, and bs_sign at line 123). Integrity is Established: a wrong type gives a result on res_o that differs from the shift the accepted instruction defines. The type is not stored in this entity; it is read each cycle from ctrl_i, so ctrl_i sets it (occurrence 10, line 98, where its field ir_funct3 GATES shifter.sreg). bs_sign is an operand of the barrel computation, not a separate realization.",
+   "related structural assets": [
+    {
+     "asset rtl": "ctrl_i",
+     "entity": "neorv32_cpu_cp_shifter",
+     "realization": "sets",
+     "occurrence": 10,
+     "edge": {"type": "GATES", "partner": "shifter.sreg"}
+    }
+   ]
+  }
+ ]
+}

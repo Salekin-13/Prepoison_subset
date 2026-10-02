@@ -1,0 +1,2093 @@
+{
+ "module": "neorv32_cache (with sub-block neorv32_cache_memory)",
+ "purpose": "A direct-mapped cache between a host bus port and a memory bus port. Each line has a stored tag and valid bit (tag_mem, valid_mem) and four byte-lane data arrays. A read hit is answered from the arrays (L189-192, L405). A read miss refills the whole line word by word from the bus (S_DOWNLOAD_*, L223-261). A write hit updates the line and is also sent to the bus (write-through, L193-196); a write miss goes to the bus only. Accesses at or above UC_BEGIN, AMO and debug accesses bypass the cache (L171-188). A fence clears all valid bits and is forwarded (L214-221). A refill bus error invalidates the line and returns an error (L252-258).",
+ "flows": [
+  {
+   "name": "cached read (hit)",
+   "value": "memory word at the requested address, served from the cache",
+   "path": [
+    {
+     "element": "host_req_i.addr",
+     "occ": [
+      2
+     ],
+     "line": [
+      149
+     ],
+     "edge": "CARRIES cache_o.addr"
+    },
+    {
+     "element": "cache_o.addr",
+     "occ": [
+      2,
+      5
+     ],
+     "line": [
+      149,
+      288
+     ],
+     "edge": "COPIES host_req_i.addr; connection => addr_i"
+    },
+    {
+     "element": "addr_i",
+     "occ": [
+      2,
+      3,
+      4
+     ],
+     "line": [
+      366,
+      367,
+      368
+     ],
+     "edge": "SOURCES acc_tag, acc_idx, acc_off"
+    },
+    {
+     "element": "acc_adr",
+     "occ": [
+      2
+     ],
+     "line": [
+      369
+     ],
+     "edge": "DERIVES_FROM acc_idx, acc_off"
+    },
+    {
+     "element": "valid_mem",
+     "occ": [
+      6
+     ],
+     "line": [
+      387
+     ],
+     "edge": "SOURCES valid_mem_rd"
+    },
+    {
+     "element": "tag_mem",
+     "occ": [
+      3
+     ],
+     "line": [
+      400
+     ],
+     "edge": "SOURCES tag_mem_rd"
+    },
+    {
+     "element": "hit_o",
+     "occ": [
+      2
+     ],
+     "line": [
+      405
+     ],
+     "edge": "GATED_BY valid_mem_rd; CONSTRAINED_BY tag_mem_rd, acc_tag"
+    },
+    {
+     "element": "cache_i.sta_hit",
+     "occ": [
+      3
+     ],
+     "line": [
+      286
+     ],
+     "edge": "connection from hit_o"
+    },
+    {
+     "element": "data_mem_b0",
+     "occ": [
+      3
+     ],
+     "line": [
+      425
+     ],
+     "edge": "SOURCES rdata_o (same for b1..b3 at L426-428)"
+    },
+    {
+     "element": "rdata_o",
+     "occ": [
+      2,
+      3,
+      4,
+      5
+     ],
+     "line": [
+      425,
+      426,
+      427,
+      428
+     ],
+     "edge": "DERIVES_FROM data_mem_b0..b3; connection => cache_i.data (L291)"
+    },
+    {
+     "element": "cache_i.data",
+     "occ": [
+      2
+     ],
+     "line": [
+      156
+     ],
+     "edge": "CARRIES host_rsp_o.data"
+    },
+    {
+     "element": "host_rsp_o.data",
+     "occ": [
+      2
+     ],
+     "line": [
+      156
+     ],
+     "edge": "COPIES cache_i.data"
+    },
+    {
+     "element": "host_rsp_o.ack",
+     "occ": [
+      3
+     ],
+     "line": [
+      191
+     ],
+     "edge": "GATED_BY cache_i.sta_hit, host_req_i.rw, ctrl.buf_dir"
+    }
+   ],
+   "controls": [
+    {
+     "element": "cache_i.sta_hit",
+     "edge": "GATES host_rsp_o.ack",
+     "decided_by": "hit_o (valid_mem_rd, tag_mem_rd, acc_tag)",
+     "occ": [
+      2
+     ]
+    },
+    {
+     "element": "host_req_i.rw",
+     "edge": "GATES host_rsp_o.ack",
+     "decided_by": "requester; READ_ONLY generic in the same condition (L190)",
+     "occ": [
+      2
+     ]
+    },
+    {
+     "element": "ctrl.buf_dir",
+     "edge": "GATES host_rsp_o.ack (elsif after L186)",
+     "decided_by": "ctrl_nxt.buf_dir (L171-173)",
+     "occ": [
+      3
+     ]
+    },
+    {
+     "element": "ctrl.state",
+     "edge": "SELECTS host_rsp_o.ack",
+     "decided_by": "ctrl_nxt.state",
+     "occ": [
+      4
+     ]
+    },
+    {
+     "element": "acc_adr",
+     "edge": "SELECTS rdata_o",
+     "decided_by": "addr_i",
+     "occ": [
+      7,
+      8,
+      9,
+      10
+     ]
+    }
+   ]
+  },
+  {
+   "name": "miss refill (download)",
+   "value": "a block of memory words copied into one line",
+   "path": [
+    {
+     "element": "host_req_i.addr",
+     "occ": [
+      4,
+      5
+     ],
+     "line": [
+      180,
+      181
+     ],
+     "edge": "SOURCES ctrl_nxt.tag, ctrl_nxt.idx"
+    },
+    {
+     "element": "ctrl.tag",
+     "occ": [
+      4,
+      5,
+      6,
+      7
+     ],
+     "line": [
+      225,
+      227,
+      235,
+      238
+     ],
+     "edge": "SOURCES cache_o.addr, bus_req_o.addr (register via L126)"
+    },
+    {
+     "element": "bus_req_o.addr",
+     "occ": [
+      2,
+      3
+     ],
+     "line": [
+      227,
+      238
+     ],
+     "edge": "DERIVES_FROM ctrl.tag, ctrl.idx, ctrl.ofs"
+    },
+    {
+     "element": "cache_o.cmd_new",
+     "occ": [
+      3,
+      4
+     ],
+     "line": [
+      226,
+      285
+     ],
+     "edge": "constant '1' in S_DOWNLOAD_REQ; connection => new_i"
+    },
+    {
+     "element": "new_i",
+     "occ": [
+      2,
+      3
+     ],
+     "line": [
+      384,
+      397
+     ],
+     "edge": "GATES valid_mem (set at L385), tag_mem (write at L398)"
+    },
+    {
+     "element": "acc_tag",
+     "occ": [
+      3
+     ],
+     "line": [
+      398
+     ],
+     "edge": "CARRIES tag_mem"
+    },
+    {
+     "element": "bus_rsp_i.data",
+     "occ": [
+      2
+     ],
+     "line": [
+      236
+     ],
+     "edge": "CARRIES cache_o.data"
+    },
+    {
+     "element": "cache_o.data",
+     "occ": [
+      3,
+      4
+     ],
+     "line": [
+      236,
+      290
+     ],
+     "edge": "COPIES bus_rsp_i.data; connection => wdata_i"
+    },
+    {
+     "element": "cache_o.we",
+     "occ": [
+      4,
+      5
+     ],
+     "line": [
+      237,
+      289
+     ],
+     "edge": "constant all-ones; connection => we_i"
+    },
+    {
+     "element": "wdata_i",
+     "occ": [
+      2,
+      3,
+      4,
+      5
+     ],
+     "line": [
+      414,
+      417,
+      420,
+      423
+     ],
+     "edge": "SOURCES data_mem_b0..b3"
+    }
+   ],
+   "controls": [
+    {
+     "element": "ctrl.state",
+     "edge": "SELECTS cache_o.cmd_new, cache_o.addr, cache_o.data, cache_o.we, bus_req_o.addr/rw/lock/stb",
+     "decided_by": "ctrl_nxt.state",
+     "occ": [
+      4
+     ]
+    },
+    {
+     "element": "bus_rsp_i.ack",
+     "edge": "GATES ctrl_nxt.ofs, ctrl_nxt.state",
+     "decided_by": "downstream bus",
+     "occ": [
+      3
+     ]
+    },
+    {
+     "element": "ctrl.ofs",
+     "edge": "GATES ctrl_nxt.state (last word)",
+     "decided_by": "ctrl_nxt.ofs increment (L244)",
+     "occ": [
+      9
+     ]
+    },
+    {
+     "element": "host_req_i.rw",
+     "edge": "GATES ctrl_nxt.state (read miss or READ_ONLY -> refill, L199-200)",
+     "decided_by": "requester",
+     "occ": [
+      3
+     ]
+    },
+    {
+     "element": "cache_i.sta_hit",
+     "edge": "GATES ctrl_nxt.state (miss branch)",
+     "decided_by": "hit_o",
+     "occ": [
+      2
+     ]
+    }
+   ]
+  },
+  {
+   "name": "refill error handling",
+   "value": "error flag of a refill and the invalidation it causes",
+   "path": [
+    {
+     "element": "bus_rsp_i.err",
+     "occ": [
+      2
+     ],
+     "line": [
+      242
+     ],
+     "edge": "GATES ctrl_nxt.buf_err (OR operand)"
+    },
+    {
+     "element": "ctrl_nxt.buf_err",
+     "occ": [
+      4
+     ],
+     "line": [
+      242
+     ],
+     "edge": "GATED_BY bus_rsp_i.err, ctrl.buf_err"
+    },
+    {
+     "element": "ctrl.buf_err",
+     "occ": [
+      5
+     ],
+     "line": [
+      254
+     ],
+     "edge": "GATES cache_o.cmd_inv, host_rsp_o.ack, host_rsp_o.err, ctrl_nxt.state (register via L126)"
+    },
+    {
+     "element": "cache_o.cmd_inv",
+     "occ": [
+      3,
+      4
+     ],
+     "line": [
+      255,
+      284
+     ],
+     "edge": "GATED_BY ctrl.buf_err; connection => inv_i"
+    },
+    {
+     "element": "inv_i",
+     "occ": [
+      2
+     ],
+     "line": [
+      382
+     ],
+     "edge": "GATES valid_mem"
+    },
+    {
+     "element": "valid_mem",
+     "occ": [
+      4
+     ],
+     "line": [
+      383
+     ],
+     "edge": "cleared at acc_idx"
+    },
+    {
+     "element": "host_rsp_o.err",
+     "occ": [
+      3
+     ],
+     "line": [
+      257
+     ],
+     "edge": "GATED_BY ctrl.buf_err"
+    },
+    {
+     "element": "host_rsp_o.ack",
+     "occ": [
+      4
+     ],
+     "line": [
+      256
+     ],
+     "edge": "GATED_BY ctrl.buf_err"
+    }
+   ],
+   "controls": [
+    {
+     "element": "ctrl.state",
+     "edge": "SELECTS ctrl_nxt.buf_err, cache_o.cmd_inv, host_rsp_o.err",
+     "decided_by": "ctrl_nxt.state",
+     "occ": [
+      4
+     ]
+    },
+    {
+     "element": "cache_o.addr",
+     "edge": "chooses the invalidated line (default host_req_i.addr in S_DOWNLOAD_DONE)",
+     "decided_by": "host_req_i.addr (L149)",
+     "occ": [
+      2
+     ]
+    }
+   ]
+  },
+  {
+   "name": "write hit (write-through)",
+   "value": "host write data",
+   "path": [
+    {
+     "element": "host_req_i.data",
+     "occ": [
+      2
+     ],
+     "line": [
+      151
+     ],
+     "edge": "CARRIES cache_o.data"
+    },
+    {
+     "element": "cache_o.data",
+     "occ": [
+      2,
+      4
+     ],
+     "line": [
+      151,
+      290
+     ],
+     "edge": "COPIES host_req_i.data; connection => wdata_i"
+    },
+    {
+     "element": "host_req_i.ben",
+     "occ": [
+      2
+     ],
+     "line": [
+      194
+     ],
+     "edge": "CARRIES cache_o.we"
+    },
+    {
+     "element": "cache_o.we",
+     "occ": [
+      3,
+      5
+     ],
+     "line": [
+      194,
+      289
+     ],
+     "edge": "COPIES host_req_i.ben; connection => we_i"
+    },
+    {
+     "element": "we_i",
+     "occ": [
+      2,
+      3,
+      4,
+      5
+     ],
+     "line": [
+      413,
+      416,
+      419,
+      422
+     ],
+     "edge": "GATES data_mem_b0..b3"
+    },
+    {
+     "element": "data_mem_b0",
+     "occ": [
+      2
+     ],
+     "line": [
+      414
+     ],
+     "edge": "DERIVES_FROM wdata_i (same for b1..b3)"
+    },
+    {
+     "element": "bus_req_o.stb",
+     "occ": [
+      4
+     ],
+     "line": [
+      195
+     ],
+     "edge": "constant '1'; write also sent to memory through bus_req_o <= host_req_i (L159)"
+    },
+    {
+     "element": "host_rsp_o",
+     "occ": [
+      6
+     ],
+     "line": [
+      209
+     ],
+     "edge": "COPIES bus_rsp_i in S_DIRECT_RSP (the bus answer, including err, goes to the host; the cache takes no action on err)"
+    }
+   ],
+   "controls": [
+    {
+     "element": "cache_i.sta_hit",
+     "edge": "GATES cache_o.we",
+     "decided_by": "hit_o",
+     "occ": [
+      2
+     ]
+    },
+    {
+     "element": "host_req_i.rw",
+     "edge": "GATES cache_o.we",
+     "decided_by": "requester; READ_ONLY generic (L190)",
+     "occ": [
+      2
+     ]
+    },
+    {
+     "element": "ctrl.buf_dir",
+     "edge": "GATES cache_o.we",
+     "decided_by": "ctrl_nxt.buf_dir",
+     "occ": [
+      3
+     ]
+    },
+    {
+     "element": "bus_rsp_i.ack",
+     "edge": "GATES ctrl_nxt.state (leave S_DIRECT_RSP)",
+     "decided_by": "downstream bus",
+     "occ": [
+      2
+     ]
+    }
+   ]
+  },
+  {
+   "name": "direct access (bypass)",
+   "value": "a request routed around the cache",
+   "path": [
+    {
+     "element": "host_req_i.addr",
+     "occ": [
+      3
+     ],
+     "line": [
+      171
+     ],
+     "edge": "GATES ctrl_nxt.buf_dir (top nibble >= UC_BEGIN)"
+    },
+    {
+     "element": "host_req_i.amo",
+     "occ": [
+      2
+     ],
+     "line": [
+      172
+     ],
+     "edge": "GATES ctrl_nxt.buf_dir"
+    },
+    {
+     "element": "host_req_i.debug",
+     "occ": [
+      2
+     ],
+     "line": [
+      172
+     ],
+     "edge": "GATES ctrl_nxt.buf_dir"
+    },
+    {
+     "element": "ctrl_nxt.buf_dir",
+     "occ": [
+      3
+     ],
+     "line": [
+      173
+     ],
+     "edge": "constant '1' under the condition"
+    },
+    {
+     "element": "ctrl.buf_dir",
+     "occ": [
+      3
+     ],
+     "line": [
+      186
+     ],
+     "edge": "GATES bus_req_o.stb, ctrl_nxt.state (register via L126)"
+    },
+    {
+     "element": "bus_req_o.stb",
+     "occ": [
+      3
+     ],
+     "line": [
+      187
+     ],
+     "edge": "GATED_BY ctrl.buf_dir"
+    },
+    {
+     "element": "host_req_i",
+     "occ": [
+      7
+     ],
+     "line": [
+      159
+     ],
+     "edge": "CARRIES bus_req_o (all attributes, incl. priv and debug)"
+    },
+    {
+     "element": "bus_rsp_i",
+     "occ": [
+      3
+     ],
+     "line": [
+      209
+     ],
+     "edge": "CARRIES host_rsp_o"
+    }
+   ],
+   "controls": [
+    {
+     "element": "host_req_i.stb",
+     "edge": "GATES ctrl_nxt.buf_dir",
+     "decided_by": "requester",
+     "occ": [
+      3
+     ]
+    },
+    {
+     "element": "ctrl.buf_req",
+     "edge": "GATES ctrl_nxt.buf_dir",
+     "decided_by": "ctrl_nxt.buf_req (L137)",
+     "occ": [
+      4
+     ]
+    },
+    {
+     "element": "ctrl.state",
+     "edge": "SELECTS ctrl_nxt.buf_dir, host_rsp_o",
+     "decided_by": "ctrl_nxt.state",
+     "occ": [
+      4
+     ]
+    },
+    {
+     "element": "bus_rsp_i.ack",
+     "edge": "GATES ctrl_nxt.state",
+     "decided_by": "downstream bus",
+     "occ": [
+      2
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fence / flush",
+   "value": "flush request",
+   "path": [
+    {
+     "element": "host_req_i.fence",
+     "occ": [
+      2,
+      3
+     ],
+     "line": [
+      138,
+      168
+     ],
+     "edge": "GATES ctrl_nxt.buf_sync, ctrl_nxt.state"
+    },
+    {
+     "element": "ctrl_nxt.buf_sync",
+     "occ": [
+      2,
+      3
+     ],
+     "line": [
+      138,
+      220
+     ],
+     "edge": "GATED_BY host_req_i.fence, ctrl.buf_sync; cleared in S_CLEAR"
+    },
+    {
+     "element": "ctrl.buf_sync",
+     "occ": [
+      4
+     ],
+     "line": [
+      168
+     ],
+     "edge": "GATES ctrl_nxt.state (-> S_CLEAR, L169)"
+    },
+    {
+     "element": "cache_o.cmd_clr",
+     "occ": [
+      3,
+      4
+     ],
+     "line": [
+      219,
+      283
+     ],
+     "edge": "constant '1' in S_CLEAR; connection => clr_i"
+    },
+    {
+     "element": "clr_i",
+     "occ": [
+      2
+     ],
+     "line": [
+      380
+     ],
+     "edge": "GATES valid_mem"
+    },
+    {
+     "element": "valid_mem",
+     "occ": [
+      3
+     ],
+     "line": [
+      381
+     ],
+     "edge": "all bits cleared (data arrays and tag_mem untouched)"
+    },
+    {
+     "element": "bus_req_o.fence",
+     "occ": [
+      3
+     ],
+     "line": [
+      217
+     ],
+     "edge": "constant '1' in S_CLEAR when READ_ONLY = false"
+    }
+   ],
+   "controls": [
+    {
+     "element": "ctrl.state",
+     "edge": "SELECTS cache_o.cmd_clr, bus_req_o.fence, ctrl_nxt.buf_sync",
+     "decided_by": "ctrl_nxt.state",
+     "occ": [
+      4
+     ]
+    }
+   ]
+  },
+  {
+   "name": "reset",
+   "value": "initial state after rstn_i",
+   "path": [
+    {
+     "element": "rstn_i",
+     "occ": [
+      3
+     ],
+     "line": [
+      116
+     ],
+     "edge": "RESETS ctrl.state, ctrl.buf_*, ctrl.tag/idx/ofs (neorv32_cache)"
+    },
+    {
+     "element": "valid_mem",
+     "occ": [
+      2
+     ],
+     "line": [
+      377
+     ],
+     "edge": "RESET_BY rstn_i (neorv32_cache_memory)"
+    },
+    {
+     "element": "valid_mem_rd",
+     "occ": [
+      2
+     ],
+     "line": [
+      378
+     ],
+     "edge": "RESET_BY rstn_i"
+    }
+   ],
+   "controls": []
+  }
+ ],
+ "conceptual_assets": [
+  {
+   "name": "Cached memory data (data array content)",
+   "flow": "cached read (hit); miss refill (download); write hit (write-through)",
+   "C": {
+    "answer": "yes",
+    "line": 156,
+    "why": "host_rsp_o.data <= cache_i.data is the default in every state except S_DIRECT_RSP, and cache_i.data is the array word at the current address (L288, L425-428). So array content reaches the host whether or not the line is valid. The data_memory process (L410-430) has no reset or clear branch: reset (L377) and a fence (L381) clear only valid_mem, so old contents stay readable on this path."
+   },
+   "I": {
+    "answer": "yes",
+    "line": 194,
+    "why": "A write hit stores host data into the line at L194 before the bus answers the write. If the answer carries err, it is only forwarded to the host (L209) and nothing reverts or invalidates the line (compare L254-255 for refills). Later hits (L189-191) then serve data that memory refused. Any corrupted byte is likewise returned as memory content on a hit."
+   },
+   "A": {
+    "answer": "no",
+    "line": 425,
+    "why": "The arrays are read every clock with no blocking condition; delivery depends on the controller (see the controller-state asset)."
+   },
+   "U": {
+    "answer": "yes",
+    "line": 186,
+    "why": "Requests flagged by ctrl.buf_dir (AMO, debug, or address >= UC_BEGIN; L171-173) go to the bus at L186-188. cache_o.we stays '0' (L150) and no cmd_inv is raised (L147), so a write on this path leaves the cached copy valid and stale, and later hits return the old value until a fence. With READ_ONLY = true a write hit is acknowledged at L190-191 without being written anywhere."
+   },
+   "attack_effect": "Corrupting a data_mem byte, or updating memory through the bypass path or through a write the bus refuses, makes L191 acknowledge a hit whose data on L156 no longer matches memory. Sampling host_rsp_o.data (L156) without ack exposes array words of invalidated or pre-reset lines."
+  },
+  {
+   "name": "Line identity (tag and valid bits) and the hit decision",
+   "flow": "cached read (hit); miss refill (download)",
+   "C": {
+    "answer": "yes",
+    "line": 189,
+    "why": "A hit is acknowledged from S_LOOKUP (L189-192). A miss first runs S_DOWNLOAD_REQ/RSP once per word (L199-200, L223-250). Response latency therefore reveals which lines are resident, which is the access history of whoever shares the cache. The hit path reads neither host_req_i.priv nor host_req_i.src."
+   },
+   "I": {
+    "answer": "yes",
+    "line": 405,
+    "why": "hit_o = valid_mem_rd and (tag_mem_rd = acc_tag). A set valid bit or a wrong tag turns a miss into a hit, and L191/L156 then return another address's data. cmd_new sets the valid bit and the tag at the first word request (L226 -> L385, L398), so the line counts as valid before its data arrives. Its correctness then rests on the refill finishing (ctrl.ofs, L245) or on the error invalidation (L255 -> L383)."
+   },
+   "A": {
+    "answer": "no",
+    "line": 381,
+    "why": "A fence clears every valid bit (L381), which forces misses. That delays responses but does not block them."
+   },
+   "U": {
+    "answer": "yes",
+    "line": 190,
+    "why": "The hit decision uses only the valid bit and the tag (L405), and the hit ack checks only rw and READ_ONLY (L190-191). host_req_i.priv is never read (only forwarded on bus_req_o at L159). So a line filled by one requester's refill is returned to any later requester, and a permission check applied to the refill downstream is not repeated on hits."
+   },
+   "attack_effect": "Setting a valid bit or tag through new_i, or by corruption, makes L405 raise hit_o for an address never fetched, so L191 acknowledges and L156 delivers another line's data. The latency difference between L189 and L199 tells an observer which lines another requester touched."
+  },
+  {
+   "name": "Cache controller state (FSM)",
+   "flow": "all flows (case ctrl.state at L164)",
+   "C": {
+    "answer": "no",
+    "line": 164,
+    "why": "The state encodes the operation in progress, not data."
+   },
+   "I": {
+    "answer": "yes",
+    "line": 164,
+    "why": "ctrl.state selects every controller output. A jump from S_DOWNLOAD_RSP to S_LOOKUP skips the error check at L254-257 and leaves an erroneous or partly filled line valid (set at L385). An unintended entry into S_CLEAR (L214-221) flushes the cache. Only unreachable encodings are caught (L263-265)."
+   },
+   "A": {
+    "answer": "yes",
+    "line": 243,
+    "why": "S_DIRECT_RSP (L210) and S_DOWNLOAD_RSP (L243) are left only on bus_rsp_i.ack = '1'. There is no timeout or abort, so a bus that never acknowledges keeps host_rsp_o.ack low forever (acks come only from L191, L209 and L256)."
+   },
+   "U": {
+    "answer": "no",
+    "line": 263,
+    "why": "No mode overrides the sequence; the others branch only returns to S_IDLE."
+   },
+   "attack_effect": "Withholding bus_rsp_i.ack holds ctrl.state in S_DOWNLOAD_RSP or S_DIRECT_RSP (L243, L210), so the host is never acknowledged. Corrupting ctrl.state can bypass the error check at L254."
+  },
+  {
+   "name": "Flush (fence) request and its execution",
+   "flow": "fence / flush",
+   "C": {
+    "answer": "yes",
+    "line": 381,
+    "why": "The fence is the only operation that removes resident lines (L168-169 -> L219 -> L381). It is therefore the means to stop one requester observing or reusing another's lines."
+   },
+   "I": {
+    "answer": "yes",
+    "line": 168,
+    "why": "A fence must reach S_CLEAR, where cmd_clr (L219) clears all valid bits and bus_req_o.fence (L217) goes downstream. If the pending fence in ctrl.buf_sync is lost, lines that are stale (memory changed through the bypass path, by another master, or by a refused write) keep being served by L189-191."
+   },
+   "A": {
+    "answer": "no",
+    "line": 168,
+    "why": "A fence takes priority over a request (L168 before L170) and completes in one state (L214-221); it delays but does not block."
+   },
+   "U": {
+    "answer": "yes",
+    "line": 381,
+    "why": "The flush clears only valid_mem. tag_mem (L394-402) and the data arrays (L410-430) keep the flushed content, and L156 still drives array words to the host. With READ_ONLY = true the fence is not forwarded downstream (L216-217)."
+   },
+   "attack_effect": "Suppressing ctrl.buf_sync or cache_o.cmd_clr keeps every valid bit after a fence, so L189-191 serve lines that should have been discarded. Even when the flush works, L381 leaves the array bytes that L156 still drives."
+  },
+  {
+   "name": "Refill error status",
+   "flow": "refill error handling",
+   "C": {
+    "answer": "yes",
+    "line": 255,
+    "why": "A refill whose response carries err (possibly a denied access) is still written into the line (L236-237), and the line was already marked valid (L226 -> L385). Only the invalidation at L255 (-> inv_i, L383) keeps the next lookup from serving it."
+   },
+   "I": {
+    "answer": "yes",
+    "line": 254,
+    "why": "If ctrl.buf_err is lost between L242 and L254, S_DOWNLOAD_DONE goes back to S_LOOKUP (L260). The line stays valid and the host gets a normal ack (L191) with the bad data instead of err (L257)."
+   },
+   "A": {
+    "answer": "no",
+    "line": 256,
+    "why": "An error still completes the request with ack and err (L256-257)."
+   },
+   "U": {
+    "answer": "yes",
+    "line": 209,
+    "why": "Errors on write-through or bypass responses in S_DIRECT_RSP are forwarded to the host (L209) but never reach buf_err (bus_rsp_i.err is read only at L242). So a write hit that the bus refused leaves the updated line (L194) valid: error handling covers refills only."
+   },
+   "attack_effect": "Clearing ctrl.buf_err, or blocking cmd_inv or inv_i, turns a refused refill into a valid line: L260 returns to lookup, L191 acknowledges data the bus refused, and host_rsp_o.err is never set at L257."
+  },
+  {
+   "name": "Bypass (direct access) decision",
+   "flow": "direct access (bypass)",
+   "C": {
+    "answer": "no",
+    "line": 186,
+    "why": "Wrongly bypassing only sends the request to the bus, which is the uncached behaviour; no value is disclosed by the decision itself."
+   },
+   "I": {
+    "answer": "yes",
+    "line": 171,
+    "why": "ctrl.buf_dir decides whether the request is served from or filled into the cache (L189-205) or passed to the bus (L186-188). Forcing it to '0' caches accesses to the region >= UC_BEGIN and AMO or debug accesses: the host gets stale cached values for them (L191), and an AMO is no longer carried out by the bus."
+   },
+   "A": {
+    "answer": "no",
+    "line": 173,
+    "why": "Forcing a bypass costs latency only."
+   },
+   "U": {
+    "answer": "yes",
+    "line": 172,
+    "why": "host_req_i.debug and host_req_i.amo, attributes the requester supplies, route the access around the cache without updating or invalidating it (L186-188; defaults L147, L150). The debug or AMO view of memory therefore diverges from what the cache serves to normal requests until a fence."
+   },
+   "attack_effect": "Forcing ctrl.buf_dir to '0' at L186 makes an uncached-region, debug or AMO request hit the cache (L191) or refill a line (L200) instead of reaching the bus. A debug or AMO write that bypasses at L187 leaves a stale valid line that later hits return."
+  }
+ ],
+ "primary": [
+  {
+   "element": "data_mem_b0",
+   "entity": "neorv32_cache_memory",
+   "role": "stores",
+   "concept": "Cached memory data (data array content)",
+   "occ": [
+    2,
+    3
+   ],
+   "line": [
+    414,
+    425
+   ],
+   "edge": "GATED_BY we_i and DERIVES_FROM wdata_i (occ 2); SOURCES rdata_o (occ 3); CLOCKED_BY clk_i",
+   "why": "Byte lane 0 of every cached word: written under we_i(0) at L414, read at acc_adr every clock at L425; data_memory (L410-430) has no reset or clear branch."
+  },
+  {
+   "element": "data_mem_b1",
+   "entity": "neorv32_cache_memory",
+   "role": "stores",
+   "concept": "Cached memory data (data array content)",
+   "occ": [
+    2,
+    3
+   ],
+   "line": [
+    417,
+    426
+   ],
+   "edge": "GATED_BY we_i and DERIVES_FROM wdata_i (occ 2); SOURCES rdata_o (occ 3)",
+   "why": "Byte lane 1 of every cached word (L417 write, L426 read); never reset or cleared."
+  },
+  {
+   "element": "data_mem_b2",
+   "entity": "neorv32_cache_memory",
+   "role": "stores",
+   "concept": "Cached memory data (data array content)",
+   "occ": [
+    2,
+    3
+   ],
+   "line": [
+    420,
+    427
+   ],
+   "edge": "GATED_BY we_i and DERIVES_FROM wdata_i (occ 2); SOURCES rdata_o (occ 3)",
+   "why": "Byte lane 2 of every cached word (L420 write, L427 read); never reset or cleared."
+  },
+  {
+   "element": "data_mem_b3",
+   "entity": "neorv32_cache_memory",
+   "role": "stores",
+   "concept": "Cached memory data (data array content)",
+   "occ": [
+    2,
+    3
+   ],
+   "line": [
+    423,
+    428
+   ],
+   "edge": "GATED_BY we_i and DERIVES_FROM wdata_i (occ 2); SOURCES rdata_o (occ 3)",
+   "why": "Byte lane 3 of every cached word (L423 write, L428 read); never reset or cleared."
+  },
+  {
+   "element": "rdata_o",
+   "entity": "neorv32_cache_memory",
+   "role": "exit port",
+   "concept": "Cached memory data (data array content)",
+   "occ": [
+    2,
+    3,
+    4,
+    5
+   ],
+   "line": [
+    425,
+    426,
+    427,
+    428
+   ],
+   "edge": "DERIVES_FROM data_mem_b0..b3; SELECTED_BY acc_adr; CLOCKED_BY clk_i; connection rdata_o => cache_i.data (L291)",
+   "why": "Registered read port of the data arrays; drives the word at acc_adr every clock, whether or not the line is valid or the lookup hits."
+  },
+  {
+   "element": "host_rsp_o.data",
+   "entity": "neorv32_cache",
+   "role": "exit port",
+   "concept": "Cached memory data (data array content)",
+   "occ": [
+    2
+   ],
+   "line": [
+    156
+   ],
+   "edge": "COPIES cache_i.data (occ 2)",
+   "why": "Module exit of cached data: default assignment in every state except S_DIRECT_RSP (L209 overrides it with bus_rsp_i), so array content is on the host data lines even while host_rsp_o.ack is '0' (L154)."
+  },
+  {
+   "element": "wdata_i",
+   "entity": "neorv32_cache_memory",
+   "role": "sets",
+   "concept": "Cached memory data (data array content)",
+   "occ": [
+    2,
+    3,
+    4,
+    5
+   ],
+   "line": [
+    414,
+    417,
+    420,
+    423
+   ],
+   "edge": "SOURCES data_mem_b0..b3",
+   "why": "Write-data input of the memory block; its four byte lanes are what L414-423 store."
+  },
+  {
+   "element": "bus_rsp_i.data",
+   "entity": "neorv32_cache",
+   "role": "sets",
+   "concept": "Cached memory data (data array content)",
+   "occ": [
+    2
+   ],
+   "line": [
+    236
+   ],
+   "edge": "CARRIES cache_o.data (occ 2) -> wdata_i via connection L290",
+   "why": "Refill data: in S_DOWNLOAD_RSP it is written into the line with all byte enables (L237) on every cycle, whether or not bus_rsp_i.err is set."
+  },
+  {
+   "element": "host_req_i.data",
+   "entity": "neorv32_cache",
+   "role": "sets",
+   "concept": "Cached memory data (data array content)",
+   "occ": [
+    2
+   ],
+   "line": [
+    151
+   ],
+   "edge": "CARRIES cache_o.data (occ 2) -> wdata_i via connection L290",
+   "why": "Write-through data: stored into the line on a write hit (L194) in S_LOOKUP, before the bus has answered the write in S_DIRECT_RSP (L209-210)."
+  },
+  {
+   "element": "tag_mem",
+   "entity": "neorv32_cache_memory",
+   "role": "stores",
+   "concept": "Line identity (tag and valid bits) and the hit decision",
+   "occ": [
+    2,
+    3
+   ],
+   "line": [
+    398,
+    400
+   ],
+   "edge": "COPIES acc_tag, GATED_BY new_i, SELECTED_BY acc_idx (occ 2); SOURCES tag_mem_rd (occ 3)",
+   "why": "Address tag of each line; written only when new_i = '1' (L397-398); no reset."
+  },
+  {
+   "element": "valid_mem",
+   "entity": "neorv32_cache_memory",
+   "role": "stores",
+   "concept": "Line identity (tag and valid bits) and the hit decision",
+   "occ": [
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "line": [
+    377,
+    381,
+    383,
+    385,
+    387
+   ],
+   "edge": "RESET_BY rstn_i (occ 2); GATED_BY clr_i, inv_i, new_i (occ 3-5); SELECTED_BY acc_idx; SOURCES valid_mem_rd (occ 6)",
+   "why": "Valid bit per line: cleared by reset (L377), by a fence (L381) and by error invalidation (L383), set by new_i (L385)."
+  },
+  {
+   "element": "tag_mem_rd",
+   "entity": "neorv32_cache_memory",
+   "role": "stores",
+   "concept": "Line identity (tag and valid bits) and the hit decision",
+   "occ": [
+    2,
+    3
+   ],
+   "line": [
+    400,
+    405
+   ],
+   "edge": "DERIVES_FROM tag_mem (occ 2); CONSTRAINS hit_o (occ 3)",
+   "why": "Registered tag of the indexed line, held one cycle; operand of the tag compare at L405."
+  },
+  {
+   "element": "valid_mem_rd",
+   "entity": "neorv32_cache_memory",
+   "role": "stores",
+   "concept": "Line identity (tag and valid bits) and the hit decision",
+   "occ": [
+    2,
+    3,
+    4
+   ],
+   "line": [
+    378,
+    387,
+    405
+   ],
+   "edge": "RESET_BY rstn_i (occ 2); DERIVES_FROM valid_mem (occ 3); GATES hit_o (occ 4)",
+   "why": "Registered valid bit of the indexed line; gates hit_o at L405."
+  },
+  {
+   "element": "hit_o",
+   "entity": "neorv32_cache_memory",
+   "role": "computes",
+   "concept": "Line identity (tag and valid bits) and the hit decision",
+   "occ": [
+    2
+   ],
+   "line": [
+    405
+   ],
+   "edge": "GATED_BY valid_mem_rd; CONSTRAINED_BY tag_mem_rd, acc_tag; connection hit_o => cache_i.sta_hit (L286)",
+   "why": "The hit decision; L189-191 acknowledge a read and return the cached word on it, with no other check."
+  },
+  {
+   "element": "addr_i",
+   "entity": "neorv32_cache_memory",
+   "role": "sets",
+   "concept": "Line identity (tag and valid bits) and the hit decision",
+   "occ": [
+    2,
+    3,
+    4
+   ],
+   "line": [
+    366,
+    367,
+    368
+   ],
+   "edge": "SOURCES acc_tag (occ 2), acc_idx (occ 3), acc_off (occ 4)",
+   "why": "Its tag slice is the value stored in tag_mem on a refill (L366 -> L398) and compared for a hit (L405); its index and offset slices choose the line and the word."
+  },
+  {
+   "element": "host_req_i.addr",
+   "entity": "neorv32_cache",
+   "role": "sets",
+   "concept": "Line identity (tag and valid bits) and the hit decision",
+   "occ": [
+    2,
+    3,
+    4,
+    5
+   ],
+   "line": [
+    149,
+    171,
+    180,
+    181
+   ],
+   "edge": "CARRIES cache_o.addr (occ 2); GATES ctrl_nxt.buf_dir (occ 3); SOURCES ctrl_nxt.tag (occ 4), ctrl_nxt.idx (occ 5)",
+   "why": "The lookup key: presented to the memory at L149, compared with UC_BEGIN for the bypass decision at L171, and captured as the refill tag and index at L180-181."
+  },
+  {
+   "element": "cache_o.cmd_new",
+   "entity": "neorv32_cache",
+   "role": "computes",
+   "concept": "Line identity (tag and valid bits) and the hit decision",
+   "occ": [
+    3,
+    4
+   ],
+   "line": [
+    226,
+    285
+   ],
+   "edge": "SELECTED_BY ctrl.state (occ 3); connection cmd_new => new_i (occ 4)",
+   "why": "Allocation decision: in S_DOWNLOAD_REQ it marks the line valid and writes its tag (L385, L398) at the first word request, before any refill word has arrived."
+  },
+  {
+   "element": "new_i",
+   "entity": "neorv32_cache_memory",
+   "role": "sets",
+   "concept": "Line identity (tag and valid bits) and the hit decision",
+   "occ": [
+    2,
+    3
+   ],
+   "line": [
+    384,
+    397
+   ],
+   "edge": "GATES valid_mem (occ 2), tag_mem (occ 3)",
+   "why": "Write port of line identity: the only input that sets a valid bit (L385) and stores a tag (L398)."
+  },
+  {
+   "element": "host_rsp_o.ack",
+   "entity": "neorv32_cache",
+   "role": "exit port",
+   "concept": "Line identity (tag and valid bits) and the hit decision",
+   "occ": [
+    2,
+    3,
+    4
+   ],
+   "line": [
+    154,
+    191,
+    256
+   ],
+   "edge": "GATED_BY cache_i.sta_hit, host_req_i.rw, ctrl.buf_dir (occ 3); GATED_BY ctrl.buf_err (occ 4); SELECTED_BY ctrl.state",
+   "why": "Tells the host the word on host_rsp_o.data is the answer: '1' on a read hit (L191) or together with err after a failed refill (L256); in S_DIRECT_RSP it comes from bus_rsp_i by the whole-record copy L209 (read from source; not in this field's map record)."
+  },
+  {
+   "element": "ctrl.state",
+   "entity": "neorv32_cache",
+   "role": "stores",
+   "concept": "Cache controller state (FSM)",
+   "occ": [
+    2,
+    3,
+    4
+   ],
+   "line": [
+    117,
+    136,
+    164
+   ],
+   "edge": "RESET_BY rstn_i (occ 2); CARRIES ctrl_nxt.state (occ 3); SELECTS every controller output (occ 4, case at L164); register through ctrl <= ctrl_nxt at L126 (read from source: the map gives this field storage 'none')",
+   "why": "FSM state: decides whether lookup, refill, clear or direct response happens and when the host is acknowledged."
+  },
+  {
+   "element": "ctrl_nxt.state",
+   "entity": "neorv32_cache",
+   "role": "computes",
+   "concept": "Cache controller state (FSM)",
+   "occ": [
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17
+   ],
+   "line": [
+    136,
+    169,
+    175,
+    188,
+    192,
+    196,
+    200,
+    203,
+    211,
+    221,
+    231,
+    246,
+    248,
+    258,
+    260,
+    265
+   ],
+   "edge": "SELECTED_BY ctrl.state; GATED_BY bus_rsp_i.ack (occ 10,13,14), ctrl.ofs (13,14), ctrl.buf_err (15,16), cache_i.sta_hit, ctrl.buf_dir, host_req_i.rw (5-9), ctrl.buf_sync/host_req_i.fence (3), ctrl.buf_req/host_req_i.stb (4)",
+   "why": "Transition function of the controller; S_DIRECT_RSP and S_DOWNLOAD_RSP are left only on bus_rsp_i.ack = '1' (L210-211, L243-248), with no timeout or abort."
+  },
+  {
+   "element": "host_req_i.fence",
+   "entity": "neorv32_cache",
+   "role": "sets",
+   "concept": "Flush (fence) request and its execution",
+   "occ": [
+    2,
+    3
+   ],
+   "line": [
+    138,
+    168
+   ],
+   "edge": "GATES ctrl_nxt.buf_sync (occ 2); GATES ctrl_nxt.state, ctrl_nxt.buf_dir (occ 3)",
+   "why": "The flush request from the host; OR-ed into the pending flag at L138 and tested first in S_IDLE at L168."
+  },
+  {
+   "element": "ctrl_nxt.buf_sync",
+   "entity": "neorv32_cache",
+   "role": "computes",
+   "concept": "Flush (fence) request and its execution",
+   "occ": [
+    2,
+    3
+   ],
+   "line": [
+    138,
+    220
+   ],
+   "edge": "GATED_BY ctrl.buf_sync, host_req_i.fence (occ 2); SELECTED_BY ctrl.state (occ 3)",
+   "why": "Next value of the pending-fence flag: set by any fence (L138), cleared only in S_CLEAR (L220)."
+  },
+  {
+   "element": "ctrl.buf_sync",
+   "entity": "neorv32_cache",
+   "role": "stores",
+   "concept": "Flush (fence) request and its execution",
+   "occ": [
+    2,
+    3,
+    4
+   ],
+   "line": [
+    119,
+    138,
+    168
+   ],
+   "edge": "RESET_BY rstn_i (occ 2); GATES ctrl_nxt.buf_sync (occ 3); GATES ctrl_nxt.state, ctrl_nxt.buf_dir (occ 4); register through L126 (read from source)",
+   "why": "Holds a fence that arrived while the controller was busy until S_IDLE can execute it (L168-169)."
+  },
+  {
+   "element": "cache_o.cmd_clr",
+   "entity": "neorv32_cache",
+   "role": "computes",
+   "concept": "Flush (fence) request and its execution",
+   "occ": [
+    3,
+    4
+   ],
+   "line": [
+    219,
+    283
+   ],
+   "edge": "SELECTED_BY ctrl.state (occ 3); connection cmd_clr => clr_i (occ 4)",
+   "why": "Flush decision: asserted in S_CLEAR (L219); it is the only way to invalidate all lines."
+  },
+  {
+   "element": "clr_i",
+   "entity": "neorv32_cache_memory",
+   "role": "sets",
+   "concept": "Flush (fence) request and its execution",
+   "occ": [
+    2
+   ],
+   "line": [
+    380
+   ],
+   "edge": "GATES valid_mem (occ 2)",
+   "why": "Flush input of the memory block: clears every valid bit (L380-381), but not tag_mem or the data arrays."
+  },
+  {
+   "element": "bus_req_o.fence",
+   "entity": "neorv32_cache",
+   "role": "exit port",
+   "concept": "Flush (fence) request and its execution",
+   "occ": [
+    3
+   ],
+   "line": [
+    217
+   ],
+   "edge": "SELECTED_BY ctrl.state (occ 3); configuration [static] READ_ONLY = false",
+   "why": "Forwards the flush downstream in S_CLEAR (L217); never issued when READ_ONLY = true (L216)."
+  },
+  {
+   "element": "bus_rsp_i.err",
+   "entity": "neorv32_cache",
+   "role": "sets",
+   "concept": "Refill error status",
+   "occ": [
+    2
+   ],
+   "line": [
+    242
+   ],
+   "edge": "GATES ctrl_nxt.buf_err (occ 2; single-bit OR operand)",
+   "why": "The error of a refill response; the only source of the refill error flag (L242). Errors in S_DIRECT_RSP never reach it."
+  },
+  {
+   "element": "ctrl_nxt.buf_err",
+   "entity": "neorv32_cache",
+   "role": "computes",
+   "concept": "Refill error status",
+   "occ": [
+    2,
+    3,
+    4
+   ],
+   "line": [
+    139,
+    183,
+    242
+   ],
+   "edge": "COPIES ctrl.buf_err (occ 2); SELECTED_BY ctrl.state (occ 3,4); GATED_BY bus_rsp_i.err, ctrl.buf_err (occ 4)",
+   "why": "Accumulates any refill error over all words of the line (L242); cleared at each lookup (L183)."
+  },
+  {
+   "element": "ctrl.buf_err",
+   "entity": "neorv32_cache",
+   "role": "stores",
+   "concept": "Refill error status",
+   "occ": [
+    2,
+    3,
+    4,
+    5
+   ],
+   "line": [
+    120,
+    139,
+    242,
+    254
+   ],
+   "edge": "RESET_BY rstn_i (occ 2); CARRIES ctrl_nxt.buf_err (occ 3); GATES cache_o.cmd_inv, host_rsp_o.ack, host_rsp_o.err, ctrl_nxt.state (occ 5); register through L126 (read from source)",
+   "why": "Decides at S_DOWNLOAD_DONE (L254) whether the new line is invalidated and an error returned, or the line is kept and looked up again (L260)."
+  },
+  {
+   "element": "cache_o.cmd_inv",
+   "entity": "neorv32_cache",
+   "role": "computes",
+   "concept": "Refill error status",
+   "occ": [
+    3,
+    4
+   ],
+   "line": [
+    255,
+    284
+   ],
+   "edge": "GATED_BY ctrl.buf_err, SELECTED_BY ctrl.state (occ 3); connection cmd_inv => inv_i (occ 4)",
+   "why": "Invalidation decision after a failed refill (L255); the only thing that withdraws the valid bit set at L226/L385."
+  },
+  {
+   "element": "inv_i",
+   "entity": "neorv32_cache_memory",
+   "role": "sets",
+   "concept": "Refill error status",
+   "occ": [
+    2
+   ],
+   "line": [
+    382
+   ],
+   "edge": "GATES valid_mem (occ 2)",
+   "why": "Clears the valid bit of the addressed line (L382-383)."
+  },
+  {
+   "element": "host_rsp_o.err",
+   "entity": "neorv32_cache",
+   "role": "exit port",
+   "concept": "Refill error status",
+   "occ": [
+    2,
+    3
+   ],
+   "line": [
+    155,
+    257
+   ],
+   "edge": "GATED_BY ctrl.buf_err, SELECTED_BY ctrl.state (occ 3)",
+   "why": "Reports the failed refill to the host (L257); for direct accesses it comes from bus_rsp_i by L209 (read from source)."
+  },
+  {
+   "element": "host_req_i.debug",
+   "entity": "neorv32_cache",
+   "role": "sets",
+   "concept": "Bypass (direct access) decision",
+   "occ": [
+    2
+   ],
+   "line": [
+    172
+   ],
+   "edge": "GATES ctrl_nxt.buf_dir (occ 2)",
+   "why": "Requester-supplied attribute that forces the access around the cache (L172-173)."
+  },
+  {
+   "element": "host_req_i.amo",
+   "entity": "neorv32_cache",
+   "role": "sets",
+   "concept": "Bypass (direct access) decision",
+   "occ": [
+    2
+   ],
+   "line": [
+    172
+   ],
+   "edge": "GATES ctrl_nxt.buf_dir (occ 2)",
+   "why": "Requester-supplied attribute that forces the access around the cache (L172-173)."
+  },
+  {
+   "element": "ctrl_nxt.buf_dir",
+   "entity": "neorv32_cache",
+   "role": "computes",
+   "concept": "Bypass (direct access) decision",
+   "occ": [
+    2,
+    3
+   ],
+   "line": [
+    140,
+    173
+   ],
+   "edge": "GATED_BY host_req_i.addr, host_req_i.amo, host_req_i.debug, host_req_i.stb, ctrl.buf_req, host_req_i.fence, ctrl.buf_sync (occ 3); SELECTED_BY ctrl.state (occ 3)",
+   "why": "The bypass decision: '0' by default (L140), '1' when the address top nibble >= UC_BEGIN, or AMO, or debug (L171-173)."
+  },
+  {
+   "element": "ctrl.buf_dir",
+   "entity": "neorv32_cache",
+   "role": "stores",
+   "concept": "Bypass (direct access) decision",
+   "occ": [
+    2,
+    3
+   ],
+   "line": [
+    121,
+    186
+   ],
+   "edge": "RESET_BY rstn_i (occ 2); GATES bus_req_o.stb, ctrl_nxt.state, cache_o.we, host_rsp_o.ack (occ 3); register through L126 (read from source)",
+   "why": "Holds the bypass decision into S_LOOKUP, where it overrides the hit path (L186-188)."
+  }
+ ],
+ "secondary": [
+  {
+   "element": "cache_i.sta_hit",
+   "influences": "host_rsp_o.ack, cache_o.we, bus_req_o.stb, ctrl_nxt.state",
+   "edge": "GATES (occ 2); receives hit_o via connection (occ 3)",
+   "occ": [
+    2,
+    3
+   ],
+   "line": [
+    189,
+    286
+   ],
+   "why": "Forwards the hit decision into the controller; the if at L189 is where a hit becomes an ack or a cache write."
+  },
+  {
+   "element": "cache_i.data",
+   "influences": "host_rsp_o.data",
+   "edge": "CARRIES (occ 2); receives rdata_o via connection (occ 3)",
+   "occ": [
+    2,
+    3
+   ],
+   "line": [
+    156,
+    291
+   ],
+   "why": "Only forwards the array word to the host."
+  },
+  {
+   "element": "cache_o.data",
+   "influences": "wdata_i -> data_mem_b0..b3",
+   "edge": "COPIES host_req_i.data (occ 2), bus_rsp_i.data (occ 3); connection => wdata_i (occ 4)",
+   "occ": [
+    2,
+    3,
+    4
+   ],
+   "line": [
+    151,
+    236,
+    290
+   ],
+   "why": "Selects which value (host write or refill word) is written; forward only."
+  },
+  {
+   "element": "cache_o.we",
+   "influences": "we_i -> data_mem_b0..b3",
+   "edge": "COPIES host_req_i.ben (occ 3); constant all-ones in refill (occ 4); GATED_BY cache_i.sta_hit, host_req_i.rw, ctrl.buf_dir; connection => we_i (occ 5)",
+   "occ": [
+    3,
+    4,
+    5
+   ],
+   "line": [
+    194,
+    237,
+    289
+   ],
+   "why": "Decides which bytes of the line are overwritten."
+  },
+  {
+   "element": "we_i",
+   "influences": "data_mem_b0, data_mem_b1, data_mem_b2, data_mem_b3",
+   "edge": "GATES (occ 2-5)",
+   "occ": [
+    2,
+    3,
+    4,
+    5
+   ],
+   "line": [
+    413,
+    416,
+    419,
+    422
+   ],
+   "why": "Byte write enables of the data arrays."
+  },
+  {
+   "element": "host_req_i.ben",
+   "influences": "cache_o.we -> data_mem",
+   "edge": "CARRIES cache_o.we (occ 2)",
+   "occ": [
+    2
+   ],
+   "line": [
+    194
+   ],
+   "why": "Chooses the bytes updated on a write hit (L194)."
+  },
+  {
+   "element": "cache_o.addr",
+   "influences": "addr_i -> tag_mem, valid_mem, data arrays",
+   "edge": "COPIES host_req_i.addr (occ 2); DERIVES_FROM ctrl.tag, ctrl.idx, ctrl.ofs (occ 3,4); connection => addr_i (occ 5)",
+   "occ": [
+    2,
+    3,
+    4,
+    5
+   ],
+   "line": [
+    149,
+    225,
+    235,
+    288
+   ],
+   "why": "Chooses the line and word read, written, validated or invalidated; in S_DOWNLOAD_DONE the invalidated index comes from host_req_i.addr (default L149), not from ctrl.idx."
+  },
+  {
+   "element": "acc_tag",
+   "influences": "hit_o, tag_mem",
+   "edge": "CONSTRAINS hit_o (occ 4); CARRIES tag_mem (occ 3)",
+   "occ": [
+    3,
+    4
+   ],
+   "line": [
+    398,
+    405
+   ],
+   "why": "Slice of addr_i; forwards the tag into tag_mem and is the other operand of the hit compare."
+  },
+  {
+   "element": "acc_idx",
+   "influences": "valid_mem, valid_mem_rd, tag_mem, tag_mem_rd, acc_adr",
+   "edge": "SELECTS (occ 4-8); SOURCES acc_adr (occ 3)",
+   "occ": [
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+   ],
+   "line": [
+    369,
+    383,
+    385,
+    387,
+    398,
+    400
+   ],
+   "why": "Run-time index choosing which line's metadata is read or changed."
+  },
+  {
+   "element": "acc_off",
+   "influences": "acc_adr -> data arrays",
+   "edge": "SOURCES acc_adr (occ 3)",
+   "occ": [
+    3
+   ],
+   "line": [
+    369
+   ],
+   "why": "Word offset part of the data-array index."
+  },
+  {
+   "element": "acc_adr",
+   "influences": "data_mem_b0..b3, rdata_o",
+   "edge": "SELECTS (occ 3-10)",
+   "occ": [
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10
+   ],
+   "line": [
+    414,
+    417,
+    420,
+    423,
+    425,
+    426,
+    427,
+    428
+   ],
+   "why": "Run-time index of the data arrays for both write and read."
+  },
+  {
+   "element": "ctrl.tag",
+   "influences": "cache_o.addr, bus_req_o.addr (tag written to tag_mem on refill)",
+   "edge": "SOURCES (occ 4-7)",
+   "occ": [
+    4,
+    5,
+    6,
+    7
+   ],
+   "line": [
+    225,
+    227,
+    235,
+    238
+   ],
+   "why": "Holds the refill tag; used identically for the memory address and the bus address, so a change stays self-consistent."
+  },
+  {
+   "element": "ctrl.idx",
+   "influences": "cache_o.addr, bus_req_o.addr (line being refilled)",
+   "edge": "SOURCES (occ 4-7)",
+   "occ": [
+    4,
+    5,
+    6,
+    7
+   ],
+   "line": [
+    225,
+    227,
+    235,
+    238
+   ],
+   "why": "Holds the refill index; same self-consistent use as ctrl.tag."
+  },
+  {
+   "element": "ctrl.ofs",
+   "influences": "ctrl_nxt.state (end of refill), cache_o.addr, bus_req_o.addr",
+   "edge": "GATES ctrl_nxt.state (occ 9); SOURCES (occ 4-7)",
+   "occ": [
+    4,
+    5,
+    6,
+    7,
+    9
+   ],
+   "line": [
+    225,
+    227,
+    235,
+    238,
+    245
+   ],
+   "why": "Decides when the refill of a line that is already valid (L226/L385) is complete (L245); an early all-ones value leaves old words in a valid line."
+  },
+  {
+   "element": "ctrl_nxt.ofs",
+   "influences": "ctrl.ofs",
+   "edge": "DERIVES_FROM ctrl.ofs (occ 4); GATED_BY bus_rsp_i.ack",
+   "occ": [
+    2,
+    3,
+    4
+   ],
+   "line": [
+    143,
+    182,
+    244
+   ],
+   "why": "Word counter of the refill (L244)."
+  },
+  {
+   "element": "ctrl_nxt.tag",
+   "influences": "ctrl.tag",
+   "edge": "COPIES ctrl.tag (occ 2); DERIVES_FROM host_req_i.addr (occ 3)",
+   "occ": [
+    2,
+    3
+   ],
+   "line": [
+    141,
+    180
+   ],
+   "why": "Captures the refill tag from the host address (L180); forward only."
+  },
+  {
+   "element": "ctrl_nxt.idx",
+   "influences": "ctrl.idx",
+   "edge": "COPIES ctrl.idx (occ 2); DERIVES_FROM host_req_i.addr (occ 3)",
+   "occ": [
+    2,
+    3
+   ],
+   "line": [
+    142,
+    181
+   ],
+   "why": "Captures the refill index from the host address (L181); forward only."
+  },
+  {
+   "element": "bus_rsp_i.ack",
+   "influences": "ctrl_nxt.state, ctrl_nxt.ofs",
+   "edge": "GATES (occ 2, 3)",
+   "occ": [
+    2,
+    3
+   ],
+   "line": [
+    210,
+    243
+   ],
+   "why": "The only way out of S_DIRECT_RSP (L210) and S_DOWNLOAD_RSP (L243); withholding it stalls the controller."
+  },
+  {
+   "element": "host_req_i.rw",
+   "influences": "host_rsp_o.ack, cache_o.we, bus_req_o.stb, ctrl_nxt.state",
+   "edge": "GATES (occ 2, 3)",
+   "occ": [
+    2,
+    3
+   ],
+   "line": [
+    190,
+    199
+   ],
+   "why": "Chooses read-hit ack, write-hit update or refill (L190, L199)."
+  },
+  {
+   "element": "host_req_i.stb",
+   "influences": "ctrl_nxt.buf_req, ctrl_nxt.state, ctrl_nxt.buf_dir",
+   "edge": "GATES (occ 2, 3)",
+   "occ": [
+    2,
+    3
+   ],
+   "line": [
+    137,
+    170
+   ],
+   "why": "Starts a request (L137, L170)."
+  },
+  {
+   "element": "ctrl.buf_req",
+   "influences": "ctrl_nxt.state, ctrl_nxt.buf_dir",
+   "edge": "GATES (occ 4)",
+   "occ": [
+    3,
+    4
+   ],
+   "line": [
+    137,
+    170
+   ],
+   "why": "Holds a request that arrived while busy (L137, L170)."
+  },
+  {
+   "element": "ctrl_nxt.buf_req",
+   "influences": "ctrl.buf_req",
+   "edge": "GATED_BY ctrl.buf_req, host_req_i.stb (occ 2); SELECTED_BY ctrl.state (occ 3)",
+   "occ": [
+    2,
+    3
+   ],
+   "line": [
+    137,
+    184
+   ],
+   "why": "Next value of the pending-request flag."
+  },
+  {
+   "element": "host_req_i.priv",
+   "influences": "bus_req_o.priv (refill and bypass requests)",
+   "edge": "forwarded only by the whole-record copy bus_req_o <= host_req_i (host_req_i occ 7, L159; read from source)",
+   "occ": [
+    1
+   ],
+   "line": [
+    37
+   ],
+   "why": "The requester's privilege travels with refill and bypass requests but is never read by the hit path (L189-191)."
+  },
+  {
+   "element": "bus_req_o.addr",
+   "influences": "memory word returned on bus_rsp_i.data -> data_mem (loop outside the module)",
+   "edge": "DERIVES_FROM ctrl.tag, ctrl.idx, ctrl.ofs (occ 2, 3); SELECTED_BY ctrl.state",
+   "occ": [
+    2,
+    3
+   ],
+   "line": [
+    227,
+    238
+   ],
+   "why": "Chooses which memory words are copied into the line during a refill."
+  }
+ ],
+ "excluded": [
+  {
+   "element": "clk_i (neorv32_cache, neorv32_cache_memory)",
+   "reason": "clock: decides when, not what"
+  },
+  {
+   "element": "rstn_i (neorv32_cache, neorv32_cache_memory)",
+   "reason": "reset input; its effect is recorded instead: it clears ctrl.* and valid_mem/valid_mem_rd but not tag_mem or the data arrays"
+  },
+  {
+   "element": "host_req_i",
+   "reason": "record carrying whole bus transactions; its fields are analysed instead"
+  },
+  {
+   "element": "host_rsp_o",
+   "reason": "record carrying whole bus transactions; fields ack, err, data reported instead"
+  },
+  {
+   "element": "bus_req_o",
+   "reason": "record carrying whole bus transactions; fields analysed instead"
+  },
+  {
+   "element": "bus_rsp_i",
+   "reason": "record carrying whole bus transactions; fields ack, err, data analysed instead"
+  },
+  {
+   "element": "cache_o, cache_i, ctrl, ctrl_nxt",
+   "reason": "aggregate records internal to the module; each field is analysed on its own"
+  },
+  {
+   "element": "host_req_i.src, host_req_i.amoop, host_req_i.lock",
+   "reason": "only occurrence is the declaration (L37); forwarded by the whole-record copy L159; no local use"
+  },
+  {
+   "element": "bus_req_o.data, bus_req_o.ben, bus_req_o.src, bus_req_o.priv, bus_req_o.debug, bus_req_o.amo, bus_req_o.amoop",
+   "reason": "only occurrence is the declaration (L39); driven by the whole-record copy L159 (the map marks them undriven, which is wrong); forwarded values, nothing decided here"
+  },
+  {
+   "element": "bus_req_o.rw",
+   "reason": "constant '0' in the refill states (L228, L239); an attribute of the refill request, carries no asset"
+  },
+  {
+   "element": "bus_req_o.stb",
+   "reason": "starts bus transactions; fully decided by ctrl.state, ctrl.buf_dir, cache_i.sta_hit and host_req_i.rw, which are reported"
+  },
+  {
+   "element": "bus_req_o.lock",
+   "reason": "constant '1' in the refill states (L230, L240); its effect is outside this source, kept as a hypothesis"
+  },
+  {
+   "element": "UC_BEGIN, READ_ONLY (generics)",
+   "reason": "not in the map; UC_BEGIN sets the uncached boundary at L171 and READ_ONLY changes write handling at L190, L199 and L216"
+  }
+ ],
+ "hypotheses": [
+  "Timing channel on residency (CA2 C): exploiting the hit (L189-192) versus refill (L199-250) latency needs an attacker that shares the cache with a victim and can time its requests; that sharing is outside this source.",
+  "Privilege-agnostic hits (CA2 U): L189-191 never read host_req_i.priv, which is only forwarded on bus_req_o (L159). This harms only if access checks are made downstream of the cache on the refill request rather than before the request reaches it.",
+  "Exposure without ack (CA1 C): host_rsp_o.data carries the array word of any line on every non-direct cycle (L156). This harms only if a requester can sample data while ack is '0'.",
+  "bus_req_o.lock is held at '1' for every word of a refill (L230, L240). If downstream treats it as exclusive bus ownership, a requester that forces repeated misses keeps other masters waiting.",
+  "Address stability: the hit compare (L405) matches a tag registered in the previous cycle against the current host_req_i.addr, and the error invalidation in S_DOWNLOAD_DONE uses host_req_i.addr (L149) rather than ctrl.idx. Both assume the host holds the address stable for the whole request, a bus-protocol property outside this source.",
+  "READ_ONLY = true: a write is acknowledged and dropped (L190-191, L199-200) with no error. This harms only if a writer is attached to a read-only instance.",
+  "UC_BEGIN (a generic, not in the map) defines which addresses bypass the cache (L171). A wrong value makes a device region cacheable."
+ ],
+ "map_assessment": {
+  "used_for": "Indexing all 86 elements with their occurrences, and following direct edges. Data edges gave the data path (host_req_i.data/bus_rsp_i.data -> cache_o.data -> wdata_i -> data_mem_b0..b3 -> rdata_o -> cache_i.data -> host_rsp_o.data). Control edges gave the guards on ctrl_nxt.state and host_rsp_o.ack. Connections carried values across the sub-block boundary. Constant drivers showed when each command bit is raised. RESETS edges showed that only valid_mem and valid_mem_rd are reset in the memory block. Per-element occurrences showed that bus_rsp_i.err is read only at L242 and that host_req_i.priv has no local use.",
+  "insufficient_for": "Storage of record fields (ctrl.* are registers through L126 but are marked storage 'none'). Whole-record assignments are not pushed down to fields (L159 drives every bus_req_o field; L209 drives host_rsp_o.data/ack/err from bus_rsp_i). Generics (UC_BEGIN at L171; READ_ONLY at L190 and L199 are not recorded; only bus_req_o.fence carries a READ_ONLY condition). Timing and order, such as the one-cycle registered tag and valid read against the live acc_tag, the cache write at L194 before the bus answer at L209, and the valid bit set at L226 before the data arrives. Absences, such as no privilege check on hits and no clear of the data arrays, which must be read from the source. The loop through external memory (bus_req_o.addr -> bus_rsp_i.data). The meaning of bus record fields such as lock, priv and debug.",
+  "errors_found": "ctrl.state, ctrl.buf_req, ctrl.buf_sync, ctrl.buf_err, ctrl.buf_dir, ctrl.tag, ctrl.idx and ctrl.ofs have storage 'none' but are stored (ctrl <= ctrl_nxt under rising_edge, L125-126). bus_req_o.data, .ben, .src, .priv, .debug, .amo and .amoop are marked 'undriven' but are driven by L159. host_rsp_o.data's record omits its second driver, L209. Configuration is missing for READ_ONLY (L190, L199) and UC_BEGIN (L171). The hints call acc_tag and acc_idx 'accumulated'; they are plain slices of addr_i. The cache_o.cmd_new hint ('mark a newly downloaded line as valid') hides that it fires in S_DOWNLOAD_REQ, before any word is downloaded."
+ },
+ "process_notes": "1) Read the prompt and all numbered RTL lines of both entities. 2) Dumped the map with Python to a per-element index (86 elements: 64 in neorv32_cache, 22 in neorv32_cache_memory) and ran a self-test: 7 hand-read lines matched the RTL, and all 427 map occurrence texts matched their RTL lines. 3) Checked configuration, storage and drive fields and found the errors listed. 4) Worked out the purpose from structure: tag/valid/data arrays, the hit compare at L405, the refill FSM, the fence path and the bypass condition. 5) Traced seven flows edge by edge and confirmed each edge on its line. 6) Answered the four questions per value with a line. 7) Classified elements. Storage is 'stores'. A comparison, logic or decision is 'computes'. An output port is 'exit port'. An input with a data edge into a store or computation is 'sets'. Slices, concatenations, copies and guards are secondary. One exception: clr_i, inv_i and new_i are the only write port of the valid bits, so they are 'sets'. Where the map changed a decision: the RESETS edges (only valid_mem and valid_mem_rd) led to the data-remanence answer. cache_o.cmd_new's constant driver in S_DOWNLOAD_REQ (occ 3) showed the line is marked valid before its data arrives. bus_rsp_i.err having a single use (L242) showed that errors on write-through or bypass responses are never handled by the cache. host_req_i.priv having only its declaration showed hits are privilege-agnostic. Where I read the source instead of the map: register storage of ctrl.* (L126), the whole-record drives at L159 and L209, the generics, the ordering of L194 against L209, and the absence of a clear in L410-430. 8) Verified every cited occurrence id and line against the map with a script."
+}

@@ -1,0 +1,548 @@
+TARGET IP MODULE: neorv32_cpu_pmp
+
+=== RTL (comments removed, blank lines left out; each line starts with its line number in the source file) ===
+   23 | entity neorv32_cpu_pmp is
+   24 |   generic (
+   25 |     NUM_REGIONS : natural range 0 to 16;
+   26 |     GRANULARITY : natural;
+   27 |     TOR_EN      : boolean;
+   28 |     NAP_EN      : boolean
+   29 |   );
+   30 |   port (
+   32 |     clk_i     : in  std_ulogic;
+   33 |     rstn_i    : in  std_ulogic;
+   34 |     ctrl_i    : in  ctrl_bus_t;
+   36 |     csr_o     : out std_ulogic_vector(XLEN-1 downto 0);
+   38 |     addr_ls_i : in  std_ulogic_vector(XLEN-1 downto 0);
+   40 |     fault_o   : out std_ulogic
+   41 |   );
+   42 | end neorv32_cpu_pmp;
+
+   44 | architecture neorv32_cpu_pmp_rtl of neorv32_cpu_pmp is
+   47 |   constant g_c : natural := cond_sel_natural_f(boolean(GRANULARITY < 4), 4, 2**index_size_f(GRANULARITY));
+   50 |   constant cfg_r_c  : natural := 0;
+   51 |   constant cfg_w_c  : natural := 1;
+   52 |   constant cfg_x_c  : natural := 2;
+   53 |   constant cfg_al_c : natural := 3;
+   54 |   constant cfg_ah_c : natural := 4;
+   55 |   constant cfg_l_c  : natural := 7;
+   58 |   constant mode_off_c   : std_ulogic_vector(1 downto 0) := "00";
+   59 |   constant mode_tor_c   : std_ulogic_vector(1 downto 0) := "01";
+   60 |   constant mode_na4_c   : std_ulogic_vector(1 downto 0) := "10";
+   61 |   constant mode_napot_c : std_ulogic_vector(1 downto 0) := "11";
+   64 |   constant pmp_lsb_c : natural := index_size_f(g_c);
+   67 |   type pmpcfg_t is array (0 to NUM_REGIONS-1) of std_ulogic_vector(7 downto 0);
+   68 |   signal pmpcfg    : pmpcfg_t;
+   69 |   signal pmpcfg_we : std_ulogic_vector(3 downto 0);
+   72 |   type pmpaddr_t is array (0 to NUM_REGIONS-1) of std_ulogic_vector(XLEN-1 downto 0);
+   73 |   signal pmpaddr    : pmpaddr_t;
+   74 |   signal pmpaddr_we : std_ulogic_vector(15 downto 0);
+   77 |   type csr_cfg_rd_t   is array (0 to 15) of std_ulogic_vector(7 downto 0);
+   78 |   type csr_cfg_rd32_t is array (0 to 03) of std_ulogic_vector(XLEN-1 downto 0);
+   79 |   type csr_addr_rd_t  is array (0 to 15) of std_ulogic_vector(XLEN-1 downto 0);
+   80 |   signal cfg_rd   : csr_cfg_rd_t;
+   81 |   signal cfg_rd32 : csr_cfg_rd32_t;
+   82 |   signal addr_rd  : csr_addr_rd_t;
+   85 |   signal acc_addr : std_ulogic_vector(XLEN-1 downto 0);
+   86 |   signal acc_priv : std_ulogic;
+   89 |   type addr_mask_t is array (0 to NUM_REGIONS-1) of std_ulogic_vector(XLEN-1 downto pmp_lsb_c);
+   90 |   signal addr_mask_napot, addr_mask : addr_mask_t;
+   93 |   signal cmp_na, cmp_ge, cmp_lt : std_ulogic_vector(NUM_REGIONS-1 downto 0);
+   96 |   signal match : std_ulogic_vector(NUM_REGIONS-1 downto 0);
+   97 |   signal allow : std_ulogic_vector(NUM_REGIONS-1 downto 0);
+   98 |   signal fail  : std_ulogic_vector(NUM_REGIONS   downto 0);
+  100 | begin
+  104 |   assert (GRANULARITY = g_c) report
+  105 |     "[NEORV32] Auto-adjusting invalid PMP granularity configuration." severity warning;
+  110 |   csr_we_cfg: process(ctrl_i)
+  111 |   begin
+  112 |     pmpcfg_we <= (others => '0');
+  113 |     if (ctrl_i.csr_addr(11 downto 2) = csr_pmpcfg0_c(11 downto 2)) and (ctrl_i.csr_we = '1') then
+  114 |       pmpcfg_we(to_integer(unsigned(ctrl_i.csr_addr(1 downto 0)))) <= '1';
+  115 |     end if;
+  116 |   end process csr_we_cfg;
+  119 |   csr_pmpcfg_gen:
+  120 |   for i in 0 to NUM_REGIONS-1 generate
+  121 |     csr_pmpcfg: process(rstn_i, clk_i)
+  122 |       variable mode_v : std_ulogic_vector(1 downto 0);
+  123 |     begin
+  124 |       if (rstn_i = '0') then
+  125 |         pmpcfg(i) <= (others => '0');
+  126 |       elsif rising_edge(clk_i) then
+  127 |         if (pmpcfg_we(i/4) = '1') and (pmpcfg(i)(cfg_l_c) = '0') then
+  129 |           pmpcfg(i)(cfg_r_c) <= ctrl_i.csr_wdata((i mod 4)*8+cfg_r_c);
+  130 |           pmpcfg(i)(cfg_w_c) <= ctrl_i.csr_wdata((i mod 4)*8+cfg_w_c);
+  131 |           pmpcfg(i)(cfg_x_c) <= ctrl_i.csr_wdata((i mod 4)*8+cfg_x_c);
+  133 |           mode_v := ctrl_i.csr_wdata((i mod 4)*8+cfg_ah_c downto (i mod 4)*8+cfg_al_c);
+  134 |           if ((mode_v = mode_tor_c)   and (not TOR_EN)) or
+  135 |              ((mode_v = mode_na4_c)   and (not NAP_EN)) or
+  136 |              ((mode_v = mode_napot_c) and (not NAP_EN)) or
+  137 |              ((mode_v = mode_na4_c)   and (g_c > 4)) then
+  138 |             pmpcfg(i)(cfg_ah_c downto cfg_al_c) <= mode_off_c;
+  139 |           else
+  140 |             pmpcfg(i)(cfg_ah_c downto cfg_al_c) <= mode_v;
+  141 |           end if;
+  143 |           pmpcfg(i)(6 downto 5) <= (others => '0');
+  145 |           pmpcfg(i)(cfg_l_c)  <= ctrl_i.csr_wdata((i mod 4)*8+cfg_l_c);
+  146 |         end if;
+  147 |       end if;
+  148 |     end process csr_pmpcfg;
+  149 |   end generate;
+  154 |   csr_we_addr: process(ctrl_i)
+  155 |   begin
+  156 |     pmpaddr_we <= (others => '0');
+  157 |     if (ctrl_i.csr_addr(11 downto 4) = csr_pmpaddr0_c(11 downto 4)) and (ctrl_i.csr_we = '1') then
+  158 |       pmpaddr_we(to_integer(unsigned(ctrl_i.csr_addr(3 downto 0)))) <= '1';
+  159 |     end if;
+  160 |   end process csr_we_addr;
+  163 |   csr_pmpaddr_gen:
+  164 |   for i in 0 to NUM_REGIONS-1 generate
+  165 |     csr_pmpaddr: process(rstn_i, clk_i)
+  166 |     begin
+  167 |       if (rstn_i = '0') then
+  168 |         pmpaddr(i) <= (others => '0');
+  169 |       elsif rising_edge(clk_i) then
+  170 |         if (pmpaddr_we(i) = '1') and (pmpcfg(i)(cfg_l_c) = '0') then
+  171 |           if (i < NUM_REGIONS-1) then
+  172 |             if (pmpcfg(i+1)(cfg_l_c) = '0') or (pmpcfg(i+1)(cfg_ah_c downto cfg_al_c) /= mode_tor_c) then
+  173 |               pmpaddr(i) <= "00" & ctrl_i.csr_wdata(XLEN-3 downto 0);
+  174 |             end if;
+  175 |           else
+  176 |             pmpaddr(i) <= "00" & ctrl_i.csr_wdata(XLEN-3 downto 0);
+  177 |           end if;
+  178 |         end if;
+  179 |       end if;
+  180 |     end process csr_pmpaddr;
+  181 |   end generate;
+  186 |   csr_read_access: process(ctrl_i.csr_addr, cfg_rd32, addr_rd)
+  187 |   begin
+  188 |     if (ctrl_i.csr_addr(11 downto 5) = csr_pmpcfg0_c(11 downto 5)) then
+  189 |       if (ctrl_i.csr_addr(4) = '0') then
+  190 |         csr_o <= cfg_rd32(to_integer(unsigned(ctrl_i.csr_addr(1 downto 0))));
+  191 |       else
+  192 |         csr_o <= addr_rd(to_integer(unsigned(ctrl_i.csr_addr(3 downto 0))));
+  193 |       end if;
+  194 |     else
+  195 |       csr_o <= (others => '0');
+  196 |     end if;
+  197 |   end process csr_read_access;
+  200 |   csr_read_back_gen:
+  201 |   for i in 0 to NUM_REGIONS-1 generate
+  203 |     cfg_rd(i) <= pmpcfg(i);
+  205 |     address_read_back: process(pmpaddr, pmpcfg)
+  206 |     begin
+  207 |       addr_rd(i) <= (others => '0');
+  208 |       addr_rd(i)(XLEN-3 downto pmp_lsb_c-2) <= pmpaddr(i)(XLEN-3 downto pmp_lsb_c-2);
+  209 |       if (g_c = 8) and TOR_EN then
+  210 |         if (pmpcfg(i)(cfg_ah_c) = '0') then
+  211 |           addr_rd(i)(pmp_lsb_c) <= '0';
+  212 |         end if;
+  213 |       elsif (g_c > 8) then
+  214 |         if NAP_EN then
+  215 |           addr_rd(i)(pmp_lsb_c-2 downto 0) <= (others => '1');
+  216 |         end if;
+  217 |         if TOR_EN then
+  218 |           if (pmpcfg(i)(cfg_ah_c) = '0') then
+  219 |             addr_rd(i)(pmp_lsb_c-1 downto 0) <= (others => '0');
+  220 |           end if;
+  221 |         end if;
+  222 |       end if;
+  223 |     end process address_read_back;
+  224 |   end generate;
+  227 |   csr_read_back_terminate:
+  228 |   for i in NUM_REGIONS to 15 generate
+  229 |     cfg_rd(i)  <= (others => '0');
+  230 |     addr_rd(i) <= (others => '0');
+  231 |   end generate;
+  234 |   csr_read_back_pack:
+  235 |   for i in 0 to 3 generate
+  236 |     cfg_rd32(i) <= cfg_rd(i*4+3) & cfg_rd(i*4+2) & cfg_rd(i*4+1) & cfg_rd(i*4+0);
+  237 |   end generate;
+  244 |   acc_addr <= ctrl_i.pc_nxt   when (ctrl_i.lsu_mo_we = '0') else addr_ls_i;
+  245 |   acc_priv <= ctrl_i.cpu_priv when (ctrl_i.lsu_mo_we = '0') else ctrl_i.lsu_priv;
+  247 |   region_gen:
+  248 |   for r in 0 to NUM_REGIONS-1 generate
+  251 |     nap_mode_enable:
+  252 |     if NAP_EN generate
+  254 |       addr_mask_napot(r)(pmp_lsb_c) <= '0';
+  255 |       addr_mask_napot_gen:
+  256 |       for i in pmp_lsb_c+1 to XLEN-1 generate
+  257 |         addr_mask_napot(r)(i) <= addr_mask_napot(r)(i-1) or (not pmpaddr(r)(i-3));
+  258 |       end generate;
+  261 |       addr_masking: process(rstn_i, clk_i)
+  262 |       begin
+  263 |         if (rstn_i = '0') then
+  264 |           addr_mask(r) <= (others => '0');
+  265 |         elsif rising_edge(clk_i) then
+  266 |           if (pmpcfg(r)(cfg_al_c) = '1') then
+  267 |             addr_mask(r) <= addr_mask_napot(r);
+  268 |           else
+  269 |             addr_mask(r) <= (others => '1');
+  270 |           end if;
+  271 |         end if;
+  272 |       end process addr_masking;
+  273 |     end generate;
+  276 |     nap_mode_disable:
+  277 |     if not NAP_EN generate
+  278 |       addr_mask_napot(r) <= (others => '0');
+  279 |       addr_mask(r)       <= (others => '0');
+  280 |     end generate;
+  285 |     cmp_na(r) <= '1' when ((acc_addr(XLEN-1 downto pmp_lsb_c) and addr_mask(r)) = (pmpaddr(r)(XLEN-3 downto pmp_lsb_c-2) and addr_mask(r))) and NAP_EN else '0';
+  287 |     addr_match_r0_gen:
+  288 |     if (r = 0) generate
+  289 |       cmp_ge(r) <= '1' when TOR_EN else '0';
+  290 |       cmp_lt(r) <= '0';
+  291 |     end generate;
+  293 |     addr_match_rn_gen:
+  294 |     if (r > 0) generate
+  295 |       cmp_ge(r) <= '1' when (unsigned(acc_addr(XLEN-1 downto pmp_lsb_c)) >= unsigned(pmpaddr(r-1)(XLEN-3 downto pmp_lsb_c-2))) and TOR_EN else '0';
+  296 |       cmp_lt(r) <= '1' when (unsigned(acc_addr(XLEN-1 downto pmp_lsb_c)) <  unsigned(pmpaddr(r  )(XLEN-3 downto pmp_lsb_c-2))) and TOR_EN else '0';
+  297 |     end generate;
+  301 |     match_gen: process(pmpcfg, cmp_ge, cmp_lt, cmp_na)
+  302 |     begin
+  303 |       if (pmpcfg(r)(cfg_ah_c downto cfg_al_c) = mode_tor_c) and TOR_EN then
+  304 |         if (r = (NUM_REGIONS-1)) then
+  305 |           match(r) <= cmp_ge(r) and cmp_lt(r);
+  306 |         else
+  307 |           match(r) <= cmp_ge(r) and (not cmp_ge(r+1));
+  308 |         end if;
+  309 |       elsif (pmpcfg(r)(cfg_ah_c) = mode_napot_c(1)) and NAP_EN then
+  310 |         match(r) <= cmp_na(r);
+  311 |       else
+  312 |         match(r) <= '0';
+  313 |       end if;
+  314 |     end process match_gen;
+  318 |     perm_gen: process(ctrl_i, acc_priv, pmpcfg)
+  319 |     begin
+  321 |       if (ctrl_i.lsu_mo_we = '0') then
+  322 |         if (acc_priv = priv_mode_m_c) then
+  323 |           allow(r) <= pmpcfg(r)(cfg_x_c) or (not pmpcfg(r)(cfg_l_c));
+  324 |         else
+  325 |           allow(r) <= pmpcfg(r)(cfg_x_c);
+  326 |         end if;
+  328 |       elsif (ctrl_i.lsu_rw = '0') then
+  329 |         if (acc_priv = priv_mode_m_c) then
+  330 |           allow(r) <= pmpcfg(r)(cfg_r_c) or (not pmpcfg(r)(cfg_l_c));
+  331 |         else
+  332 |           allow(r) <= pmpcfg(r)(cfg_r_c);
+  333 |         end if;
+  335 |       else
+  336 |         if (acc_priv = priv_mode_m_c) then
+  337 |           allow(r) <= pmpcfg(r)(cfg_w_c) or (not pmpcfg(r)(cfg_l_c));
+  338 |         else
+  339 |           allow(r) <= pmpcfg(r)(cfg_w_c);
+  340 |         end if;
+  341 |       end if;
+  342 |     end process perm_gen;
+  344 |   end generate;
+  351 |   fail(NUM_REGIONS) <= '1' when (acc_priv /= priv_mode_m_c) else '0';
+  352 |   fault_check_gen:
+  353 |   for r in NUM_REGIONS-1 downto 0 generate
+  354 |     fail(r) <= not allow(r) when (match(r) = '1') else fail(r+1);
+  355 |   end generate;
+  358 |   fault_check: process(rstn_i, clk_i)
+  359 |   begin
+  360 |     if (rstn_i = '0') then
+  361 |       fault_o <= '0';
+  362 |     elsif rising_edge(clk_i) then
+  363 |       fault_o <= (not ctrl_i.cpu_debug) and fail(0);
+  364 |     end if;
+  365 |   end process fault_check;
+  368 | end neorv32_cpu_pmp_rtl;
+
+=== RELATIONSHIP MAP: ELEMENTS AND RECORDS ===
+PORT {"name":"clk_i","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":32},{"id":2,"line":121},{"id":3,"line":126},{"id":4,"line":165},{"id":5,"line":169},{"id":6,"line":261},{"id":7,"line":265},{"id":8,"line":358},{"id":9,"line":362}]}
+    {"type":"SEQUENCES","at":[3],"lines":[126],"targets":["pmpcfg"]}
+    {"type":"SEQUENCES","at":[5],"lines":[169],"targets":["pmpaddr"]}
+    {"type":"SEQUENCES","at":[7],"lines":[265],"targets":["addr_mask"]}
+    {"type":"SEQUENCES","at":[9],"lines":[362],"targets":["fault_o"]}
+PORT {"name":"rstn_i","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":33},{"id":2,"line":121},{"id":3,"line":124},{"id":4,"line":165},{"id":5,"line":167},{"id":6,"line":261},{"id":7,"line":263},{"id":8,"line":358},{"id":9,"line":360}]}
+    {"type":"RESETS","at":[3],"lines":[124],"targets":["pmpcfg"]}
+    {"type":"RESETS","at":[5],"lines":[167],"targets":["pmpaddr"]}
+    {"type":"RESETS","at":[7],"lines":[263],"targets":["addr_mask"]}
+    {"type":"RESETS","at":[9],"lines":[360],"targets":["fault_o"]}
+PORT {"name":"ctrl_i","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34},{"id":2,"line":110},{"id":3,"line":113},{"id":4,"line":113},{"id":5,"line":114},{"id":6,"line":129},{"id":7,"line":130},{"id":8,"line":131},{"id":9,"line":133},{"id":10,"line":145},{"id":11,"line":154},{"id":12,"line":157},{"id":13,"line":157},{"id":14,"line":158},{"id":15,"line":173},{"id":16,"line":176},{"id":17,"line":186},{"id":18,"line":188},{"id":19,"line":189},{"id":20,"line":190},{"id":21,"line":192},{"id":22,"line":244},{"id":23,"line":244},{"id":24,"line":245},{"id":25,"line":245},{"id":26,"line":245},{"id":27,"line":318},{"id":28,"line":321},{"id":29,"line":328},{"id":30,"line":363}]}
+PORT {"name":"ctrl_i.if_fence","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.if_reset","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.if_ack","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.pc_cur","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.pc_nxt","entity":"neorv32_cpu_pmp","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34},{"id":2,"line":244}]}
+    {"type":"SOURCES","at":[2],"lines":[244],"targets":["acc_addr"]}
+PORT {"name":"ctrl_i.pc_ret","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.rf_wb_en","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.rf_rs1","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.rf_rs2","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.rf_rd","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.rf_zero_we","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.alu_op","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.alu_sub","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.alu_opa_mux","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.alu_opb_mux","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.alu_unsigned","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.alu_imm","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.alu_cp_alu","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.alu_cp_cfu","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.alu_cp_fpu","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.lsu_req","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.lsu_rw","entity":"neorv32_cpu_pmp","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34},{"id":2,"line":328}]}
+    {"type":"GATES","at":[2],"guard":"ctrl_i.lsu_rw = '0' | not (ctrl_i.lsu_rw = '0')","lines":[328],"targets":["allow"]}
+PORT {"name":"ctrl_i.lsu_amo","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.lsu_mo_we","entity":"neorv32_cpu_pmp","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34},{"id":2,"line":244},{"id":3,"line":245},{"id":4,"line":321}]}
+    {"type":"GATES","at":[2],"guard":"(ctrl_i.lsu_mo_we = '0')","lines":[244],"targets":["acc_addr"]}
+    {"type":"GATES","at":[3],"guard":"(ctrl_i.lsu_mo_we = '0')","lines":[245],"targets":["acc_priv"]}
+    {"type":"GATES","at":[4],"guard":"ctrl_i.lsu_mo_we = '0' | not (ctrl_i.lsu_mo_we = '0')","lines":[321],"targets":["allow"]}
+PORT {"name":"ctrl_i.lsu_fence","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.lsu_priv","entity":"neorv32_cpu_pmp","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34},{"id":2,"line":245}]}
+    {"type":"SOURCES","at":[2],"lines":[245],"targets":["acc_priv"]}
+PORT {"name":"ctrl_i.csr_we","entity":"neorv32_cpu_pmp","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34},{"id":2,"line":113},{"id":3,"line":157}]}
+    {"type":"GATES","at":[2],"guard":"(ctrl_i.csr_addr(11 downto 2) = csr_pmpcfg0_c(11 downto 2)) and (ctrl_i.csr_we = '1')","lines":[113],"targets":["pmpcfg_we"]}
+    {"type":"GATES","at":[3],"guard":"(ctrl_i.csr_addr(11 downto 4) = csr_pmpaddr0_c(11 downto 4)) and (ctrl_i.csr_we = '1')","lines":[157],"targets":["pmpaddr_we"]}
+PORT {"name":"ctrl_i.csr_re","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.csr_addr","entity":"neorv32_cpu_pmp","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34},{"id":2,"line":113},{"id":3,"line":114},{"id":4,"line":157},{"id":5,"line":158},{"id":6,"line":186},{"id":7,"line":188},{"id":8,"line":189},{"id":9,"line":190},{"id":10,"line":192}]}
+    {"type":"SELECTS","at":[10],"guard":"ctrl_i.csr_addr(11 downto 5) = csr_pmpcfg0_c(11 downto 5) and not (ctrl_i.csr_addr(4) = '0')","lines":[192],"targets":["csr_o"]}
+    {"type":"SELECTS","at":[3],"guard":"(ctrl_i.csr_addr(11 downto 2) = csr_pmpcfg0_c(11 downto 2)) and (ctrl_i.csr_we = '1')","lines":[114],"targets":["pmpcfg_we"]}
+    {"type":"SELECTS","at":[5],"guard":"(ctrl_i.csr_addr(11 downto 4) = csr_pmpaddr0_c(11 downto 4)) and (ctrl_i.csr_we = '1')","lines":[158],"targets":["pmpaddr_we"]}
+    {"type":"SELECTS","at":[9],"guard":"ctrl_i.csr_addr(11 downto 5) = csr_pmpcfg0_c(11 downto 5) and ctrl_i.csr_addr(4) = '0'","lines":[190],"targets":["csr_o"]}
+    {"type":"GATES","at":[2],"guard":"(ctrl_i.csr_addr(11 downto 2) = csr_pmpcfg0_c(11 downto 2)) and (ctrl_i.csr_we = '1')","lines":[113],"targets":["pmpcfg_we"]}
+    {"type":"GATES","at":[4],"guard":"(ctrl_i.csr_addr(11 downto 4) = csr_pmpaddr0_c(11 downto 4)) and (ctrl_i.csr_we = '1')","lines":[157],"targets":["pmpaddr_we"]}
+    {"type":"GATES","at":[7],"guard":"ctrl_i.csr_addr(11 downto 5) = csr_pmpcfg0_c(11 downto 5) and ctrl_i.csr_addr(4) = '0' | ctrl_i.csr_addr(11 downto 5) = csr_pmpcfg0_c(11 downto 5) and not (ctrl_i.csr_addr(4) = '0') | not (ctrl_i.csr_addr(11 downto 5) = csr_pmpcfg0_c(11 downto 5))","lines":[188],"targets":["csr_o"]}
+    {"type":"GATES","at":[8],"guard":"ctrl_i.csr_addr(11 downto 5) = csr_pmpcfg0_c(11 downto 5) and ctrl_i.csr_addr(4) = '0' | ctrl_i.csr_addr(11 downto 5) = csr_pmpcfg0_c(11 downto 5) and not (ctrl_i.csr_addr(4) = '0')","lines":[189],"targets":["csr_o"]}
+PORT {"name":"ctrl_i.csr_wdata","entity":"neorv32_cpu_pmp","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34},{"id":2,"line":129},{"id":3,"line":130},{"id":4,"line":131},{"id":5,"line":133},{"id":6,"line":145},{"id":7,"line":173},{"id":8,"line":176}]}
+    {"type":"SOURCES","at":[2,3,4,5,6],"lines":[129,130,131,133,145],"targets":["pmpcfg"]}
+    {"type":"SOURCES","at":[7,8],"lines":[173,176],"targets":["pmpaddr"]}
+PORT {"name":"ctrl_i.cnt_halt","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.cnt_event","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.ir_funct3","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.ir_funct12","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.ir_opcode","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.cpu_priv","entity":"neorv32_cpu_pmp","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34},{"id":2,"line":245}]}
+    {"type":"SOURCES","at":[2],"lines":[245],"targets":["acc_priv"]}
+PORT {"name":"ctrl_i.cpu_sleep","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.cpu_trap","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"ctrl_i.cpu_debug","entity":"neorv32_cpu_pmp","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34},{"id":2,"line":363}]}
+    {"type":"GATES","at":[2],"guard":"(not ctrl_i.cpu_debug) and fail(0)","lines":[363],"targets":["fault_o"]}
+PORT {"name":"csr_o","entity":"neorv32_cpu_pmp","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":36},{"id":2,"line":190},{"id":3,"line":192},{"id":4,"line":195}]}
+    {"constant_drivers":[{"at":4,"value":"(others => '0')","lines":[195]}]}
+    {"type":"SELECTED_BY","at":[2],"guard":"ctrl_i.csr_addr(11 downto 5) = csr_pmpcfg0_c(11 downto 5) and ctrl_i.csr_addr(4) = '0'","lines":[190],"targets":["ctrl_i.csr_addr"]}
+    {"type":"SELECTED_BY","at":[3],"guard":"ctrl_i.csr_addr(11 downto 5) = csr_pmpcfg0_c(11 downto 5) and not (ctrl_i.csr_addr(4) = '0')","lines":[192],"targets":["ctrl_i.csr_addr"]}
+    {"type":"GATED_BY","at":[2],"guard":"ctrl_i.csr_addr(11 downto 5) = csr_pmpcfg0_c(11 downto 5) and ctrl_i.csr_addr(4) = '0'","lines":[190],"targets":["ctrl_i.csr_addr"]}
+    {"type":"GATED_BY","at":[3],"guard":"ctrl_i.csr_addr(11 downto 5) = csr_pmpcfg0_c(11 downto 5) and not (ctrl_i.csr_addr(4) = '0')","lines":[192],"targets":["ctrl_i.csr_addr"]}
+    {"type":"GATED_BY","at":[4],"guard":"not (ctrl_i.csr_addr(11 downto 5) = csr_pmpcfg0_c(11 downto 5))","lines":[195],"targets":["ctrl_i.csr_addr"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[190],"targets":["cfg_rd32"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[192],"targets":["addr_rd"]}
+PORT {"name":"addr_ls_i","entity":"neorv32_cpu_pmp","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":38},{"id":2,"line":244}]}
+    {"type":"SOURCES","at":[2],"lines":[244],"targets":["acc_addr"]}
+PORT {"name":"fault_o","entity":"neorv32_cpu_pmp","boundary":{"mode":"out","drive":"driven"},"storage":"edge"}
+    {"occurrences":[{"id":1,"line":40},{"id":2,"line":361},{"id":3,"line":363}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[361]}]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[363],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[361],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"(not ctrl_i.cpu_debug) and fail(0)","lines":[363],"targets":["ctrl_i.cpu_debug","fail"]}
+SIGNAL {"name":"pmpcfg","entity":"neorv32_cpu_pmp","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":68},{"id":2,"line":125},{"id":3,"line":127},{"id":4,"line":129},{"id":5,"line":130},{"id":6,"line":131},{"id":7,"line":138},{"id":8,"line":140},{"id":9,"line":143},{"id":10,"line":145},{"id":11,"line":170},{"id":12,"line":172},{"id":13,"line":172},{"id":14,"line":203},{"id":15,"line":205},{"id":16,"line":210},{"id":17,"line":218},{"id":18,"line":266},{"id":19,"line":301},{"id":20,"line":303},{"id":21,"line":309},{"id":22,"line":318},{"id":23,"line":323},{"id":24,"line":323},{"id":25,"line":325},{"id":26,"line":330},{"id":27,"line":330},{"id":28,"line":332},{"id":29,"line":337},{"id":30,"line":337},{"id":31,"line":339}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[125]},{"at":7,"value":"mode_off_c","lines":[138]},{"at":9,"value":"(others => '0')","lines":[143]}]}
+    {"type":"GATES","at":[11],"guard":"(pmpaddr_we(i) = '1') and (pmpcfg(i)(cfg_l_c) = '0') | (pmpaddr_we(i) = '1') and (pmpcfg(i)(cfg_l_c) = '0') and (pmpcfg(i+1)(cfg_l_c) = '0') or (pmpcfg(i+1)(cfg_ah_c downto cfg_al_c) /= mode_tor_c)","lines":[170],"targets":["pmpaddr"]}
+    {"type":"GATES","at":[12,13],"guard":"(pmpaddr_we(i) = '1') and (pmpcfg(i)(cfg_l_c) = '0') and (pmpcfg(i+1)(cfg_l_c) = '0') or (pmpcfg(i+1)(cfg_ah_c downto cfg_al_c) /= mode_tor_c)","lines":[172],"targets":["pmpaddr"]}
+    {"type":"GATES","at":[16,17],"guard":"pmpcfg(i)(cfg_ah_c) = '0'","lines":[210,218],"targets":["addr_rd"]}
+    {"type":"GATES","at":[18],"guard":"not (pmpcfg(r)(cfg_al_c) = '1') | pmpcfg(r)(cfg_al_c) = '1'","lines":[266],"targets":["addr_mask"]}
+    {"type":"GATES","at":[20],"guard":"(pmpcfg(r)(cfg_ah_c downto cfg_al_c) = mode_tor_c) and TOR_EN | not ((pmpcfg(r)(cfg_ah_c downto cfg_al_c) = mode_tor_c) and TOR_EN) and (pmpcfg(r)(cfg_ah_c) = mode_napot_c(1)) and NAP_EN | not ((pmpcfg(r)(cfg_ah_c downto cfg_al_c) = mode_tor_c) and TOR_EN) and not ((pmpcfg(r)(cfg_ah_c) = mode_napot_c(1)) and NAP_EN)","lines":[303],"targets":["match"]}
+    {"type":"GATES","at":[21],"guard":"not ((pmpcfg(r)(cfg_ah_c downto cfg_al_c) = mode_tor_c) and TOR_EN) and (pmpcfg(r)(cfg_ah_c) = mode_napot_c(1)) and NAP_EN | not ((pmpcfg(r)(cfg_ah_c downto cfg_al_c) = mode_tor_c) and TOR_EN) and not ((pmpcfg(r)(cfg_ah_c) = mode_napot_c(1)) and NAP_EN)","lines":[309],"targets":["match"]}
+    {"type":"GATES","at":[23,24],"guard":"pmpcfg(r)(cfg_x_c) or (not pmpcfg(r)(cfg_l_c))","lines":[323],"targets":["allow"]}
+    {"type":"GATES","at":[26,27],"guard":"pmpcfg(r)(cfg_r_c) or (not pmpcfg(r)(cfg_l_c))","lines":[330],"targets":["allow"]}
+    {"type":"GATES","at":[29,30],"guard":"pmpcfg(r)(cfg_w_c) or (not pmpcfg(r)(cfg_l_c))","lines":[337],"targets":["allow"]}
+    {"type":"GATES","at":[3],"guard":"(pmpcfg_we(i/4) = '1') and (pmpcfg(i)(cfg_l_c) = '0')","lines":[127],"targets":["pmpcfg"]}
+    {"type":"SOURCES","at":[14],"lines":[203],"targets":["cfg_rd"]}
+    {"type":"SOURCES","at":[25,28,31],"lines":[325,332,339],"targets":["allow"]}
+    {"type":"CLOCKED_BY","at":[4,5,6,7,8,9,10],"lines":[129,130,131,138,140,143,145],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[125],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[4,5,6,7,8,9,10],"guard":"(pmpcfg_we(i/4) = '1') and (pmpcfg(i)(cfg_l_c) = '0')","lines":[129,130,131,138,140,143,145],"targets":["pmpcfg","pmpcfg_we"]}
+    {"type":"DERIVES_FROM","at":[4,5,6,8,10],"lines":[129,130,131,140,145],"targets":["ctrl_i.csr_wdata"]}
+SIGNAL {"name":"pmpcfg_we","entity":"neorv32_cpu_pmp","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":69},{"id":2,"line":112},{"id":3,"line":114},{"id":4,"line":127}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[112]},{"at":3,"value":"'1'","lines":[114]}]}
+    {"type":"GATES","at":[4],"guard":"(pmpcfg_we(i/4) = '1') and (pmpcfg(i)(cfg_l_c) = '0')","lines":[127],"targets":["pmpcfg"]}
+    {"type":"SELECTED_BY","at":[3],"guard":"(ctrl_i.csr_addr(11 downto 2) = csr_pmpcfg0_c(11 downto 2)) and (ctrl_i.csr_we = '1')","lines":[114],"targets":["ctrl_i.csr_addr"]}
+    {"type":"GATED_BY","at":[3],"guard":"(ctrl_i.csr_addr(11 downto 2) = csr_pmpcfg0_c(11 downto 2)) and (ctrl_i.csr_we = '1')","lines":[114],"targets":["ctrl_i.csr_addr","ctrl_i.csr_we"]}
+SIGNAL {"name":"pmpaddr","entity":"neorv32_cpu_pmp","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":73},{"id":2,"line":168},{"id":3,"line":173},{"id":4,"line":176},{"id":5,"line":205},{"id":6,"line":208},{"id":7,"line":257},{"id":8,"line":285},{"id":9,"line":295},{"id":10,"line":296}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[168]}]}
+    {"type":"CONSTRAINS","at":[10],"guard":"(unsigned(acc_addr(XLEN-1 downto pmp_lsb_c)) <  unsigned(pmpaddr(r  )(XLEN-3 downto pmp_lsb_c-2))) and TOR_EN","lines":[296],"targets":["cmp_lt"]}
+    {"type":"CONSTRAINS","at":[8],"guard":"((acc_addr(XLEN-1 downto pmp_lsb_c) and addr_mask(r)) = (pmpaddr(r)(XLEN-3 downto pmp_lsb_c-2) and addr_mask(r))) and NAP_EN","lines":[285],"targets":["cmp_na"]}
+    {"type":"CONSTRAINS","at":[9],"guard":"(unsigned(acc_addr(XLEN-1 downto pmp_lsb_c)) >= unsigned(pmpaddr(r-1)(XLEN-3 downto pmp_lsb_c-2))) and TOR_EN","lines":[295],"targets":["cmp_ge"]}
+    {"type":"GATES","at":[7],"guard":"addr_mask_napot(r)(i-1) or (not pmpaddr(r)(i-3))","lines":[257],"targets":["addr_mask_napot"]}
+    {"type":"SOURCES","at":[6],"lines":[208],"targets":["addr_rd"]}
+    {"type":"CLOCKED_BY","at":[3,4],"lines":[173,176],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[168],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"(pmpaddr_we(i) = '1') and (pmpcfg(i)(cfg_l_c) = '0')","lines":[173],"targets":["pmpaddr_we"]}
+    {"type":"GATED_BY","at":[4],"guard":"(pmpaddr_we(i) = '1') and (pmpcfg(i)(cfg_l_c) = '0')","lines":[176],"targets":["pmpaddr_we","pmpcfg"]}
+    {"type":"GATED_BY","at":[3],"guard":"(pmpaddr_we(i) = '1') and (pmpcfg(i)(cfg_l_c) = '0') and (pmpcfg(i+1)(cfg_l_c) = '0') or (pmpcfg(i+1)(cfg_ah_c downto cfg_al_c) /= mode_tor_c)","lines":[173],"targets":["pmpcfg"]}
+    {"type":"DERIVES_FROM","at":[3,4],"lines":[173,176],"targets":["ctrl_i.csr_wdata"]}
+SIGNAL {"name":"pmpaddr_we","entity":"neorv32_cpu_pmp","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":74},{"id":2,"line":156},{"id":3,"line":158},{"id":4,"line":170}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[156]},{"at":3,"value":"'1'","lines":[158]}]}
+    {"type":"GATES","at":[4],"guard":"(pmpaddr_we(i) = '1') and (pmpcfg(i)(cfg_l_c) = '0')","lines":[170],"targets":["pmpaddr"]}
+    {"type":"SELECTED_BY","at":[3],"guard":"(ctrl_i.csr_addr(11 downto 4) = csr_pmpaddr0_c(11 downto 4)) and (ctrl_i.csr_we = '1')","lines":[158],"targets":["ctrl_i.csr_addr"]}
+    {"type":"GATED_BY","at":[3],"guard":"(ctrl_i.csr_addr(11 downto 4) = csr_pmpaddr0_c(11 downto 4)) and (ctrl_i.csr_we = '1')","lines":[158],"targets":["ctrl_i.csr_addr","ctrl_i.csr_we"]}
+SIGNAL {"name":"cfg_rd","entity":"neorv32_cpu_pmp","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":80},{"id":2,"line":203},{"id":3,"line":229},{"id":4,"line":236},{"id":5,"line":236},{"id":6,"line":236},{"id":7,"line":236}]}
+    {"constant_drivers":[{"at":3,"value":"(others => '0')","lines":[229]}]}
+    {"type":"SOURCES","at":[4,5,6,7],"lines":[236],"targets":["cfg_rd32"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[203],"targets":["pmpcfg"]}
+SIGNAL {"name":"cfg_rd32","entity":"neorv32_cpu_pmp","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":81},{"id":2,"line":186},{"id":3,"line":190},{"id":4,"line":236}]}
+    {"type":"SOURCES","at":[3],"lines":[190],"targets":["csr_o"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[236],"targets":["cfg_rd"]}
+SIGNAL {"name":"addr_rd","entity":"neorv32_cpu_pmp","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":82},{"id":2,"line":186},{"id":3,"line":192},{"id":4,"line":207},{"id":5,"line":208},{"id":6,"line":211},{"id":7,"line":215},{"id":8,"line":219},{"id":9,"line":230}]}
+    {"constant_drivers":[{"at":4,"value":"(others => '0')","lines":[207]},{"at":6,"value":"'0'","lines":[211]},{"at":7,"value":"(others => '1')","lines":[215]},{"at":8,"value":"(others => '0')","lines":[219]},{"at":9,"value":"(others => '0')","lines":[230]}]}
+    {"configuration":[{"condition":"[static] (g_c = 8) and TOR_EN","at":[6],"lines":[211]},{"condition":"[static] NAP_EN","at":[7],"lines":[215]},{"condition":"[static] TOR_EN","at":[8],"lines":[219]},{"condition":"[static] g_c > 8","at":[7,8],"lines":[215,219]},{"condition":"[static] not ((g_c = 8) and TOR_EN)","at":[7,8],"lines":[215,219]}]}
+    {"type":"SOURCES","at":[3],"lines":[192],"targets":["csr_o"]}
+    {"type":"GATED_BY","at":[6,8],"guard":"pmpcfg(i)(cfg_ah_c) = '0'","lines":[211,219],"targets":["pmpcfg"]}
+    {"type":"DERIVES_FROM","at":[5],"lines":[208],"targets":["pmpaddr"]}
+SIGNAL {"name":"acc_addr","entity":"neorv32_cpu_pmp","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":85},{"id":2,"line":244},{"id":3,"line":285},{"id":4,"line":295},{"id":5,"line":296}]}
+    {"type":"CONSTRAINS","at":[3],"guard":"((acc_addr(XLEN-1 downto pmp_lsb_c) and addr_mask(r)) = (pmpaddr(r)(XLEN-3 downto pmp_lsb_c-2) and addr_mask(r))) and NAP_EN","lines":[285],"targets":["cmp_na"]}
+    {"type":"CONSTRAINS","at":[4],"guard":"(unsigned(acc_addr(XLEN-1 downto pmp_lsb_c)) >= unsigned(pmpaddr(r-1)(XLEN-3 downto pmp_lsb_c-2))) and TOR_EN","lines":[295],"targets":["cmp_ge"]}
+    {"type":"CONSTRAINS","at":[5],"guard":"(unsigned(acc_addr(XLEN-1 downto pmp_lsb_c)) <  unsigned(pmpaddr(r  )(XLEN-3 downto pmp_lsb_c-2))) and TOR_EN","lines":[296],"targets":["cmp_lt"]}
+    {"type":"GATED_BY","at":[2],"guard":"(ctrl_i.lsu_mo_we = '0')","lines":[244],"targets":["ctrl_i.lsu_mo_we"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[244],"targets":["addr_ls_i","ctrl_i.pc_nxt"]}
+SIGNAL {"name":"acc_priv","entity":"neorv32_cpu_pmp","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":86},{"id":2,"line":245},{"id":3,"line":318},{"id":4,"line":322},{"id":5,"line":329},{"id":6,"line":336},{"id":7,"line":351}]}
+    {"type":"GATES","at":[4,5,6],"guard":"acc_priv = priv_mode_m_c | not (acc_priv = priv_mode_m_c)","lines":[322,329,336],"targets":["allow"]}
+    {"type":"GATES","at":[7],"guard":"(acc_priv /= priv_mode_m_c)","lines":[351],"targets":["fail"]}
+    {"type":"GATED_BY","at":[2],"guard":"(ctrl_i.lsu_mo_we = '0')","lines":[245],"targets":["ctrl_i.lsu_mo_we"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[245],"targets":["ctrl_i.cpu_priv","ctrl_i.lsu_priv"]}
+SIGNAL {"name":"addr_mask_napot","entity":"neorv32_cpu_pmp","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":90},{"id":2,"line":254},{"id":3,"line":257},{"id":4,"line":257},{"id":5,"line":267},{"id":6,"line":278}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[254]},{"at":6,"value":"(others => '0')","lines":[278]}]}
+    {"configuration":[{"condition":"[generic] NAP_EN","at":[2,3],"lines":[254,257]},{"condition":"[generic] not NAP_EN","at":[6],"lines":[278]}]}
+    {"type":"GATES","at":[4],"guard":"addr_mask_napot(r)(i-1) or (not pmpaddr(r)(i-3))","lines":[257],"targets":["addr_mask_napot"]}
+    {"type":"SOURCES","at":[5],"lines":[267],"targets":["addr_mask"]}
+    {"type":"GATED_BY","at":[3],"guard":"addr_mask_napot(r)(i-1) or (not pmpaddr(r)(i-3))","lines":[257],"targets":["addr_mask_napot","pmpaddr"]}
+SIGNAL {"name":"addr_mask","entity":"neorv32_cpu_pmp","kind":"register","storage":"mixed"}
+    {"occurrences":[{"id":1,"line":90},{"id":2,"line":264},{"id":3,"line":267},{"id":4,"line":269},{"id":5,"line":279},{"id":6,"line":285},{"id":7,"line":285}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[264]},{"at":4,"value":"(others => '1')","lines":[269]},{"at":5,"value":"(others => '0')","lines":[279]}]}
+    {"configuration":[{"condition":"[generic] NAP_EN","at":[2,3,4],"lines":[264,267,269]},{"condition":"[generic] not NAP_EN","at":[5],"lines":[279]}]}
+    {"type":"CONSTRAINS","at":[6,7],"guard":"((acc_addr(XLEN-1 downto pmp_lsb_c) and addr_mask(r)) = (pmpaddr(r)(XLEN-3 downto pmp_lsb_c-2) and addr_mask(r))) and NAP_EN","lines":[285],"targets":["cmp_na"]}
+    {"type":"CLOCKED_BY","at":[3,4],"lines":[267,269],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[264],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"pmpcfg(r)(cfg_al_c) = '1'","lines":[267],"targets":["pmpcfg"]}
+    {"type":"GATED_BY","at":[4],"guard":"not (pmpcfg(r)(cfg_al_c) = '1')","lines":[269],"targets":["pmpcfg"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[267],"targets":["addr_mask_napot"]}
+SIGNAL {"name":"cmp_na","entity":"neorv32_cpu_pmp","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":93},{"id":2,"line":285},{"id":3,"line":301},{"id":4,"line":310}]}
+    {"type":"SOURCES","at":[4],"lines":[310],"targets":["match"]}
+    {"type":"CONSTRAINED_BY","at":[2],"guard":"((acc_addr(XLEN-1 downto pmp_lsb_c) and addr_mask(r)) = (pmpaddr(r)(XLEN-3 downto pmp_lsb_c-2) and addr_mask(r))) and NAP_EN","lines":[285],"targets":["acc_addr","addr_mask","pmpaddr"]}
+SIGNAL {"name":"cmp_ge","entity":"neorv32_cpu_pmp","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":93},{"id":2,"line":289},{"id":3,"line":295},{"id":4,"line":301},{"id":5,"line":305},{"id":6,"line":307},{"id":7,"line":307}]}
+    {"constant_drivers":[{"at":2,"value":"'1' when TOR_EN else '0'","lines":[289]}]}
+    {"configuration":[{"condition":"[generic] r = 0","at":[2],"lines":[289]},{"condition":"[generic] r > 0","at":[3],"lines":[295]}]}
+    {"type":"GATES","at":[5],"guard":"cmp_ge(r) and cmp_lt(r)","lines":[305],"targets":["match"]}
+    {"type":"GATES","at":[6,7],"guard":"cmp_ge(r) and (not cmp_ge(r+1))","lines":[307],"targets":["match"]}
+    {"type":"CONSTRAINED_BY","at":[3],"guard":"(unsigned(acc_addr(XLEN-1 downto pmp_lsb_c)) >= unsigned(pmpaddr(r-1)(XLEN-3 downto pmp_lsb_c-2))) and TOR_EN","lines":[295],"targets":["acc_addr","pmpaddr"]}
+SIGNAL {"name":"cmp_lt","entity":"neorv32_cpu_pmp","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":93},{"id":2,"line":290},{"id":3,"line":296},{"id":4,"line":301},{"id":5,"line":305}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[290]}]}
+    {"configuration":[{"condition":"[generic] r = 0","at":[2],"lines":[290]},{"condition":"[generic] r > 0","at":[3],"lines":[296]}]}
+    {"type":"GATES","at":[5],"guard":"cmp_ge(r) and cmp_lt(r)","lines":[305],"targets":["match"]}
+    {"type":"CONSTRAINED_BY","at":[3],"guard":"(unsigned(acc_addr(XLEN-1 downto pmp_lsb_c)) <  unsigned(pmpaddr(r  )(XLEN-3 downto pmp_lsb_c-2))) and TOR_EN","lines":[296],"targets":["acc_addr","pmpaddr"]}
+SIGNAL {"name":"match","entity":"neorv32_cpu_pmp","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":96},{"id":2,"line":305},{"id":3,"line":307},{"id":4,"line":310},{"id":5,"line":312},{"id":6,"line":354}]}
+    {"constant_drivers":[{"at":5,"value":"'0'","lines":[312]}]}
+    {"type":"GATES","at":[6],"guard":"(match(r) = '1')","lines":[354],"targets":["fail"]}
+    {"type":"GATED_BY","at":[2],"guard":"cmp_ge(r) and cmp_lt(r)","lines":[305],"targets":["cmp_ge","cmp_lt"]}
+    {"type":"GATED_BY","at":[2,3],"guard":"(pmpcfg(r)(cfg_ah_c downto cfg_al_c) = mode_tor_c) and TOR_EN","lines":[305,307],"targets":["pmpcfg"]}
+    {"type":"GATED_BY","at":[3],"guard":"cmp_ge(r) and (not cmp_ge(r+1))","lines":[307],"targets":["cmp_ge"]}
+    {"type":"GATED_BY","at":[4],"guard":"not ((pmpcfg(r)(cfg_ah_c downto cfg_al_c) = mode_tor_c) and TOR_EN) and (pmpcfg(r)(cfg_ah_c) = mode_napot_c(1)) and NAP_EN","lines":[310],"targets":["pmpcfg"]}
+    {"type":"GATED_BY","at":[5],"guard":"not ((pmpcfg(r)(cfg_ah_c downto cfg_al_c) = mode_tor_c) and TOR_EN) and not ((pmpcfg(r)(cfg_ah_c) = mode_napot_c(1)) and NAP_EN)","lines":[312],"targets":["pmpcfg"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[310],"targets":["cmp_na"]}
+SIGNAL {"name":"allow","entity":"neorv32_cpu_pmp","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":97},{"id":2,"line":323},{"id":3,"line":325},{"id":4,"line":330},{"id":5,"line":332},{"id":6,"line":337},{"id":7,"line":339},{"id":8,"line":354}]}
+    {"type":"SOURCES","at":[8],"lines":[354],"targets":["fail"]}
+    {"type":"GATED_BY","at":[2,4,6],"guard":"acc_priv = priv_mode_m_c","lines":[323,330,337],"targets":["acc_priv"]}
+    {"type":"GATED_BY","at":[2,3],"guard":"ctrl_i.lsu_mo_we = '0'","lines":[323,325],"targets":["ctrl_i.lsu_mo_we"]}
+    {"type":"GATED_BY","at":[2],"guard":"pmpcfg(r)(cfg_x_c) or (not pmpcfg(r)(cfg_l_c))","lines":[323],"targets":["pmpcfg"]}
+    {"type":"GATED_BY","at":[3,5,7],"guard":"not (acc_priv = priv_mode_m_c)","lines":[325,332,339],"targets":["acc_priv"]}
+    {"type":"GATED_BY","at":[4,5,6,7],"guard":"not (ctrl_i.lsu_mo_we = '0')","lines":[330,332,337,339],"targets":["ctrl_i.lsu_mo_we"]}
+    {"type":"GATED_BY","at":[4,5],"guard":"ctrl_i.lsu_rw = '0'","lines":[330,332],"targets":["ctrl_i.lsu_rw"]}
+    {"type":"GATED_BY","at":[4],"guard":"pmpcfg(r)(cfg_r_c) or (not pmpcfg(r)(cfg_l_c))","lines":[330],"targets":["pmpcfg"]}
+    {"type":"GATED_BY","at":[6,7],"guard":"not (ctrl_i.lsu_rw = '0')","lines":[337,339],"targets":["ctrl_i.lsu_rw"]}
+    {"type":"GATED_BY","at":[6],"guard":"pmpcfg(r)(cfg_w_c) or (not pmpcfg(r)(cfg_l_c))","lines":[337],"targets":["pmpcfg"]}
+    {"type":"DERIVES_FROM","at":[3,5,7],"lines":[325,332,339],"targets":["pmpcfg"]}
+SIGNAL {"name":"fail","entity":"neorv32_cpu_pmp","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":98},{"id":2,"line":351},{"id":3,"line":354},{"id":4,"line":354},{"id":5,"line":363}]}
+    {"type":"GATES","at":[5],"guard":"(not ctrl_i.cpu_debug) and fail(0)","lines":[363],"targets":["fault_o"]}
+    {"type":"SOURCES","at":[4],"lines":[354],"targets":["fail"]}
+    {"type":"GATED_BY","at":[2],"guard":"(acc_priv /= priv_mode_m_c)","lines":[351],"targets":["acc_priv"]}
+    {"type":"GATED_BY","at":[3],"guard":"(match(r) = '1')","lines":[354],"targets":["match"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[354],"targets":["allow","fail"]}
+
+=== RELATIONSHIP MAP: FLOW GRAPH (computed by a program from the records above) ===
+MAP CHECK {"elements":62,"driving records":60,"receiving records":60,"driving without receiving":0,"receiving without driving":0}
+    {"clock or reset (drive SEQUENCES / RESETS)":["clk_i","rstn_i"]}
+    {"whole records (their fields carry the records)":["ctrl_i"]}
+    {"self-updating (X is computed from X: counters, state registers)":["fail"]}
+PATH {"from":"addr_mask_napot","source":"constant-valued"}
+    {"stores":["addr_mask"]}
+    {"influence":["pmpaddr","pmpcfg"]}
+PATH {"from":"ctrl_i.csr_wdata","source":"input"}
+    {"stores":["pmpaddr","pmpcfg"]}
+    {"exits":["csr_o"]}
+    {"influence":["acc_priv","ctrl_i.csr_addr","ctrl_i.lsu_mo_we","ctrl_i.lsu_rw","match","pmpaddr_we","pmpcfg","pmpcfg_we"]}
+CONTROL-ONLY {"from":"cmp_ge","source":"constant-valued","gates or selects":["match"]}
+CONTROL-ONLY {"from":"cmp_lt","source":"constant-valued","gates or selects":["match"]}
+CONTROL-ONLY {"from":"ctrl_i.cpu_debug","source":"input","gates or selects":["fault_o"]}
+CONTROL-ONLY {"from":"ctrl_i.csr_addr","source":"input","gates or selects":["csr_o","pmpaddr_we","pmpcfg_we"]}
+CONTROL-ONLY {"from":"ctrl_i.csr_we","source":"input","gates or selects":["pmpaddr_we","pmpcfg_we"]}
+CONTROL-ONLY {"from":"ctrl_i.lsu_mo_we","source":"input","gates or selects":["acc_addr","acc_priv","allow"]}
+CONTROL-ONLY {"from":"ctrl_i.lsu_rw","source":"input","gates or selects":["allow"]}
+CONTROL-ONLY {"from":"pmpaddr_we","source":"constant-valued","gates or selects":["pmpaddr"]}
+CONTROL-ONLY {"from":"pmpcfg_we","source":"constant-valued","gates or selects":["pmpcfg"]}
+    {"no local use (no relationship, connection or constant driver)":["ctrl_i.alu_cp_alu","ctrl_i.alu_cp_cfu","ctrl_i.alu_cp_fpu","ctrl_i.alu_imm","ctrl_i.alu_op","ctrl_i.alu_opa_mux","ctrl_i.alu_opb_mux","ctrl_i.alu_sub","ctrl_i.alu_unsigned","ctrl_i.cnt_event","ctrl_i.cnt_halt","ctrl_i.cpu_sleep","ctrl_i.cpu_trap","ctrl_i.csr_re","ctrl_i.if_ack","ctrl_i.if_fence","ctrl_i.if_reset","ctrl_i.ir_funct12","ctrl_i.ir_funct3","ctrl_i.ir_opcode","ctrl_i.lsu_amo","ctrl_i.lsu_fence","ctrl_i.lsu_req","ctrl_i.pc_cur","ctrl_i.pc_ret","ctrl_i.rf_rd","ctrl_i.rf_rs1","ctrl_i.rf_rs2","ctrl_i.rf_wb_en","ctrl_i.rf_zero_we"]}
+    {"not reached from an input or constant-valued element":["cmp_na","match"]}
+
+Identify the primary security assets for 'neorv32_cpu_pmp' and return the JSON object per the contract.

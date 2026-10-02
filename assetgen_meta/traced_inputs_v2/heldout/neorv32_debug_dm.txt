@@ -1,0 +1,1281 @@
+TARGET IP MODULE: neorv32_debug_dm
+
+=== RTL (comments removed, blank lines left out; each line starts with its line number in the source file) ===
+   21 | entity neorv32_debug_dm is
+   22 |   generic (
+   23 |     NUM_HARTS     : natural range 1 to 4 := 1;
+   24 |     AUTHENTICATOR : boolean := false
+   25 |   );
+   26 |   port (
+   28 |     clk_i      : in  std_ulogic;
+   29 |     rstn_i     : in  std_ulogic;
+   31 |     dmi_req_i  : in  dmi_req_t;
+   32 |     dmi_rsp_o  : out dmi_rsp_t;
+   34 |     bus_req_i  : in  bus_req_t;
+   35 |     bus_rsp_o  : out bus_rsp_t;
+   37 |     ndmrstn_o  : out std_ulogic;
+   38 |     halt_req_o : out std_ulogic_vector(NUM_HARTS-1 downto 0)
+   39 |   );
+   40 | end neorv32_debug_dm;
+
+   42 | architecture neorv32_debug_dm_rtl of neorv32_debug_dm is
+   45 |   constant dm_code_base_c : std_ulogic_vector(31 downto 0) := x"fffffe00";
+   46 |   constant dm_pbuf_base_c : std_ulogic_vector(31 downto 0) := x"fffffe80";
+   47 |   constant dm_data_base_c : std_ulogic_vector(31 downto 0) := x"ffffff00";
+   48 |   constant dm_sreg_base_c : std_ulogic_vector(31 downto 0) := x"ffffff80";
+   51 |   constant instr_nop_c    : std_ulogic_vector(31 downto 0) := x"00000013";
+   52 |   constant instr_lw_c     : std_ulogic_vector(31 downto 0) := x"00002003";
+   53 |   constant instr_sw_c     : std_ulogic_vector(31 downto 0) := x"00002023";
+   54 |   constant instr_ebreak_c : std_ulogic_vector(31 downto 0) := x"00100073";
+   61 |   constant addr_data0_c        : std_ulogic_vector(6 downto 0) := "0000100";
+   62 |   constant addr_dmcontrol_c    : std_ulogic_vector(6 downto 0) := "0010000";
+   63 |   constant addr_dmstatus_c     : std_ulogic_vector(6 downto 0) := "0010001";
+   64 |   constant addr_hartinfo_c     : std_ulogic_vector(6 downto 0) := "0010010";
+   65 |   constant addr_abstractcs_c   : std_ulogic_vector(6 downto 0) := "0010110";
+   66 |   constant addr_command_c      : std_ulogic_vector(6 downto 0) := "0010111";
+   67 |   constant addr_abstractauto_c : std_ulogic_vector(6 downto 0) := "0011000";
+   69 |   constant addr_progbuf0_c     : std_ulogic_vector(6 downto 0) := "0100000";
+   70 |   constant addr_progbuf1_c     : std_ulogic_vector(6 downto 0) := "0100001";
+   71 |   constant addr_authdata_c     : std_ulogic_vector(6 downto 0) := "0110000";
+   73 |   constant addr_haltsum0_c     : std_ulogic_vector(6 downto 0) := "1000000";
+   76 |   signal dmi_wren, dmi_wren_auth, dmi_rden, dmi_rden_auth : std_ulogic;
+   79 |   type progbuf_t is array (0 to 1) of std_ulogic_vector(31 downto 0);
+   80 |   type dm_reg_t is record
+   81 |     dmcontrol_ndmreset           : std_ulogic;
+   82 |     dmcontrol_dmactive           : std_ulogic;
+   83 |     abstractauto_autoexecdata    : std_ulogic;
+   84 |     abstractauto_autoexecprogbuf : std_ulogic_vector(1 downto 0);
+   85 |     progbuf                      : progbuf_t;
+   86 |     command                      : std_ulogic_vector(31 downto 0);
+   88 |     halt_req    : std_ulogic;
+   89 |     req_res     : std_ulogic;
+   90 |     reset_ack   : std_ulogic;
+   91 |     hartsel     : std_ulogic_vector(1+1 downto 0);
+   92 |     hartsel_dec : std_ulogic_vector(NUM_HARTS-1 downto 0);
+   93 |     hartsel_inv : std_ulogic;
+   94 |     wr_acc_err  : std_ulogic;
+   95 |     rd_acc_err  : std_ulogic;
+   96 |     clr_acc_err : std_ulogic;
+   97 |     autoexec_wr : std_ulogic;
+   98 |     autoexec_rd : std_ulogic;
+   99 |   end record;
+  100 |   signal dm_reg : dm_reg_t;
+  103 |   type cpu_progbuf_t is array (0 to 3) of std_ulogic_vector(31 downto 0);
+  104 |   signal cpu_progbuf : cpu_progbuf_t;
+  111 |   constant dataaddr_c : std_ulogic_vector(11 downto 0) := dm_data_base_c(11 downto 0);
+  114 |   type dm_ctrl_state_t is (CMD_IDLE, CMD_CHECK, CMD_PREPARE, CMD_TRIGGER, CMD_BUSY, CMD_ERROR);
+  115 |   type dm_ctrl_t is record
+  117 |     state           : dm_ctrl_state_t;
+  118 |     busy            : std_ulogic;
+  119 |     ldsw_progbuf    : std_ulogic_vector(31 downto 0);
+  120 |     pbuf_en         : std_ulogic;
+  122 |     illegal_state   : std_ulogic;
+  123 |     illegal_cmd     : std_ulogic;
+  124 |     cmderr          : std_ulogic_vector(2 downto 0);
+  126 |     hart_halted     : std_ulogic_vector(NUM_HARTS-1 downto 0);
+  127 |     hart_resume_req : std_ulogic_vector(NUM_HARTS-1 downto 0);
+  128 |     hart_resume_ack : std_ulogic_vector(NUM_HARTS-1 downto 0);
+  129 |     hart_reset      : std_ulogic_vector(NUM_HARTS-1 downto 0);
+  130 |   end record;
+  131 |   signal dm_ctrl : dm_ctrl_t;
+  134 |   type auth_t is record
+  135 |     busy  : std_ulogic;
+  136 |     valid : std_ulogic;
+  137 |     re    : std_ulogic;
+  138 |     we    : std_ulogic;
+  139 |     rdata : std_ulogic_vector(31 downto 0);
+  140 |   end record;
+  141 |   signal auth : auth_t;
+  149 |   type code_rom_t is array (0 to 31) of std_ulogic_vector(31 downto 0);
+  150 |   constant code_rom_c : code_rom_t := (
+  151 |     00 => x"f8002623",
+  152 |     01 => x"7b241073",
+  153 |     02 => x"f1402473",
+  154 |     03 => x"f8802023",
+  155 |     04 => x"f1402473",
+  156 |     05 => x"f8044403",
+  157 |     06 => x"00247413",
+  158 |     07 => x"02041663",
+  159 |     08 => x"f1402473",
+  160 |     09 => x"f8044403",
+  161 |     10 => x"00147413",
+  162 |     11 => x"fe0402e3",
+  163 |     12 => x"f1402473",
+  164 |     13 => x"f8802223",
+  165 |     14 => x"7b202473",
+  166 |     15 => x"0ff0000f",
+  167 |     16 => x"0000100f",
+  168 |     17 => x"7b200073",
+  169 |     18 => x"f1402473",
+  170 |     19 => x"f8802423",
+  171 |     20 => x"7b202473",
+  172 |     21 => x"e8000067",
+  173 |     22 => x"00000073",
+  174 |     23 => x"00000073",
+  175 |     24 => x"00000073",
+  176 |     25 => x"00000073",
+  177 |     26 => x"00000073",
+  178 |     27 => x"00000073",
+  179 |     28 => x"00000073",
+  180 |     29 => x"00000073",
+  181 |     30 => x"00000073",
+  182 |     31 => x"00000073"
+  183 |   );
+  186 |   signal accen, rden, wren : std_ulogic;
+  189 |   signal cpu_rsp_dec : std_ulogic_vector(NUM_HARTS-1 downto 0);
+  192 |   type dci_t is record
+  193 |     ack_hlt     : std_ulogic_vector(NUM_HARTS-1 downto 0);
+  194 |     req_res     : std_ulogic_vector(NUM_HARTS-1 downto 0);
+  195 |     ack_res     : std_ulogic_vector(NUM_HARTS-1 downto 0);
+  196 |     req_exe     : std_ulogic_vector(NUM_HARTS-1 downto 0);
+  197 |     ack_exe     : std_ulogic_vector(NUM_HARTS-1 downto 0);
+  198 |     ack_exc     : std_ulogic;
+  199 |     data_reg_we : std_ulogic;
+  200 |     data_reg    : std_ulogic_vector(31 downto 0);
+  201 |   end record;
+  202 |   signal dci : dci_t;
+  204 | begin
+  209 |   dmi_wren <= '1' when (dmi_req_i.op = dmi_req_wr_c) else '0';
+  210 |   dmi_rden <= '1' when (dmi_req_i.op = dmi_req_rd_c) else '0';
+  212 |   dmi_wren_auth <= dmi_wren when (not AUTHENTICATOR) or (auth.valid = '1') else '0';
+  213 |   dmi_rden_auth <= dmi_rden when (not AUTHENTICATOR) or (auth.valid = '1') else '0';
+  218 |   dm_controller: process(rstn_i, clk_i)
+  219 |   begin
+  220 |     if (rstn_i = '0') then
+  221 |       dm_ctrl.state         <= CMD_IDLE;
+  222 |       dm_ctrl.ldsw_progbuf  <= (others => '0');
+  223 |       dci.req_exe           <= (others => '0');
+  224 |       dm_ctrl.pbuf_en       <= '0';
+  225 |       dm_ctrl.illegal_cmd   <= '0';
+  226 |       dm_ctrl.illegal_state <= '0';
+  227 |       dm_ctrl.cmderr        <= (others => '0');
+  228 |     elsif rising_edge(clk_i) then
+  229 |       if (dm_reg.dmcontrol_dmactive = '0') then
+  230 |         dm_ctrl.state         <= CMD_IDLE;
+  231 |         dm_ctrl.ldsw_progbuf  <= instr_sw_c;
+  232 |         dci.req_exe           <= (others => '0');
+  233 |         dm_ctrl.pbuf_en       <= '0';
+  234 |         dm_ctrl.illegal_cmd   <= '0';
+  235 |         dm_ctrl.illegal_state <= '0';
+  236 |         dm_ctrl.cmderr        <= (others => '0');
+  237 |       else
+  240 |         dci.req_exe           <= (others => '0');
+  241 |         dm_ctrl.illegal_cmd   <= '0';
+  242 |         dm_ctrl.illegal_state <= '0';
+  245 |         case dm_ctrl.state is
+  247 |           when CMD_IDLE =>
+  249 |             if (dmi_wren_auth = '1') then
+  250 |               if (dmi_req_i.addr = addr_command_c) then
+  251 |                 if (dm_ctrl.cmderr = "000") then
+  252 |                   dm_ctrl.state <= CMD_CHECK;
+  253 |                 end if;
+  254 |               end if;
+  255 |             elsif (dm_reg.autoexec_rd = '1') or (dm_reg.autoexec_wr = '1') then
+  256 |               dm_ctrl.state <= CMD_CHECK;
+  257 |             end if;
+  259 |           when CMD_CHECK =>
+  261 |             if (dm_reg.command(31 downto 24) = x"00") and
+  262 |                (dm_reg.command(23) = '0') and
+  263 |                (dm_reg.command(22 downto 20) = "010") and
+  264 |                (dm_reg.command(19) = '0') and
+  265 |                ((dm_reg.command(17) = '0') or (dm_reg.command(15 downto 5) = "00010000000")) then
+  266 |               if (or_reduce_f(dm_ctrl.hart_halted and dm_reg.hartsel_dec) = '1') then
+  267 |                 dm_ctrl.state <= CMD_PREPARE;
+  268 |               else
+  269 |                 dm_ctrl.illegal_state <= '1';
+  270 |                 dm_ctrl.state         <= CMD_ERROR;
+  271 |               end if;
+  272 |             else
+  273 |               dm_ctrl.illegal_cmd <= '1';
+  274 |               dm_ctrl.state       <= CMD_ERROR;
+  275 |             end if;
+  277 |           when CMD_PREPARE =>
+  279 |             if (dm_reg.command(17) = '1') then
+  280 |               if (dm_reg.command(16) = '0') then
+  281 |                 dm_ctrl.ldsw_progbuf <= instr_sw_c;
+  282 |                 dm_ctrl.ldsw_progbuf(31 downto 25) <= dataaddr_c(11 downto 5);
+  283 |                 dm_ctrl.ldsw_progbuf(24 downto 20) <= dm_reg.command(4 downto 0);
+  284 |                 dm_ctrl.ldsw_progbuf(11 downto 07) <= dataaddr_c(4 downto 0);
+  285 |               else
+  286 |                 dm_ctrl.ldsw_progbuf <= instr_lw_c;
+  287 |                 dm_ctrl.ldsw_progbuf(31 downto 20) <= dataaddr_c(11 downto 0);
+  288 |                 dm_ctrl.ldsw_progbuf(11 downto 07) <= dm_reg.command(4 downto 0);
+  289 |               end if;
+  290 |             else
+  291 |               dm_ctrl.ldsw_progbuf <= instr_nop_c;
+  292 |             end if;
+  293 |             dm_ctrl.pbuf_en <= dm_reg.command(18);
+  294 |             dm_ctrl.state   <= CMD_TRIGGER;
+  296 |           when CMD_TRIGGER =>
+  298 |             dci.req_exe <= dm_reg.hartsel_dec;
+  299 |             if (or_reduce_f(dci.ack_exe and dm_reg.hartsel_dec) = '1') then
+  300 |               dm_ctrl.state <= CMD_BUSY;
+  301 |             end if;
+  303 |           when CMD_BUSY =>
+  305 |             if (or_reduce_f(dci.ack_hlt and dm_reg.hartsel_dec) = '1') then
+  306 |               dm_ctrl.state <= CMD_IDLE;
+  307 |             end if;
+  309 |           when CMD_ERROR =>
+  311 |             dm_ctrl.state <= CMD_IDLE;
+  313 |           when others =>
+  315 |             dm_ctrl.state <= CMD_IDLE;
+  317 |         end case;
+  320 |         if (dm_ctrl.cmderr = "000") then
+  321 |           if (dm_ctrl.illegal_state = '1') then
+  322 |             dm_ctrl.cmderr <= "100";
+  323 |           elsif (dci.ack_exc = '1') then
+  324 |             dm_ctrl.cmderr <= "011";
+  325 |           elsif (dm_ctrl.illegal_cmd = '1') then
+  326 |             dm_ctrl.cmderr <= "010";
+  327 |           elsif (dm_reg.rd_acc_err = '1') or (dm_reg.wr_acc_err = '1') then
+  328 |             dm_ctrl.cmderr <= "001";
+  329 |           end if;
+  330 |         elsif (dm_reg.clr_acc_err = '1') then
+  331 |           dm_ctrl.cmderr <= "000";
+  332 |         end if;
+  334 |       end if;
+  335 |     end if;
+  336 |   end process dm_controller;
+  339 |   dm_ctrl.busy <= '0' when (dm_ctrl.state = CMD_IDLE) else '1';
+  344 |   hart_status: process(rstn_i, clk_i)
+  345 |   begin
+  346 |     if (rstn_i = '0') then
+  347 |       dm_ctrl.hart_halted     <= (others => '0');
+  348 |       dm_ctrl.hart_resume_req <= (others => '0');
+  349 |       dm_ctrl.hart_resume_ack <= (others => '0');
+  350 |       dm_ctrl.hart_reset      <= (others => '0');
+  351 |     elsif rising_edge(clk_i) then
+  352 |       for i in 0 to NUM_HARTS-1 loop
+  355 |         if (dm_reg.dmcontrol_ndmreset = '1') then
+  356 |           dm_ctrl.hart_halted(i) <= '0';
+  357 |         elsif (dci.ack_hlt(i) = '1') then
+  358 |           dm_ctrl.hart_halted(i) <= '1';
+  359 |         elsif (dci.ack_res(i) = '1') then
+  360 |           dm_ctrl.hart_halted(i) <= '0';
+  361 |         end if;
+  364 |         if (dm_reg.dmcontrol_ndmreset = '1') then
+  365 |           dm_ctrl.hart_resume_req(i) <= '0';
+  366 |         elsif (dm_reg.req_res = '1') and (dm_reg.hartsel_dec(i) = '1') then
+  367 |           dm_ctrl.hart_resume_req(i) <= '1';
+  368 |         elsif (dci.ack_res(i) = '1') then
+  369 |           dm_ctrl.hart_resume_req(i) <= '0';
+  370 |         end if;
+  373 |         if (dm_reg.dmcontrol_ndmreset = '1') then
+  374 |           dm_ctrl.hart_resume_ack(i) <= '0';
+  375 |         elsif (dci.ack_res(i) = '1') then
+  376 |           dm_ctrl.hart_resume_ack(i) <= '1';
+  377 |         elsif (dm_reg.req_res = '1') and (dm_reg.hartsel_dec(i) = '1') then
+  378 |           dm_ctrl.hart_resume_ack(i) <= '0';
+  379 |         end if;
+  382 |         if (dm_reg.dmcontrol_ndmreset = '1') then
+  383 |           dm_ctrl.hart_reset(i) <= '1';
+  384 |         elsif (dm_reg.reset_ack = '1') and (dm_reg.hartsel_dec(i) = '1') then
+  385 |           dm_ctrl.hart_reset(i) <= '0';
+  386 |         end if;
+  388 |       end loop;
+  389 |     end if;
+  390 |   end process hart_status;
+  395 |   dmi_write_access: process(rstn_i, clk_i)
+  396 |   begin
+  397 |     if (rstn_i = '0') then
+  398 |       dm_reg.dmcontrol_ndmreset <= '0';
+  399 |       dm_reg.dmcontrol_dmactive <= '0';
+  401 |       dm_reg.abstractauto_autoexecdata    <= '0';
+  402 |       dm_reg.abstractauto_autoexecprogbuf <= "00";
+  404 |       dm_reg.command <= (others => '0');
+  405 |       dm_reg.progbuf <= (others => instr_nop_c);
+  407 |       dm_reg.halt_req    <= '0';
+  408 |       dm_reg.req_res     <= '0';
+  409 |       dm_reg.reset_ack   <= '0';
+  410 |       dm_reg.hartsel     <= (others => '0');
+  411 |       dm_reg.wr_acc_err  <= '0';
+  412 |       dm_reg.clr_acc_err <= '0';
+  413 |       dm_reg.autoexec_wr <= '0';
+  414 |     elsif rising_edge(clk_i) then
+  417 |       dm_reg.req_res     <= '0';
+  418 |       dm_reg.reset_ack   <= '0';
+  419 |       dm_reg.wr_acc_err  <= '0';
+  420 |       dm_reg.clr_acc_err <= '0';
+  421 |       dm_reg.autoexec_wr <= '0';
+  424 |       if (dmi_req_i.addr = addr_dmcontrol_c) then
+  425 |         if (dmi_wren_auth = '1') then
+  426 |           dm_reg.halt_req           <= dmi_req_i.data(31);
+  427 |           dm_reg.req_res            <= dmi_req_i.data(30);
+  428 |           dm_reg.reset_ack          <= dmi_req_i.data(28);
+  429 |           dm_reg.hartsel            <= dmi_req_i.data(18 downto 16);
+  430 |           dm_reg.dmcontrol_ndmreset <= dmi_req_i.data(1);
+  431 |         end if;
+  432 |         if (dmi_wren = '1') then
+  433 |           dm_reg.dmcontrol_dmactive <= dmi_req_i.data(0);
+  434 |         end if;
+  435 |       end if;
+  438 |       if (dmi_req_i.addr = addr_command_c) and (dmi_wren_auth = '1') and (dm_ctrl.busy = '0') and (dm_ctrl.cmderr = "000") then
+  439 |         dm_reg.command <= dmi_req_i.data;
+  440 |       end if;
+  443 |       if (dmi_req_i.addr = addr_abstractauto_c) and (dmi_wren_auth = '1') and (dm_ctrl.busy = '0') then
+  444 |         dm_reg.abstractauto_autoexecdata       <= dmi_req_i.data(0);
+  445 |         dm_reg.abstractauto_autoexecprogbuf(0) <= dmi_req_i.data(16);
+  446 |         dm_reg.abstractauto_autoexecprogbuf(1) <= dmi_req_i.data(17);
+  447 |       end if;
+  450 |       if ((dmi_req_i.addr = addr_data0_c)    and (dm_reg.abstractauto_autoexecdata = '1')) or
+  451 |          ((dmi_req_i.addr = addr_progbuf0_c) and (dm_reg.abstractauto_autoexecprogbuf(0) = '1')) or
+  452 |          ((dmi_req_i.addr = addr_progbuf1_c) and (dm_reg.abstractauto_autoexecprogbuf(1) = '1')) then
+  453 |         if (dmi_wren_auth = '1') then
+  454 |           dm_reg.autoexec_wr <= '1';
+  455 |         end if;
+  456 |       end if;
+  459 |       if (dmi_req_i.addr = addr_abstractcs_c) and (dmi_wren_auth = '1') and (dmi_req_i.data(10 downto 8) = "111") then
+  460 |         dm_reg.clr_acc_err <= '1';
+  461 |       end if;
+  464 |       if (dmi_req_i.addr = addr_progbuf0_c) and (dmi_wren_auth = '1') and (dm_ctrl.busy = '0') then
+  465 |         dm_reg.progbuf(0) <= dmi_req_i.data;
+  466 |       end if;
+  469 |       if (dmi_req_i.addr = addr_progbuf1_c) and (dmi_wren_auth = '1') and (dm_ctrl.busy = '0') then
+  470 |         dm_reg.progbuf(1) <= dmi_req_i.data;
+  471 |       end if;
+  474 |       if (dmi_wren_auth = '1') and (dm_ctrl.busy = '1') and
+  475 |          ((dmi_req_i.addr = addr_abstractcs_c)   or (dmi_req_i.addr = addr_command_c)  or
+  476 |           (dmi_req_i.addr = addr_abstractauto_c) or (dmi_req_i.addr = addr_data0_c)    or
+  477 |           (dmi_req_i.addr = addr_progbuf0_c)     or (dmi_req_i.addr = addr_progbuf1_c)) then
+  478 |         dm_reg.wr_acc_err <= '1';
+  479 |       end if;
+  481 |     end if;
+  482 |   end process dmi_write_access;
+  485 |   hartsel_decode:
+  486 |   for i in 0 to NUM_HARTS-1 generate
+  487 |     dm_reg.hartsel_dec(i) <= '1' when (dm_reg.hartsel(2) = '0') and (dm_reg.hartsel(1 downto 0) = std_ulogic_vector(to_unsigned(i, 2))) else '0';
+  488 |   end generate;
+  489 |   dm_reg.hartsel_inv <= '0' when (unsigned(dm_reg.hartsel) < NUM_HARTS) else '1';
+  495 |   dci.data_reg_we <= '1' when (dmi_wren_auth = '1') and (dmi_req_i.addr = addr_data0_c) and (dm_ctrl.busy = '0') else '0';
+  498 |   request_gen:
+  499 |   for i in 0 to NUM_HARTS-1 generate
+  500 |     halt_req_o(i)  <= dm_reg.halt_req and dm_reg.hartsel_dec(i) and dm_reg.dmcontrol_dmactive when ((not AUTHENTICATOR) or (auth.valid = '1')) else '0';
+  501 |     dci.req_res(i) <= dm_ctrl.hart_resume_req(i);
+  502 |   end generate;
+  505 |   ndmrstn_o <= '0' when (dm_reg.dmcontrol_ndmreset = '1') and (dm_reg.dmcontrol_dmactive = '1') and ((not AUTHENTICATOR) or (auth.valid = '1')) else '1';
+  508 |   cpu_progbuf(0) <= dm_ctrl.ldsw_progbuf;
+  509 |   cpu_progbuf(1) <= instr_nop_c when (dm_ctrl.pbuf_en = '0') else dm_reg.progbuf(0);
+  510 |   cpu_progbuf(2) <= instr_nop_c when (dm_ctrl.pbuf_en = '0') else dm_reg.progbuf(1);
+  511 |   cpu_progbuf(3) <= instr_ebreak_c;
+  516 |   dmi_read_access: process(rstn_i, clk_i)
+  517 |   begin
+  518 |     if (rstn_i = '0') then
+  519 |       dmi_rsp_o.ack      <= '0';
+  520 |       dmi_rsp_o.data     <= (others => '0');
+  521 |       dm_reg.rd_acc_err  <= '0';
+  522 |       dm_reg.autoexec_rd <= '0';
+  523 |     elsif rising_edge(clk_i) then
+  524 |       dmi_rsp_o.ack  <= dmi_wren or dmi_rden;
+  525 |       dmi_rsp_o.data <= (others => '0');
+  526 |       case dmi_req_i.addr is
+  529 |         when addr_dmstatus_c =>
+  530 |           if (not AUTHENTICATOR) or (auth.valid = '1') then
+  531 |             dmi_rsp_o.data(31 downto 23) <= (others => '0');
+  532 |             dmi_rsp_o.data(22)           <= '1';
+  533 |             dmi_rsp_o.data(21 downto 20) <= (others => '0');
+  534 |             dmi_rsp_o.data(19)           <= or_reduce_f(dm_ctrl.hart_reset and dm_reg.hartsel_dec);
+  535 |             dmi_rsp_o.data(18)           <= or_reduce_f(dm_ctrl.hart_reset and dm_reg.hartsel_dec);
+  536 |             dmi_rsp_o.data(17)           <= or_reduce_f(dm_ctrl.hart_resume_ack and dm_reg.hartsel_dec);
+  537 |             dmi_rsp_o.data(16)           <= or_reduce_f(dm_ctrl.hart_resume_ack and dm_reg.hartsel_dec);
+  538 |             dmi_rsp_o.data(15)           <= dm_reg.hartsel_inv;
+  539 |             dmi_rsp_o.data(14)           <= dm_reg.hartsel_inv;
+  540 |             dmi_rsp_o.data(13)           <= dm_reg.dmcontrol_ndmreset;
+  541 |             dmi_rsp_o.data(12)           <= dm_reg.dmcontrol_ndmreset;
+  542 |             dmi_rsp_o.data(11)           <= not or_reduce_f(dm_ctrl.hart_halted and dm_reg.hartsel_dec);
+  543 |             dmi_rsp_o.data(10)           <= not or_reduce_f(dm_ctrl.hart_halted and dm_reg.hartsel_dec);
+  544 |             dmi_rsp_o.data(9)            <= or_reduce_f(dm_ctrl.hart_halted and dm_reg.hartsel_dec);
+  545 |             dmi_rsp_o.data(8)            <= or_reduce_f(dm_ctrl.hart_halted and dm_reg.hartsel_dec);
+  546 |             dmi_rsp_o.data(5)            <= '0';
+  547 |             dmi_rsp_o.data(4)            <= '0';
+  548 |           end if;
+  549 |          dmi_rsp_o.data(7)          <= auth.valid;
+  550 |          dmi_rsp_o.data(6)          <= auth.busy;
+  551 |          dmi_rsp_o.data(3 downto 0) <= "0011";
+  554 |         when addr_dmcontrol_c =>
+  555 |           if (not AUTHENTICATOR) or (auth.valid = '1') then
+  556 |             dmi_rsp_o.data(31)           <= '0';
+  557 |             dmi_rsp_o.data(30)           <= '0';
+  558 |             dmi_rsp_o.data(29)           <= '0';
+  559 |             dmi_rsp_o.data(28)           <= '0';
+  560 |             dmi_rsp_o.data(27)           <= '0';
+  561 |             dmi_rsp_o.data(26)           <= '0';
+  562 |             dmi_rsp_o.data(25 downto 16) <= "0000000" & dm_reg.hartsel;
+  563 |             dmi_rsp_o.data(15 downto 6)  <= (others => '0');
+  564 |             dmi_rsp_o.data(5 downto 4)   <= (others => '0');
+  565 |             dmi_rsp_o.data(3)            <= '0';
+  566 |             dmi_rsp_o.data(2)            <= '0';
+  567 |             dmi_rsp_o.data(1)            <= dm_reg.dmcontrol_ndmreset;
+  568 |           end if;
+  569 |           dmi_rsp_o.data(0) <= dm_reg.dmcontrol_dmactive;
+  572 |         when addr_hartinfo_c =>
+  573 |           if (not AUTHENTICATOR) or (auth.valid = '1') then
+  574 |             dmi_rsp_o.data(31 downto 24) <= (others => '0');
+  575 |             dmi_rsp_o.data(23 downto 20) <= "0001";
+  576 |             dmi_rsp_o.data(19 downto 17) <= (others => '0');
+  577 |             dmi_rsp_o.data(16)           <= '1';
+  578 |             dmi_rsp_o.data(15 downto 12) <= "0001";
+  579 |             dmi_rsp_o.data(11 downto 0)  <= dataaddr_c(11 downto 0);
+  580 |           end if;
+  583 |         when addr_abstractcs_c =>
+  584 |           if (not AUTHENTICATOR) or (auth.valid = '1') then
+  585 |             dmi_rsp_o.data(31 downto 24) <= (others => '0');
+  586 |             dmi_rsp_o.data(28 downto 24) <= "00010";
+  587 |             dmi_rsp_o.data(12)           <= dm_ctrl.busy;
+  588 |             dmi_rsp_o.data(11)           <= '1';
+  589 |             dmi_rsp_o.data(10 downto 8)  <= dm_ctrl.cmderr;
+  590 |             dmi_rsp_o.data(7 downto 4)   <= (others => '0');
+  591 |             dmi_rsp_o.data(3 downto 0)   <= "0001";
+  592 |           end if;
+  595 |         when addr_abstractauto_c =>
+  596 |           if (not AUTHENTICATOR) or (auth.valid = '1') then
+  597 |             dmi_rsp_o.data(0)  <= dm_reg.abstractauto_autoexecdata;
+  598 |             dmi_rsp_o.data(16) <= dm_reg.abstractauto_autoexecprogbuf(0);
+  599 |             dmi_rsp_o.data(17) <= dm_reg.abstractauto_autoexecprogbuf(1);
+  600 |           end if;
+  603 |         when addr_data0_c =>
+  604 |           if (not AUTHENTICATOR) or (auth.valid = '1') then
+  605 |             dmi_rsp_o.data <= dci.data_reg;
+  606 |           end if;
+  609 |         when addr_authdata_c =>
+  610 |           dmi_rsp_o.data <= auth.rdata;
+  613 |         when addr_haltsum0_c =>
+  614 |           if (not AUTHENTICATOR) or (auth.valid = '1') then
+  615 |             dmi_rsp_o.data(NUM_HARTS-1 downto 0) <= dm_ctrl.hart_halted(NUM_HARTS-1 downto 0);
+  616 |           end if;
+  619 |         when others =>
+  620 |           dmi_rsp_o.data <= (others => '0');
+  622 |       end case;
+  626 |       if (dmi_rden_auth = '1') and (dm_ctrl.busy = '1') and
+  627 |          ((dmi_req_i.addr = addr_data0_c) or (dmi_req_i.addr = addr_progbuf0_c) or (dmi_req_i.addr = addr_progbuf1_c)) then
+  628 |         dm_reg.rd_acc_err <= '1';
+  629 |       else
+  630 |         dm_reg.rd_acc_err <= '0';
+  631 |       end if;
+  635 |       if (dmi_rden_auth = '1') and
+  636 |          (((dmi_req_i.addr = addr_data0_c)    and (dm_reg.abstractauto_autoexecdata       = '1')) or
+  637 |           ((dmi_req_i.addr = addr_progbuf0_c) and (dm_reg.abstractauto_autoexecprogbuf(0) = '1')) or
+  638 |           ((dmi_req_i.addr = addr_progbuf1_c) and (dm_reg.abstractauto_autoexecprogbuf(1) = '1'))) then
+  639 |         dm_reg.autoexec_rd <= '1';
+  640 |       else
+  641 |         dm_reg.autoexec_rd <= '0';
+  642 |       end if;
+  644 |     end if;
+  645 |   end process dmi_read_access;
+  650 |   bus_access: process(rstn_i, clk_i)
+  651 |   begin
+  652 |     if (rstn_i = '0') then
+  653 |       bus_rsp_o    <= rsp_terminate_c;
+  654 |       dci.data_reg <= (others => '0');
+  655 |       dci.ack_hlt  <= (others => '0');
+  656 |       dci.ack_res  <= (others => '0');
+  657 |       dci.ack_exe  <= (others => '0');
+  658 |       dci.ack_exc  <= '0';
+  659 |     elsif rising_edge(clk_i) then
+  661 |       bus_rsp_o.ack <= accen;
+  662 |       bus_rsp_o.err <= '0';
+  665 |       if (dci.data_reg_we = '1') then
+  666 |         dci.data_reg <= dmi_req_i.data;
+  667 |       elsif (wren = '1') and (bus_req_i.addr(8 downto 7) = dm_data_base_c(8 downto 7)) then
+  668 |         dci.data_reg <= bus_req_i.data;
+  669 |       end if;
+  672 |       dci.ack_hlt <= (others => '0');
+  673 |       dci.ack_res <= (others => '0');
+  674 |       dci.ack_exe <= (others => '0');
+  675 |       dci.ack_exc <= '0';
+  676 |       if (wren = '1') and (bus_req_i.addr(8 downto 7) = dm_sreg_base_c(8 downto 7)) then
+  677 |         for i in 0 to NUM_HARTS-1 loop
+  678 |           case bus_req_i.addr(3 downto 2) is
+  679 |             when "00"   => dci.ack_hlt(i) <= cpu_rsp_dec(i);
+  680 |             when "01"   => dci.ack_res(i) <= cpu_rsp_dec(i);
+  681 |             when "10"   => dci.ack_exe(i) <= cpu_rsp_dec(i);
+  682 |             when others => dci.ack_exc    <= '1';
+  683 |           end case;
+  684 |         end loop;
+  685 |       end if;
+  688 |       bus_rsp_o.data <= (others => '0');
+  689 |       if (rden = '1') then
+  690 |         case bus_req_i.addr(8 downto 7) is
+  691 |           when "00" =>
+  692 |             bus_rsp_o.data <= code_rom_c(to_integer(unsigned(bus_req_i.addr(6 downto 2))));
+  693 |           when "01" =>
+  694 |             bus_rsp_o.data <= cpu_progbuf(to_integer(unsigned(bus_req_i.addr(3 downto 2))));
+  695 |           when "10" =>
+  696 |             bus_rsp_o.data <= dci.data_reg;
+  697 |           when others =>
+  698 |             for i in 0 to NUM_HARTS-1 loop
+  699 |               bus_rsp_o.data(i*8+0) <= dci.req_res(i);
+  700 |               bus_rsp_o.data(i*8+1) <= dci.req_exe(i);
+  701 |             end loop;
+  702 |         end case;
+  703 |       end if;
+  704 |     end if;
+  705 |   end process bus_access;
+  708 |   accen <= bus_req_i.debug and bus_req_i.stb;
+  709 |   rden  <= accen and (not bus_req_i.rw);
+  710 |   wren  <= accen and (    bus_req_i.rw) and and_reduce_f(bus_req_i.ben);
+  713 |   hart_id_decode_single:
+  714 |   if NUM_HARTS = 1 generate
+  715 |     cpu_rsp_dec <= (others => '1');
+  716 |   end generate;
+  719 |   hart_id_decode_multiple:
+  720 |   if NUM_HARTS > 1 generate
+  721 |     hart_id_decode_gen:
+  722 |     for i in 0 to NUM_HARTS-1 generate
+  723 |       cpu_rsp_dec(i) <= '1' when (bus_req_i.data(1 downto 0) = std_ulogic_vector(to_unsigned(i, 2))) else '0';
+  724 |     end generate;
+  725 |   end generate;
+  730 |   authenticator_enabled:
+  731 |   if AUTHENTICATOR generate
+  732 |     neorv32_debug_auth_inst: entity neorv32.neorv32_debug_auth
+  733 |     port map (
+  735 |       clk_i    => clk_i,
+  736 |       rstn_i   => rstn_i,
+  738 |       we_i     => auth.we,
+  739 |       re_i     => auth.re,
+  740 |       wdata_i  => dmi_req_i.data,
+  741 |       rdata_o  => auth.rdata,
+  743 |       enable_i => dm_reg.dmcontrol_dmactive,
+  744 |       busy_o   => auth.busy,
+  745 |       valid_o  => auth.valid
+  746 |     );
+  747 |     auth.re <= '1' when (dmi_rden = '1') and (dmi_req_i.addr = addr_authdata_c) else '0';
+  748 |     auth.we <= '1' when (dmi_wren = '1') and (dmi_req_i.addr = addr_authdata_c) else '0';
+  749 |   end generate;
+  751 |   authenticator_disabled:
+  752 |   if not AUTHENTICATOR generate
+  753 |     auth.busy  <= '0';
+  754 |     auth.valid <= '1';
+  755 |     auth.re    <= '0';
+  756 |     auth.we    <= '0';
+  757 |     auth.rdata <= (others => '0');
+  758 |   end generate;
+  761 | end neorv32_debug_dm_rtl;
+
+=== RELATIONSHIP MAP: ELEMENTS AND RECORDS ===
+PORT {"name":"clk_i","entity":"neorv32_debug_dm","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":28},{"id":2,"line":218},{"id":3,"line":228},{"id":4,"line":344},{"id":5,"line":351},{"id":6,"line":395},{"id":7,"line":414},{"id":8,"line":516},{"id":9,"line":523},{"id":10,"line":650},{"id":11,"line":659},{"id":12,"line":735}]}
+    {"connections":[{"at":12,"instance":"neorv32_debug_auth_inst","formal":"clk_i","mode":"in","lines":[735]}]}
+    {"type":"SEQUENCES","at":[3],"lines":[228],"targets":["dci.req_exe","dm_ctrl.cmderr","dm_ctrl.illegal_cmd","dm_ctrl.illegal_state","dm_ctrl.ldsw_progbuf","dm_ctrl.pbuf_en","dm_ctrl.state"]}
+    {"type":"SEQUENCES","at":[5],"lines":[351],"targets":["dm_ctrl.hart_halted","dm_ctrl.hart_reset","dm_ctrl.hart_resume_ack","dm_ctrl.hart_resume_req"]}
+    {"type":"SEQUENCES","at":[7],"lines":[414],"targets":["dm_reg.abstractauto_autoexecdata","dm_reg.abstractauto_autoexecprogbuf","dm_reg.autoexec_wr","dm_reg.clr_acc_err","dm_reg.command","dm_reg.dmcontrol_dmactive","dm_reg.dmcontrol_ndmreset","dm_reg.halt_req","dm_reg.hartsel","dm_reg.progbuf","dm_reg.req_res","dm_reg.reset_ack","dm_reg.wr_acc_err"]}
+    {"type":"SEQUENCES","at":[9],"lines":[523],"targets":["dm_reg.autoexec_rd","dm_reg.rd_acc_err","dmi_rsp_o.ack","dmi_rsp_o.data"]}
+    {"type":"SEQUENCES","at":[11],"lines":[659],"targets":["bus_rsp_o.ack","bus_rsp_o.data","bus_rsp_o.err","dci.ack_exc","dci.ack_exe","dci.ack_hlt","dci.ack_res","dci.data_reg"]}
+PORT {"name":"rstn_i","entity":"neorv32_debug_dm","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":29},{"id":2,"line":218},{"id":3,"line":220},{"id":4,"line":344},{"id":5,"line":346},{"id":6,"line":395},{"id":7,"line":397},{"id":8,"line":516},{"id":9,"line":518},{"id":10,"line":650},{"id":11,"line":652},{"id":12,"line":736}]}
+    {"connections":[{"at":12,"instance":"neorv32_debug_auth_inst","formal":"rstn_i","mode":"in","lines":[736]}]}
+    {"type":"RESETS","at":[3],"lines":[220],"targets":["dci.req_exe","dm_ctrl.cmderr","dm_ctrl.illegal_cmd","dm_ctrl.illegal_state","dm_ctrl.ldsw_progbuf","dm_ctrl.pbuf_en","dm_ctrl.state"]}
+    {"type":"RESETS","at":[5],"lines":[346],"targets":["dm_ctrl.hart_halted","dm_ctrl.hart_reset","dm_ctrl.hart_resume_ack","dm_ctrl.hart_resume_req"]}
+    {"type":"RESETS","at":[7],"lines":[397],"targets":["dm_reg.abstractauto_autoexecdata","dm_reg.abstractauto_autoexecprogbuf","dm_reg.autoexec_wr","dm_reg.clr_acc_err","dm_reg.command","dm_reg.dmcontrol_dmactive","dm_reg.dmcontrol_ndmreset","dm_reg.halt_req","dm_reg.hartsel","dm_reg.progbuf","dm_reg.req_res","dm_reg.reset_ack","dm_reg.wr_acc_err"]}
+    {"type":"RESETS","at":[9],"lines":[518],"targets":["dm_reg.autoexec_rd","dm_reg.rd_acc_err","dmi_rsp_o.ack","dmi_rsp_o.data"]}
+    {"type":"RESETS","at":[11],"lines":[652],"targets":["bus_rsp_o","dci.ack_exc","dci.ack_exe","dci.ack_hlt","dci.ack_res","dci.data_reg"]}
+PORT {"name":"dmi_req_i","entity":"neorv32_debug_dm","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":31},{"id":2,"line":209},{"id":3,"line":210},{"id":4,"line":250},{"id":5,"line":424},{"id":6,"line":426},{"id":7,"line":427},{"id":8,"line":428},{"id":9,"line":429},{"id":10,"line":430},{"id":11,"line":433},{"id":12,"line":438},{"id":13,"line":439},{"id":14,"line":443},{"id":15,"line":444},{"id":16,"line":445},{"id":17,"line":446},{"id":18,"line":450},{"id":19,"line":451},{"id":20,"line":452},{"id":21,"line":459},{"id":22,"line":459},{"id":23,"line":464},{"id":24,"line":465},{"id":25,"line":469},{"id":26,"line":470},{"id":27,"line":475},{"id":28,"line":475},{"id":29,"line":476},{"id":30,"line":476},{"id":31,"line":477},{"id":32,"line":477},{"id":33,"line":495},{"id":34,"line":526},{"id":35,"line":627},{"id":36,"line":627},{"id":37,"line":627},{"id":38,"line":636},{"id":39,"line":637},{"id":40,"line":638},{"id":41,"line":666},{"id":42,"line":740},{"id":43,"line":747},{"id":44,"line":748}]}
+PORT {"name":"dmi_req_i.addr","entity":"neorv32_debug_dm","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":31},{"id":2,"line":250},{"id":3,"line":424},{"id":4,"line":438},{"id":5,"line":443},{"id":6,"line":450},{"id":7,"line":451},{"id":8,"line":452},{"id":9,"line":459},{"id":10,"line":464},{"id":11,"line":469},{"id":12,"line":475},{"id":13,"line":475},{"id":14,"line":476},{"id":15,"line":476},{"id":16,"line":477},{"id":17,"line":477},{"id":18,"line":495},{"id":19,"line":526},{"id":20,"line":627},{"id":21,"line":627},{"id":22,"line":627},{"id":23,"line":636},{"id":24,"line":637},{"id":25,"line":638},{"id":26,"line":747},{"id":27,"line":748}]}
+    {"type":"SELECTS","at":[19],"guard":"dmi_req_i.addr = addr_abstractauto_c | dmi_req_i.addr = addr_abstractcs_c | dmi_req_i.addr = addr_authdata_c | dmi_req_i.addr = addr_data0_c | dmi_req_i.addr = addr_dmcontrol_c | dmi_req_i.addr = addr_dmstatus_c | dmi_req_i.addr = addr_haltsum0_c | dmi_req_i.addr = addr_hartinfo_c | not (dmi_req_i.addr in {addr_dmstatus_c, addr_dmcontrol_c, addr_hartinfo_c, addr_abstractcs_c, addr_abstractauto_c,  ... [condition cut; read it at the cited lines]","lines":[526],"targets":["dmi_rsp_o.data"]}
+    {"type":"GATES","at":[10],"guard":"(dmi_req_i.addr = addr_progbuf0_c) and (dmi_wren_auth = '1') and (dm_ctrl.busy = '0')","lines":[464],"targets":["dm_reg.progbuf"]}
+    {"type":"GATES","at":[11],"guard":"(dmi_req_i.addr = addr_progbuf1_c) and (dmi_wren_auth = '1') and (dm_ctrl.busy = '0')","lines":[469],"targets":["dm_reg.progbuf"]}
+    {"type":"GATES","at":[12,13,14,15,16,17],"guard":"(dmi_wren_auth = '1') and (dm_ctrl.busy = '1') and ((dmi_req_i.addr = addr_abstractcs_c) or (dmi_req_i.addr = addr_command_c) or (dmi_req_i.addr = addr_abstractauto_c) or (dmi_req_i.addr = addr_data0_c) or (dmi_req_i.addr = addr_progbuf0_c) or (dmi_req_i.addr = addr_progbuf1_c))","lines":[475,476,477],"targets":["dm_reg.wr_acc_err"]}
+    {"type":"GATES","at":[18],"guard":"(dmi_wren_auth = '1') and (dmi_req_i.addr = addr_data0_c) and (dm_ctrl.busy = '0')","lines":[495],"targets":["dci.data_reg_we"]}
+    {"type":"GATES","at":[2],"guard":"dmi_req_i.addr = addr_command_c","lines":[250],"targets":["dm_ctrl.state"]}
+    {"type":"GATES","at":[20,21,22],"guard":"(dmi_rden_auth = '1') and (dm_ctrl.busy = '1') and ((dmi_req_i.addr = addr_data0_c) or (dmi_req_i.addr = addr_progbuf0_c) or (dmi_req_i.addr = addr_progbuf1_c)) | not ((dmi_rden_auth = '1') and (dm_ctrl.busy = '1') and ((dmi_req_i.addr = addr_data0_c) or (dmi_req_i.addr = addr_progbuf0_c) or (dmi_req_i.addr = addr_progbuf1_c)))","lines":[627],"targets":["dm_reg.rd_acc_err"]}
+    {"type":"GATES","at":[23,24,25],"guard":"(dmi_rden_auth = '1') and (((dmi_req_i.addr = addr_data0_c) and (dm_reg.abstractauto_autoexecdata = '1')) or ((dmi_req_i.addr = addr_progbuf0_c) and (dm_reg.abstractauto_autoexecprogbuf(0) = '1')) or ((dmi_req_i.addr = addr_progbuf1_c) and (dm_reg.abstractauto_autoexecprogbuf(1) = '1'))) | not ((dmi_rden_auth = '1') and (((dmi_req_i.addr = addr_data0_c) and (dm_reg.abstractauto_autoexecdata = '1') ... [condition cut; read it at the cited lines]","lines":[636,637,638],"targets":["dm_reg.autoexec_rd"]}
+    {"type":"GATES","at":[26],"guard":"(dmi_rden = '1') and (dmi_req_i.addr = addr_authdata_c)","lines":[747],"targets":["auth.re"]}
+    {"type":"GATES","at":[27],"guard":"(dmi_wren = '1') and (dmi_req_i.addr = addr_authdata_c)","lines":[748],"targets":["auth.we"]}
+    {"type":"GATES","at":[3],"guard":"dmi_req_i.addr = addr_dmcontrol_c","lines":[424],"targets":["dm_reg.dmcontrol_dmactive","dm_reg.dmcontrol_ndmreset","dm_reg.halt_req","dm_reg.hartsel","dm_reg.req_res","dm_reg.reset_ack"]}
+    {"type":"GATES","at":[4],"guard":"(dmi_req_i.addr = addr_command_c) and (dmi_wren_auth = '1') and (dm_ctrl.busy = '0') and (dm_ctrl.cmderr = \"000\")","lines":[438],"targets":["dm_reg.command"]}
+    {"type":"GATES","at":[5],"guard":"(dmi_req_i.addr = addr_abstractauto_c) and (dmi_wren_auth = '1') and (dm_ctrl.busy = '0')","lines":[443],"targets":["dm_reg.abstractauto_autoexecdata","dm_reg.abstractauto_autoexecprogbuf"]}
+    {"type":"GATES","at":[6,7,8],"guard":"((dmi_req_i.addr = addr_data0_c) and (dm_reg.abstractauto_autoexecdata = '1')) or ((dmi_req_i.addr = addr_progbuf0_c) and (dm_reg.abstractauto_autoexecprogbuf(0) = '1')) or ((dmi_req_i.addr = addr_progbuf1_c) and (dm_reg.abstractauto_autoexecprogbuf(1) = '1'))","lines":[450,451,452],"targets":["dm_reg.autoexec_wr"]}
+    {"type":"GATES","at":[9],"guard":"(dmi_req_i.addr = addr_abstractcs_c) and (dmi_wren_auth = '1') and (dmi_req_i.data(10 downto 8) = \"111\")","lines":[459],"targets":["dm_reg.clr_acc_err"]}
+PORT {"name":"dmi_req_i.op","entity":"neorv32_debug_dm","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":31},{"id":2,"line":209},{"id":3,"line":210}]}
+    {"type":"GATES","at":[2],"guard":"(dmi_req_i.op = dmi_req_wr_c)","lines":[209],"targets":["dmi_wren"]}
+    {"type":"GATES","at":[3],"guard":"(dmi_req_i.op = dmi_req_rd_c)","lines":[210],"targets":["dmi_rden"]}
+PORT {"name":"dmi_req_i.data","entity":"neorv32_debug_dm","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":31},{"id":2,"line":426},{"id":3,"line":427},{"id":4,"line":428},{"id":5,"line":429},{"id":6,"line":430},{"id":7,"line":433},{"id":8,"line":439},{"id":9,"line":444},{"id":10,"line":445},{"id":11,"line":446},{"id":12,"line":459},{"id":13,"line":465},{"id":14,"line":470},{"id":15,"line":666},{"id":16,"line":740}]}
+    {"connections":[{"at":16,"instance":"neorv32_debug_auth_inst","formal":"wdata_i","mode":"in","lines":[740]}]}
+    {"type":"GATES","at":[12],"guard":"(dmi_req_i.addr = addr_abstractcs_c) and (dmi_wren_auth = '1') and (dmi_req_i.data(10 downto 8) = \"111\")","lines":[459],"targets":["dm_reg.clr_acc_err"]}
+    {"type":"CARRIES","at":[8],"lines":[439],"targets":["dm_reg.command"]}
+    {"type":"CARRIES","at":[13,14],"lines":[465,470],"targets":["dm_reg.progbuf"]}
+    {"type":"CARRIES","at":[15],"lines":[666],"targets":["dci.data_reg"]}
+    {"type":"SOURCES","at":[2],"lines":[426],"targets":["dm_reg.halt_req"]}
+    {"type":"SOURCES","at":[3],"lines":[427],"targets":["dm_reg.req_res"]}
+    {"type":"SOURCES","at":[4],"lines":[428],"targets":["dm_reg.reset_ack"]}
+    {"type":"SOURCES","at":[5],"lines":[429],"targets":["dm_reg.hartsel"]}
+    {"type":"SOURCES","at":[6],"lines":[430],"targets":["dm_reg.dmcontrol_ndmreset"]}
+    {"type":"SOURCES","at":[7],"lines":[433],"targets":["dm_reg.dmcontrol_dmactive"]}
+    {"type":"SOURCES","at":[9],"lines":[444],"targets":["dm_reg.abstractauto_autoexecdata"]}
+    {"type":"SOURCES","at":[10,11],"lines":[445,446],"targets":["dm_reg.abstractauto_autoexecprogbuf"]}
+PORT {"name":"dmi_rsp_o","entity":"neorv32_debug_dm","boundary":{"mode":"out","drive":"undriven"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":32},{"id":2,"line":519},{"id":3,"line":520},{"id":4,"line":524},{"id":5,"line":525},{"id":6,"line":531},{"id":7,"line":532},{"id":8,"line":533},{"id":9,"line":534},{"id":10,"line":535},{"id":11,"line":536},{"id":12,"line":537},{"id":13,"line":538},{"id":14,"line":539},{"id":15,"line":540},{"id":16,"line":541},{"id":17,"line":542},{"id":18,"line":543},{"id":19,"line":544},{"id":20,"line":545},{"id":21,"line":546},{"id":22,"line":547},{"id":23,"line":549},{"id":24,"line":550},{"id":25,"line":551},{"id":26,"line":556},{"id":27,"line":557},{"id":28,"line":558},{"id":29,"line":559},{"id":30,"line":560},{"id":31,"line":561},{"id":32,"line":562},{"id":33,"line":563},{"id":34,"line":564},{"id":35,"line":565},{"id":36,"line":566},{"id":37,"line":567},{"id":38,"line":569},{"id":39,"line":574},{"id":40,"line":575},{"id":41,"line":576},{"id":42,"line":577},{"id":43,"line":578},{"id":44,"line":579},{"id":45,"line":585},{"id":46,"line":586},{"id":47,"line":587},{"id":48,"line":588},{"id":49,"line":589},{"id":50,"line":590},{"id":51,"line":591},{"id":52,"line":597},{"id":53,"line":598},{"id":54,"line":599},{"id":55,"line":605},{"id":56,"line":610},{"id":57,"line":615},{"id":58,"line":620}]}
+PORT {"name":"dmi_rsp_o.data","entity":"neorv32_debug_dm","handling":["ORIGINATES"],"boundary":{"mode":"out","drive":"driven"},"storage":"edge"}
+    {"occurrences":[{"id":1,"line":32},{"id":2,"line":520},{"id":3,"line":525},{"id":4,"line":531},{"id":5,"line":532},{"id":6,"line":533},{"id":7,"line":534},{"id":8,"line":535},{"id":9,"line":536},{"id":10,"line":537},{"id":11,"line":538},{"id":12,"line":539},{"id":13,"line":540},{"id":14,"line":541},{"id":15,"line":542},{"id":16,"line":543},{"id":17,"line":544},{"id":18,"line":545},{"id":19,"line":546},{"id":20,"line":547},{"id":21,"line":549},{"id":22,"line":550},{"id":23,"line":551},{"id":24,"line":556},{"id":25,"line":557},{"id":26,"line":558},{"id":27,"line":559},{"id":28,"line":560},{"id":29,"line":561},{"id":30,"line":562},{"id":31,"line":563},{"id":32,"line":564},{"id":33,"line":565},{"id":34,"line":566},{"id":35,"line":567},{"id":36,"line":569},{"id":37,"line":574},{"id":38,"line":575},{"id":39,"line":576},{"id":40,"line":577},{"id":41,"line":578},{"id":42,"line":579},{"id":43,"line":585},{"id":44,"line":586},{"id":45,"line":587},{"id":46,"line":588},{"id":47,"line":589},{"id":48,"line":590},{"id":49,"line":591},{"id":50,"line":597},{"id":51,"line":598},{"id":52,"line":599},{"id":53,"line":605},{"id":54,"line":610},{"id":55,"line":615},{"id":56,"line":620}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[520]},{"at":3,"value":"(others => '0')","lines":[525]},{"at":4,"value":"(others => '0')","lines":[531]},{"at":5,"value":"'1'","lines":[532]},{"at":6,"value":"(others => '0')","lines":[533]},{"at":19,"value":"'0'","lines":[546]},{"at":20,"value":"'0'","lines":[547]},{"at":23,"value":"\"0011\"","lines":[551]},{"at":24,"value":"'0'","lines":[556]},{"at":25,"value":"'0'","lines":[557]},{"at":26,"value":"'0'","lines":[558]},{"at":27,"value":"'0'","lines":[559]},{"at":28,"value":"'0'","lines":[560]},{"at":29,"value":"'0'","lines":[561]},{"at":31,"value":"(others => '0')","lines":[563]},{"at":32,"value":"(others => '0')","lines":[564]},{"at":33,"value":"'0'","lines":[565]},{"at":34,"value":"'0'","lines":[566]},{"at":37,"value":"(others => '0')","lines":[574]},{"at":38,"value":"\"0001\"","lines":[575]},{"at":39,"value":"(others => '0')","lines":[576]},{"at":40,"value":"'1'","lines":[577]},{"at":41,"value":"\"0001\"","lines":[578]},{"at":42,"value":"dataaddr_c(11 downto 0)","lines":[579]},{"at":43,"value":"(others => '0')","lines":[585]},{"at":44,"value":"\"00010\"","lines":[586]},{"at":46,"value":"'1'","lines":[588]},{"at":48,"value":"(others => '0')","lines":[590]},{"at":49,"value":"\"0001\"","lines":[591]},{"at":56,"value":"(others => '0')","lines":[620]}]}
+    {"type":"CLOCKED_BY","at":[3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56],"lines":[525,531,532,533,534,535,536,537,538,539,540,541,542,543,544,545,546,547,549,550,551,556,557,558,559,560,561,562,563,564,565,566,567,569,574,575,576,577,578,579,585,586,587,588,589,590,591,597,598,599,605,610,615,620],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[520],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23],"guard":"dmi_req_i.addr = addr_dmstatus_c","lines":[531,532,533,534,535,536,537,538,539,540,541,542,543,544,545,546,547,549,550,551],"targets":["dmi_req_i.addr"]}
+    {"type":"SELECTED_BY","at":[24,25,26,27,28,29,30,31,32,33,34,35,36],"guard":"dmi_req_i.addr = addr_dmcontrol_c","lines":[556,557,558,559,560,561,562,563,564,565,566,567,569],"targets":["dmi_req_i.addr"]}
+    {"type":"SELECTED_BY","at":[37,38,39,40,41,42],"guard":"dmi_req_i.addr = addr_hartinfo_c","lines":[574,575,576,577,578,579],"targets":["dmi_req_i.addr"]}
+    {"type":"SELECTED_BY","at":[43,44,45,46,47,48,49],"guard":"dmi_req_i.addr = addr_abstractcs_c","lines":[585,586,587,588,589,590,591],"targets":["dmi_req_i.addr"]}
+    {"type":"SELECTED_BY","at":[50,51,52],"guard":"dmi_req_i.addr = addr_abstractauto_c","lines":[597,598,599],"targets":["dmi_req_i.addr"]}
+    {"type":"SELECTED_BY","at":[53],"guard":"dmi_req_i.addr = addr_data0_c","lines":[605],"targets":["dmi_req_i.addr"]}
+    {"type":"SELECTED_BY","at":[54],"guard":"dmi_req_i.addr = addr_authdata_c","lines":[610],"targets":["dmi_req_i.addr"]}
+    {"type":"SELECTED_BY","at":[55],"guard":"dmi_req_i.addr = addr_haltsum0_c","lines":[615],"targets":["dmi_req_i.addr"]}
+    {"type":"SELECTED_BY","at":[56],"guard":"not (dmi_req_i.addr in {addr_dmstatus_c, addr_dmcontrol_c, addr_hartinfo_c, addr_abstractcs_c, addr_abstractauto_c, addr_data0_c, addr_authdata_c, addr_haltsum0_c})","lines":[620],"targets":["dmi_req_i.addr"]}
+    {"type":"GATED_BY","at":[4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,24,25,26,27,28,29,30,31,32,33,34,35,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,55],"guard":"(not AUTHENTICATOR) or (auth.valid = '1')","lines":[531,532,533,534,535,536,537,538,539,540,541,542,543,544,545,546,547,556,557,558,559,560,561,562,563,564,565,566,567,574,575,576,577,578,579,585,586,587,588,589,590,591,597,598,599,605,615],"targets":["auth.valid"]}
+    {"type":"COPIES","at":[11,12],"lines":[538,539],"targets":["dm_reg.hartsel_inv"]}
+    {"type":"COPIES","at":[13,14,35],"lines":[540,541,567],"targets":["dm_reg.dmcontrol_ndmreset"]}
+    {"type":"COPIES","at":[21],"lines":[549],"targets":["auth.valid"]}
+    {"type":"COPIES","at":[22],"lines":[550],"targets":["auth.busy"]}
+    {"type":"COPIES","at":[36],"lines":[569],"targets":["dm_reg.dmcontrol_dmactive"]}
+    {"type":"COPIES","at":[45],"lines":[587],"targets":["dm_ctrl.busy"]}
+    {"type":"COPIES","at":[47],"lines":[589],"targets":["dm_ctrl.cmderr"]}
+    {"type":"COPIES","at":[50],"lines":[597],"targets":["dm_reg.abstractauto_autoexecdata"]}
+    {"type":"COPIES","at":[53],"lines":[605],"targets":["dci.data_reg"]}
+    {"type":"COPIES","at":[54],"lines":[610],"targets":["auth.rdata"]}
+    {"type":"DERIVES_FROM","at":[7,8],"lines":[534,535],"targets":["dm_ctrl.hart_reset","dm_reg.hartsel_dec"]}
+    {"type":"DERIVES_FROM","at":[9,10],"lines":[536,537],"targets":["dm_ctrl.hart_resume_ack","dm_reg.hartsel_dec"]}
+    {"type":"DERIVES_FROM","at":[15,16,17,18],"lines":[542,543,544,545],"targets":["dm_ctrl.hart_halted","dm_reg.hartsel_dec"]}
+    {"type":"DERIVES_FROM","at":[30],"lines":[562],"targets":["dm_reg.hartsel"]}
+    {"type":"DERIVES_FROM","at":[51,52],"lines":[598,599],"targets":["dm_reg.abstractauto_autoexecprogbuf"]}
+    {"type":"DERIVES_FROM","at":[55],"lines":[615],"targets":["dm_ctrl.hart_halted"]}
+PORT {"name":"dmi_rsp_o.ack","entity":"neorv32_debug_dm","handling":["ORIGINATES"],"boundary":{"mode":"out","drive":"driven"},"storage":"edge"}
+    {"occurrences":[{"id":1,"line":32},{"id":2,"line":519},{"id":3,"line":524}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[519]}]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[524],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[519],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"dmi_wren or dmi_rden","lines":[524],"targets":["dmi_rden","dmi_wren"]}
+PORT {"name":"bus_req_i","entity":"neorv32_debug_dm","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34},{"id":2,"line":667},{"id":3,"line":668},{"id":4,"line":676},{"id":5,"line":678},{"id":6,"line":690},{"id":7,"line":692},{"id":8,"line":694},{"id":9,"line":708},{"id":10,"line":708},{"id":11,"line":709},{"id":12,"line":710},{"id":13,"line":710},{"id":14,"line":723}]}
+PORT {"name":"bus_req_i.addr","entity":"neorv32_debug_dm","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34},{"id":2,"line":667},{"id":3,"line":676},{"id":4,"line":678},{"id":5,"line":690},{"id":6,"line":692},{"id":7,"line":694}]}
+    {"type":"SELECTS","at":[4],"guard":"(wren = '1') and (bus_req_i.addr(8 downto 7) = dm_sreg_base_c(8 downto 7)) and not (bus_req_i.addr(3 downto 2) in {\"00\", \"01\", \"10\"})","lines":[678],"targets":["dci.ack_exc"]}
+    {"type":"SELECTS","at":[4],"guard":"(wren = '1') and (bus_req_i.addr(8 downto 7) = dm_sreg_base_c(8 downto 7)) and bus_req_i.addr(3 downto 2) = \"10\"","lines":[678],"targets":["dci.ack_exe"]}
+    {"type":"SELECTS","at":[4],"guard":"(wren = '1') and (bus_req_i.addr(8 downto 7) = dm_sreg_base_c(8 downto 7)) and bus_req_i.addr(3 downto 2) = \"00\"","lines":[678],"targets":["dci.ack_hlt"]}
+    {"type":"SELECTS","at":[4],"guard":"(wren = '1') and (bus_req_i.addr(8 downto 7) = dm_sreg_base_c(8 downto 7)) and bus_req_i.addr(3 downto 2) = \"01\"","lines":[678],"targets":["dci.ack_res"]}
+    {"type":"SELECTS","at":[5],"guard":"bus_req_i.addr(8 downto 7) = \"00\" | bus_req_i.addr(8 downto 7) = \"01\" | bus_req_i.addr(8 downto 7) = \"10\" | not (bus_req_i.addr(8 downto 7) in {\"00\", \"01\", \"10\"})","lines":[690],"targets":["bus_rsp_o.data"]}
+    {"type":"SELECTS","at":[6],"guard":"bus_req_i.addr(8 downto 7) = \"00\"","lines":[692],"targets":["bus_rsp_o.data"]}
+    {"type":"SELECTS","at":[7],"guard":"bus_req_i.addr(8 downto 7) = \"01\"","lines":[694],"targets":["bus_rsp_o.data"]}
+    {"type":"GATES","at":[2],"guard":"(wren = '1') and (bus_req_i.addr(8 downto 7) = dm_data_base_c(8 downto 7))","lines":[667],"targets":["dci.data_reg"]}
+    {"type":"GATES","at":[3],"guard":"(wren = '1') and (bus_req_i.addr(8 downto 7) = dm_sreg_base_c(8 downto 7)) and not (bus_req_i.addr(3 downto 2) in {\"00\", \"01\", \"10\"})","lines":[676],"targets":["dci.ack_exc"]}
+    {"type":"GATES","at":[3],"guard":"(wren = '1') and (bus_req_i.addr(8 downto 7) = dm_sreg_base_c(8 downto 7)) and bus_req_i.addr(3 downto 2) = \"10\"","lines":[676],"targets":["dci.ack_exe"]}
+    {"type":"GATES","at":[3],"guard":"(wren = '1') and (bus_req_i.addr(8 downto 7) = dm_sreg_base_c(8 downto 7)) and bus_req_i.addr(3 downto 2) = \"00\"","lines":[676],"targets":["dci.ack_hlt"]}
+    {"type":"GATES","at":[3],"guard":"(wren = '1') and (bus_req_i.addr(8 downto 7) = dm_sreg_base_c(8 downto 7)) and bus_req_i.addr(3 downto 2) = \"01\"","lines":[676],"targets":["dci.ack_res"]}
+PORT {"name":"bus_req_i.data","entity":"neorv32_debug_dm","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34},{"id":2,"line":668},{"id":3,"line":723}]}
+    {"type":"GATES","at":[3],"guard":"(bus_req_i.data(1 downto 0) = std_ulogic_vector(to_unsigned(i, 2)))","lines":[723],"targets":["cpu_rsp_dec"]}
+    {"type":"CARRIES","at":[2],"lines":[668],"targets":["dci.data_reg"]}
+PORT {"name":"bus_req_i.ben","entity":"neorv32_debug_dm","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34},{"id":2,"line":710}]}
+    {"type":"SOURCES","at":[2],"lines":[710],"targets":["wren"]}
+PORT {"name":"bus_req_i.stb","entity":"neorv32_debug_dm","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34},{"id":2,"line":708}]}
+    {"type":"GATES","at":[2],"guard":"bus_req_i.debug and bus_req_i.stb","lines":[708],"targets":["accen"]}
+PORT {"name":"bus_req_i.rw","entity":"neorv32_debug_dm","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34},{"id":2,"line":709},{"id":3,"line":710}]}
+    {"type":"GATES","at":[2],"guard":"accen and (not bus_req_i.rw)","lines":[709],"targets":["rden"]}
+    {"type":"GATES","at":[3],"guard":"accen and (    bus_req_i.rw) and and_reduce_f(bus_req_i.ben)","lines":[710],"targets":["wren"]}
+PORT {"name":"bus_req_i.src","entity":"neorv32_debug_dm","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"bus_req_i.priv","entity":"neorv32_debug_dm","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"bus_req_i.debug","entity":"neorv32_debug_dm","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34},{"id":2,"line":708}]}
+    {"type":"GATES","at":[2],"guard":"bus_req_i.debug and bus_req_i.stb","lines":[708],"targets":["accen"]}
+PORT {"name":"bus_req_i.amo","entity":"neorv32_debug_dm","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"bus_req_i.amoop","entity":"neorv32_debug_dm","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"bus_req_i.lock","entity":"neorv32_debug_dm","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"bus_req_i.fence","entity":"neorv32_debug_dm","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":34}]}
+PORT {"name":"bus_rsp_o","entity":"neorv32_debug_dm","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":35},{"id":2,"line":653},{"id":3,"line":661},{"id":4,"line":662},{"id":5,"line":688},{"id":6,"line":692},{"id":7,"line":694},{"id":8,"line":696},{"id":9,"line":699},{"id":10,"line":700}]}
+    {"constant_drivers":[{"at":2,"value":"rsp_terminate_c","lines":[653]}]}
+    {"type":"RESET_BY","at":[2],"lines":[653],"targets":["rstn_i"]}
+PORT {"name":"bus_rsp_o.ack","entity":"neorv32_debug_dm","handling":["ORIGINATES"],"boundary":{"mode":"out","drive":"driven"},"storage":"edge"}
+    {"occurrences":[{"id":1,"line":35},{"id":2,"line":661}]}
+    {"type":"CLOCKED_BY","at":[2],"lines":[661],"targets":["clk_i"]}
+    {"type":"COPIES","at":[2],"lines":[661],"targets":["accen"]}
+PORT {"name":"bus_rsp_o.err","entity":"neorv32_debug_dm","handling":["ORIGINATES"],"boundary":{"mode":"out","drive":"driven"},"storage":"edge"}
+    {"occurrences":[{"id":1,"line":35},{"id":2,"line":662}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[662]}]}
+    {"type":"CLOCKED_BY","at":[2],"lines":[662],"targets":["clk_i"]}
+PORT {"name":"bus_rsp_o.data","entity":"neorv32_debug_dm","handling":["ORIGINATES"],"boundary":{"mode":"out","drive":"driven"},"storage":"edge"}
+    {"occurrences":[{"id":1,"line":35},{"id":2,"line":688},{"id":3,"line":692},{"id":4,"line":694},{"id":5,"line":696},{"id":6,"line":699},{"id":7,"line":700}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[688]}]}
+    {"type":"CLOCKED_BY","at":[2,3,4,5,6,7],"lines":[688,692,694,696,699,700],"targets":["clk_i"]}
+    {"type":"SELECTED_BY","at":[3],"guard":"bus_req_i.addr(8 downto 7) = \"00\"","lines":[692],"targets":["bus_req_i.addr"]}
+    {"type":"SELECTED_BY","at":[4],"guard":"bus_req_i.addr(8 downto 7) = \"01\"","lines":[694],"targets":["bus_req_i.addr"]}
+    {"type":"SELECTED_BY","at":[5],"guard":"bus_req_i.addr(8 downto 7) = \"10\"","lines":[696],"targets":["bus_req_i.addr"]}
+    {"type":"SELECTED_BY","at":[6,7],"guard":"not (bus_req_i.addr(8 downto 7) in {\"00\", \"01\", \"10\"})","lines":[699,700],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[3,4,5,6,7],"guard":"rden = '1'","lines":[692,694,696,699,700],"targets":["rden"]}
+    {"type":"COPIES","at":[5],"lines":[696],"targets":["dci.data_reg"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[694],"targets":["cpu_progbuf"]}
+    {"type":"DERIVES_FROM","at":[6],"lines":[699],"targets":["dci.req_res"]}
+    {"type":"DERIVES_FROM","at":[7],"lines":[700],"targets":["dci.req_exe"]}
+PORT {"name":"ndmrstn_o","entity":"neorv32_debug_dm","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":37},{"id":2,"line":505}]}
+    {"type":"GATED_BY","at":[2],"guard":"(dm_reg.dmcontrol_ndmreset = '1') and (dm_reg.dmcontrol_dmactive = '1') and ((not AUTHENTICATOR) or (auth.valid = '1'))","lines":[505],"targets":["auth.valid","dm_reg.dmcontrol_dmactive","dm_reg.dmcontrol_ndmreset"]}
+PORT {"name":"halt_req_o","entity":"neorv32_debug_dm","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":38},{"id":2,"line":500}]}
+    {"type":"GATED_BY","at":[2],"guard":"((not AUTHENTICATOR) or (auth.valid = '1'))","lines":[500],"targets":["auth.valid"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[500],"targets":["dm_reg.dmcontrol_dmactive","dm_reg.halt_req","dm_reg.hartsel_dec"]}
+SIGNAL {"name":"dmi_wren","entity":"neorv32_debug_dm","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":76},{"id":2,"line":209},{"id":3,"line":212},{"id":4,"line":432},{"id":5,"line":524},{"id":6,"line":748}]}
+    {"type":"GATES","at":[4],"guard":"dmi_wren = '1'","lines":[432],"targets":["dm_reg.dmcontrol_dmactive"]}
+    {"type":"GATES","at":[5],"guard":"dmi_wren or dmi_rden","lines":[524],"targets":["dmi_rsp_o.ack"]}
+    {"type":"GATES","at":[6],"guard":"(dmi_wren = '1') and (dmi_req_i.addr = addr_authdata_c)","lines":[748],"targets":["auth.we"]}
+    {"type":"SOURCES","at":[3],"lines":[212],"targets":["dmi_wren_auth"]}
+    {"type":"GATED_BY","at":[2],"guard":"(dmi_req_i.op = dmi_req_wr_c)","lines":[209],"targets":["dmi_req_i.op"]}
+SIGNAL {"name":"dmi_wren_auth","entity":"neorv32_debug_dm","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":76},{"id":2,"line":212},{"id":3,"line":249},{"id":4,"line":425},{"id":5,"line":438},{"id":6,"line":443},{"id":7,"line":453},{"id":8,"line":459},{"id":9,"line":464},{"id":10,"line":469},{"id":11,"line":474},{"id":12,"line":495}]}
+    {"type":"GATES","at":[10],"guard":"(dmi_req_i.addr = addr_progbuf1_c) and (dmi_wren_auth = '1') and (dm_ctrl.busy = '0')","lines":[469],"targets":["dm_reg.progbuf"]}
+    {"type":"GATES","at":[11],"guard":"(dmi_wren_auth = '1') and (dm_ctrl.busy = '1') and ((dmi_req_i.addr = addr_abstractcs_c) or (dmi_req_i.addr = addr_command_c) or (dmi_req_i.addr = addr_abstractauto_c) or (dmi_req_i.addr = addr_data0_c) or (dmi_req_i.addr = addr_progbuf0_c) or (dmi_req_i.addr = addr_progbuf1_c))","lines":[474],"targets":["dm_reg.wr_acc_err"]}
+    {"type":"GATES","at":[12],"guard":"(dmi_wren_auth = '1') and (dmi_req_i.addr = addr_data0_c) and (dm_ctrl.busy = '0')","lines":[495],"targets":["dci.data_reg_we"]}
+    {"type":"GATES","at":[3],"guard":"dmi_wren_auth = '1' | not (dmi_wren_auth = '1')","lines":[249],"targets":["dm_ctrl.state"]}
+    {"type":"GATES","at":[4],"guard":"dmi_wren_auth = '1'","lines":[425],"targets":["dm_reg.dmcontrol_ndmreset","dm_reg.halt_req","dm_reg.hartsel","dm_reg.req_res","dm_reg.reset_ack"]}
+    {"type":"GATES","at":[7],"guard":"dmi_wren_auth = '1'","lines":[453],"targets":["dm_reg.autoexec_wr"]}
+    {"type":"GATES","at":[5],"guard":"(dmi_req_i.addr = addr_command_c) and (dmi_wren_auth = '1') and (dm_ctrl.busy = '0') and (dm_ctrl.cmderr = \"000\")","lines":[438],"targets":["dm_reg.command"]}
+    {"type":"GATES","at":[6],"guard":"(dmi_req_i.addr = addr_abstractauto_c) and (dmi_wren_auth = '1') and (dm_ctrl.busy = '0')","lines":[443],"targets":["dm_reg.abstractauto_autoexecdata","dm_reg.abstractauto_autoexecprogbuf"]}
+    {"type":"GATES","at":[8],"guard":"(dmi_req_i.addr = addr_abstractcs_c) and (dmi_wren_auth = '1') and (dmi_req_i.data(10 downto 8) = \"111\")","lines":[459],"targets":["dm_reg.clr_acc_err"]}
+    {"type":"GATES","at":[9],"guard":"(dmi_req_i.addr = addr_progbuf0_c) and (dmi_wren_auth = '1') and (dm_ctrl.busy = '0')","lines":[464],"targets":["dm_reg.progbuf"]}
+    {"type":"GATED_BY","at":[2],"guard":"(not AUTHENTICATOR) or (auth.valid = '1')","lines":[212],"targets":["auth.valid"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[212],"targets":["dmi_wren"]}
+SIGNAL {"name":"dmi_rden","entity":"neorv32_debug_dm","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":76},{"id":2,"line":210},{"id":3,"line":213},{"id":4,"line":524},{"id":5,"line":747}]}
+    {"type":"GATES","at":[4],"guard":"dmi_wren or dmi_rden","lines":[524],"targets":["dmi_rsp_o.ack"]}
+    {"type":"GATES","at":[5],"guard":"(dmi_rden = '1') and (dmi_req_i.addr = addr_authdata_c)","lines":[747],"targets":["auth.re"]}
+    {"type":"SOURCES","at":[3],"lines":[213],"targets":["dmi_rden_auth"]}
+    {"type":"GATED_BY","at":[2],"guard":"(dmi_req_i.op = dmi_req_rd_c)","lines":[210],"targets":["dmi_req_i.op"]}
+SIGNAL {"name":"dmi_rden_auth","entity":"neorv32_debug_dm","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":76},{"id":2,"line":213},{"id":3,"line":626},{"id":4,"line":635}]}
+    {"type":"GATES","at":[3],"guard":"(dmi_rden_auth = '1') and (dm_ctrl.busy = '1') and ((dmi_req_i.addr = addr_data0_c) or (dmi_req_i.addr = addr_progbuf0_c) or (dmi_req_i.addr = addr_progbuf1_c)) | not ((dmi_rden_auth = '1') and (dm_ctrl.busy = '1') and ((dmi_req_i.addr = addr_data0_c) or (dmi_req_i.addr = addr_progbuf0_c) or (dmi_req_i.addr = addr_progbuf1_c)))","lines":[626],"targets":["dm_reg.rd_acc_err"]}
+    {"type":"GATES","at":[4],"guard":"(dmi_rden_auth = '1') and (((dmi_req_i.addr = addr_data0_c) and (dm_reg.abstractauto_autoexecdata = '1')) or ((dmi_req_i.addr = addr_progbuf0_c) and (dm_reg.abstractauto_autoexecprogbuf(0) = '1')) or ((dmi_req_i.addr = addr_progbuf1_c) and (dm_reg.abstractauto_autoexecprogbuf(1) = '1'))) | not ((dmi_rden_auth = '1') and (((dmi_req_i.addr = addr_data0_c) and (dm_reg.abstractauto_autoexecdata = '1') ... [condition cut; read it at the cited lines]","lines":[635],"targets":["dm_reg.autoexec_rd"]}
+    {"type":"GATED_BY","at":[2],"guard":"(not AUTHENTICATOR) or (auth.valid = '1')","lines":[213],"targets":["auth.valid"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[213],"targets":["dmi_rden"]}
+SIGNAL {"name":"dm_reg","entity":"neorv32_debug_dm","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":100},{"id":2,"line":229},{"id":3,"line":255},{"id":4,"line":255},{"id":5,"line":261},{"id":6,"line":262},{"id":7,"line":263},{"id":8,"line":264},{"id":9,"line":265},{"id":10,"line":265},{"id":11,"line":266},{"id":12,"line":279},{"id":13,"line":280},{"id":14,"line":283},{"id":15,"line":288},{"id":16,"line":293},{"id":17,"line":298},{"id":18,"line":299},{"id":19,"line":305},{"id":20,"line":327},{"id":21,"line":327},{"id":22,"line":330},{"id":23,"line":355},{"id":24,"line":364},{"id":25,"line":366},{"id":26,"line":366},{"id":27,"line":373},{"id":28,"line":377},{"id":29,"line":377},{"id":30,"line":382},{"id":31,"line":384},{"id":32,"line":384},{"id":33,"line":398},{"id":34,"line":399},{"id":35,"line":401},{"id":36,"line":402},{"id":37,"line":404},{"id":38,"line":405},{"id":39,"line":407},{"id":40,"line":408},{"id":41,"line":409},{"id":42,"line":410},{"id":43,"line":411},{"id":44,"line":412},{"id":45,"line":413},{"id":46,"line":417},{"id":47,"line":418},{"id":48,"line":419},{"id":49,"line":420},{"id":50,"line":421},{"id":51,"line":426},{"id":52,"line":427},{"id":53,"line":428},{"id":54,"line":429},{"id":55,"line":430},{"id":56,"line":433},{"id":57,"line":439},{"id":58,"line":444},{"id":59,"line":445},{"id":60,"line":446},{"id":61,"line":450},{"id":62,"line":451},{"id":63,"line":452},{"id":64,"line":454},{"id":65,"line":460},{"id":66,"line":465},{"id":67,"line":470},{"id":68,"line":478},{"id":69,"line":487},{"id":70,"line":487}]}
+    {"occurrences":[{"id":71,"line":487},{"id":72,"line":489},{"id":73,"line":489},{"id":74,"line":500},{"id":75,"line":500},{"id":76,"line":500},{"id":77,"line":505},{"id":78,"line":505},{"id":79,"line":509},{"id":80,"line":510},{"id":81,"line":521},{"id":82,"line":522},{"id":83,"line":534},{"id":84,"line":535},{"id":85,"line":536},{"id":86,"line":537},{"id":87,"line":538},{"id":88,"line":539},{"id":89,"line":540},{"id":90,"line":541},{"id":91,"line":542},{"id":92,"line":543},{"id":93,"line":544},{"id":94,"line":545},{"id":95,"line":562},{"id":96,"line":567},{"id":97,"line":569},{"id":98,"line":597},{"id":99,"line":598},{"id":100,"line":599},{"id":101,"line":628},{"id":102,"line":630},{"id":103,"line":636},{"id":104,"line":637},{"id":105,"line":638},{"id":106,"line":639},{"id":107,"line":641},{"id":108,"line":743}]}
+SIGNAL {"name":"dm_reg.dmcontrol_ndmreset","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":100},{"id":2,"line":355},{"id":3,"line":364},{"id":4,"line":373},{"id":5,"line":382},{"id":6,"line":398},{"id":7,"line":430},{"id":8,"line":505},{"id":9,"line":540},{"id":10,"line":541},{"id":11,"line":567}]}
+    {"constant_drivers":[{"at":6,"value":"'0'","lines":[398]}]}
+    {"type":"GATES","at":[2],"guard":"dm_reg.dmcontrol_ndmreset = '1' | not (dm_reg.dmcontrol_ndmreset = '1')","lines":[355],"targets":["dm_ctrl.hart_halted"]}
+    {"type":"GATES","at":[3],"guard":"dm_reg.dmcontrol_ndmreset = '1' | not (dm_reg.dmcontrol_ndmreset = '1')","lines":[364],"targets":["dm_ctrl.hart_resume_req"]}
+    {"type":"GATES","at":[4],"guard":"dm_reg.dmcontrol_ndmreset = '1' | not (dm_reg.dmcontrol_ndmreset = '1')","lines":[373],"targets":["dm_ctrl.hart_resume_ack"]}
+    {"type":"GATES","at":[5],"guard":"dm_reg.dmcontrol_ndmreset = '1' | not (dm_reg.dmcontrol_ndmreset = '1')","lines":[382],"targets":["dm_ctrl.hart_reset"]}
+    {"type":"GATES","at":[8],"guard":"(dm_reg.dmcontrol_ndmreset = '1') and (dm_reg.dmcontrol_dmactive = '1') and ((not AUTHENTICATOR) or (auth.valid = '1'))","lines":[505],"targets":["ndmrstn_o"]}
+    {"type":"CARRIES","at":[9,10,11],"lines":[540,541,567],"targets":["dmi_rsp_o.data"]}
+    {"type":"CLOCKED_BY","at":[7],"lines":[430],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[6],"lines":[398],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[7],"guard":"dmi_req_i.addr = addr_dmcontrol_c","lines":[430],"targets":["dmi_req_i.addr"]}
+    {"type":"GATED_BY","at":[7],"guard":"dmi_wren_auth = '1'","lines":[430],"targets":["dmi_wren_auth"]}
+    {"type":"DERIVES_FROM","at":[7],"lines":[430],"targets":["dmi_req_i.data"]}
+SIGNAL {"name":"dm_reg.dmcontrol_dmactive","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":100},{"id":2,"line":229},{"id":3,"line":399},{"id":4,"line":433},{"id":5,"line":500},{"id":6,"line":505},{"id":7,"line":569},{"id":8,"line":743}]}
+    {"constant_drivers":[{"at":3,"value":"'0'","lines":[399]}]}
+    {"connections":[{"at":8,"instance":"neorv32_debug_auth_inst","formal":"enable_i","mode":"in","lines":[743]}]}
+    {"type":"GATES","at":[2],"guard":"dm_reg.dmcontrol_dmactive = '0' | not (dm_reg.dmcontrol_dmactive = '0')","lines":[229],"targets":["dci.req_exe","dm_ctrl.cmderr","dm_ctrl.illegal_cmd","dm_ctrl.illegal_state","dm_ctrl.ldsw_progbuf","dm_ctrl.pbuf_en","dm_ctrl.state"]}
+    {"type":"GATES","at":[6],"guard":"(dm_reg.dmcontrol_ndmreset = '1') and (dm_reg.dmcontrol_dmactive = '1') and ((not AUTHENTICATOR) or (auth.valid = '1'))","lines":[505],"targets":["ndmrstn_o"]}
+    {"type":"CARRIES","at":[7],"lines":[569],"targets":["dmi_rsp_o.data"]}
+    {"type":"SOURCES","at":[5],"lines":[500],"targets":["halt_req_o"]}
+    {"type":"CLOCKED_BY","at":[4],"lines":[433],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[3],"lines":[399],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[4],"guard":"dmi_req_i.addr = addr_dmcontrol_c","lines":[433],"targets":["dmi_req_i.addr"]}
+    {"type":"GATED_BY","at":[4],"guard":"dmi_wren = '1'","lines":[433],"targets":["dmi_wren"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[433],"targets":["dmi_req_i.data"]}
+SIGNAL {"name":"dm_reg.abstractauto_autoexecdata","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":100},{"id":2,"line":401},{"id":3,"line":444},{"id":4,"line":450},{"id":5,"line":597},{"id":6,"line":636}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[401]}]}
+    {"type":"GATES","at":[4],"guard":"((dmi_req_i.addr = addr_data0_c) and (dm_reg.abstractauto_autoexecdata = '1')) or ((dmi_req_i.addr = addr_progbuf0_c) and (dm_reg.abstractauto_autoexecprogbuf(0) = '1')) or ((dmi_req_i.addr = addr_progbuf1_c) and (dm_reg.abstractauto_autoexecprogbuf(1) = '1'))","lines":[450],"targets":["dm_reg.autoexec_wr"]}
+    {"type":"GATES","at":[6],"guard":"(dmi_rden_auth = '1') and (((dmi_req_i.addr = addr_data0_c) and (dm_reg.abstractauto_autoexecdata = '1')) or ((dmi_req_i.addr = addr_progbuf0_c) and (dm_reg.abstractauto_autoexecprogbuf(0) = '1')) or ((dmi_req_i.addr = addr_progbuf1_c) and (dm_reg.abstractauto_autoexecprogbuf(1) = '1'))) | not ((dmi_rden_auth = '1') and (((dmi_req_i.addr = addr_data0_c) and (dm_reg.abstractauto_autoexecdata = '1') ... [condition cut; read it at the cited lines]","lines":[636],"targets":["dm_reg.autoexec_rd"]}
+    {"type":"CARRIES","at":[5],"lines":[597],"targets":["dmi_rsp_o.data"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[444],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[401],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"(dmi_req_i.addr = addr_abstractauto_c) and (dmi_wren_auth = '1') and (dm_ctrl.busy = '0')","lines":[444],"targets":["dm_ctrl.busy","dmi_req_i.addr","dmi_wren_auth"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[444],"targets":["dmi_req_i.data"]}
+SIGNAL {"name":"dm_reg.abstractauto_autoexecprogbuf","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":100},{"id":2,"line":402},{"id":3,"line":445},{"id":4,"line":446},{"id":5,"line":451},{"id":6,"line":452},{"id":7,"line":598},{"id":8,"line":599},{"id":9,"line":637},{"id":10,"line":638}]}
+    {"constant_drivers":[{"at":2,"value":"\"00\"","lines":[402]}]}
+    {"type":"GATES","at":[9,10],"guard":"(dmi_rden_auth = '1') and (((dmi_req_i.addr = addr_data0_c) and (dm_reg.abstractauto_autoexecdata = '1')) or ((dmi_req_i.addr = addr_progbuf0_c) and (dm_reg.abstractauto_autoexecprogbuf(0) = '1')) or ((dmi_req_i.addr = addr_progbuf1_c) and (dm_reg.abstractauto_autoexecprogbuf(1) = '1'))) | not ((dmi_rden_auth = '1') and (((dmi_req_i.addr = addr_data0_c) and (dm_reg.abstractauto_autoexecdata = '1') ... [condition cut; read it at the cited lines]","lines":[637,638],"targets":["dm_reg.autoexec_rd"]}
+    {"type":"GATES","at":[5,6],"guard":"((dmi_req_i.addr = addr_data0_c) and (dm_reg.abstractauto_autoexecdata = '1')) or ((dmi_req_i.addr = addr_progbuf0_c) and (dm_reg.abstractauto_autoexecprogbuf(0) = '1')) or ((dmi_req_i.addr = addr_progbuf1_c) and (dm_reg.abstractauto_autoexecprogbuf(1) = '1'))","lines":[451,452],"targets":["dm_reg.autoexec_wr"]}
+    {"type":"SOURCES","at":[7,8],"lines":[598,599],"targets":["dmi_rsp_o.data"]}
+    {"type":"CLOCKED_BY","at":[3,4],"lines":[445,446],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[402],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3,4],"guard":"(dmi_req_i.addr = addr_abstractauto_c) and (dmi_wren_auth = '1') and (dm_ctrl.busy = '0')","lines":[445,446],"targets":["dm_ctrl.busy","dmi_req_i.addr","dmi_wren_auth"]}
+    {"type":"DERIVES_FROM","at":[3,4],"lines":[445,446],"targets":["dmi_req_i.data"]}
+SIGNAL {"name":"dm_reg.progbuf","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":100},{"id":2,"line":405},{"id":3,"line":465},{"id":4,"line":470},{"id":5,"line":509},{"id":6,"line":510}]}
+    {"constant_drivers":[{"at":2,"value":"(others => instr_nop_c)","lines":[405]}]}
+    {"type":"SOURCES","at":[5,6],"lines":[509,510],"targets":["cpu_progbuf"]}
+    {"type":"CLOCKED_BY","at":[3,4],"lines":[465,470],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[405],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"(dmi_req_i.addr = addr_progbuf0_c) and (dmi_wren_auth = '1') and (dm_ctrl.busy = '0')","lines":[465],"targets":["dm_ctrl.busy","dmi_req_i.addr","dmi_wren_auth"]}
+    {"type":"GATED_BY","at":[4],"guard":"(dmi_req_i.addr = addr_progbuf1_c) and (dmi_wren_auth = '1') and (dm_ctrl.busy = '0')","lines":[470],"targets":["dm_ctrl.busy","dmi_req_i.addr","dmi_wren_auth"]}
+    {"type":"COPIES","at":[3,4],"lines":[465,470],"targets":["dmi_req_i.data"]}
+SIGNAL {"name":"dm_reg.command","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":100},{"id":2,"line":261},{"id":3,"line":262},{"id":4,"line":263},{"id":5,"line":264},{"id":6,"line":265},{"id":7,"line":265},{"id":8,"line":279},{"id":9,"line":280},{"id":10,"line":283},{"id":11,"line":288},{"id":12,"line":293},{"id":13,"line":404},{"id":14,"line":439}]}
+    {"constant_drivers":[{"at":13,"value":"(others => '0')","lines":[404]}]}
+    {"type":"GATES","at":[2,3,4,5,6,7],"guard":"not ((dm_reg.command(31 downto 24) = x\"00\") and (dm_reg.command(23) = '0') and (dm_reg.command(22 downto 20) = \"010\") and (dm_reg.command(19) = '0') and ((dm_reg.command(17) = '0') or (dm_reg.command(15 downto 5) = \"00010000000\")))","lines":[261,262,263,264,265],"targets":["dm_ctrl.illegal_cmd"]}
+    {"type":"GATES","at":[2,3,4,5,6,7],"guard":"(dm_reg.command(31 downto 24) = x\"00\") and (dm_reg.command(23) = '0') and (dm_reg.command(22 downto 20) = \"010\") and (dm_reg.command(19) = '0') and ((dm_reg.command(17) = '0') or (dm_reg.command(15 downto 5) = \"00010000000\"))","lines":[261,262,263,264,265],"targets":["dm_ctrl.illegal_state"]}
+    {"type":"GATES","at":[2,3,4,5,6,7],"guard":"(dm_reg.command(31 downto 24) = x\"00\") and (dm_reg.command(23) = '0') and (dm_reg.command(22 downto 20) = \"010\") and (dm_reg.command(19) = '0') and ((dm_reg.command(17) = '0') or (dm_reg.command(15 downto 5) = \"00010000000\")) | not ((dm_reg.command(31 downto 24) = x\"00\") and (dm_reg.command(23) = '0') and (dm_reg.command(22 downto 20) = \"010\") and (dm_reg.command(19) = '0') and ((dm_reg.command(17 ... [condition cut; read it at the cited lines]","lines":[261,262,263,264,265],"targets":["dm_ctrl.state"]}
+    {"type":"GATES","at":[8],"guard":"dm_reg.command(17) = '1' and dm_reg.command(16) = '0' | dm_reg.command(17) = '1' and not (dm_reg.command(16) = '0') | not (dm_reg.command(17) = '1')","lines":[279],"targets":["dm_ctrl.ldsw_progbuf"]}
+    {"type":"GATES","at":[9],"guard":"dm_reg.command(17) = '1' and dm_reg.command(16) = '0' | dm_reg.command(17) = '1' and not (dm_reg.command(16) = '0')","lines":[280],"targets":["dm_ctrl.ldsw_progbuf"]}
+    {"type":"SOURCES","at":[10,11],"lines":[283,288],"targets":["dm_ctrl.ldsw_progbuf"]}
+    {"type":"SOURCES","at":[12],"lines":[293],"targets":["dm_ctrl.pbuf_en"]}
+    {"type":"CLOCKED_BY","at":[14],"lines":[439],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[13],"lines":[404],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[14],"guard":"(dmi_req_i.addr = addr_command_c) and (dmi_wren_auth = '1') and (dm_ctrl.busy = '0') and (dm_ctrl.cmderr = \"000\")","lines":[439],"targets":["dm_ctrl.busy","dm_ctrl.cmderr","dmi_req_i.addr","dmi_wren_auth"]}
+    {"type":"COPIES","at":[14],"lines":[439],"targets":["dmi_req_i.data"]}
+SIGNAL {"name":"dm_reg.halt_req","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":100},{"id":2,"line":407},{"id":3,"line":426},{"id":4,"line":500}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[407]}]}
+    {"type":"SOURCES","at":[4],"lines":[500],"targets":["halt_req_o"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[426],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[407],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"dmi_req_i.addr = addr_dmcontrol_c","lines":[426],"targets":["dmi_req_i.addr"]}
+    {"type":"GATED_BY","at":[3],"guard":"dmi_wren_auth = '1'","lines":[426],"targets":["dmi_wren_auth"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[426],"targets":["dmi_req_i.data"]}
+SIGNAL {"name":"dm_reg.req_res","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":100},{"id":2,"line":366},{"id":3,"line":377},{"id":4,"line":408},{"id":5,"line":417},{"id":6,"line":427}]}
+    {"constant_drivers":[{"at":4,"value":"'0'","lines":[408]},{"at":5,"value":"'0'","lines":[417]}]}
+    {"type":"GATES","at":[2],"guard":"(dm_reg.req_res = '1') and (dm_reg.hartsel_dec(i) = '1') | not ((dm_reg.req_res = '1') and (dm_reg.hartsel_dec(i) = '1'))","lines":[366],"targets":["dm_ctrl.hart_resume_req"]}
+    {"type":"GATES","at":[3],"guard":"(dm_reg.req_res = '1') and (dm_reg.hartsel_dec(i) = '1')","lines":[377],"targets":["dm_ctrl.hart_resume_ack"]}
+    {"type":"CLOCKED_BY","at":[5,6],"lines":[417,427],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[4],"lines":[408],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[6],"guard":"dmi_req_i.addr = addr_dmcontrol_c","lines":[427],"targets":["dmi_req_i.addr"]}
+    {"type":"GATED_BY","at":[6],"guard":"dmi_wren_auth = '1'","lines":[427],"targets":["dmi_wren_auth"]}
+    {"type":"DERIVES_FROM","at":[6],"lines":[427],"targets":["dmi_req_i.data"]}
+SIGNAL {"name":"dm_reg.reset_ack","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":100},{"id":2,"line":384},{"id":3,"line":409},{"id":4,"line":418},{"id":5,"line":428}]}
+    {"constant_drivers":[{"at":3,"value":"'0'","lines":[409]},{"at":4,"value":"'0'","lines":[418]}]}
+    {"type":"GATES","at":[2],"guard":"(dm_reg.reset_ack = '1') and (dm_reg.hartsel_dec(i) = '1')","lines":[384],"targets":["dm_ctrl.hart_reset"]}
+    {"type":"CLOCKED_BY","at":[4,5],"lines":[418,428],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[3],"lines":[409],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[5],"guard":"dmi_req_i.addr = addr_dmcontrol_c","lines":[428],"targets":["dmi_req_i.addr"]}
+    {"type":"GATED_BY","at":[5],"guard":"dmi_wren_auth = '1'","lines":[428],"targets":["dmi_wren_auth"]}
+    {"type":"DERIVES_FROM","at":[5],"lines":[428],"targets":["dmi_req_i.data"]}
+SIGNAL {"name":"dm_reg.hartsel","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":100},{"id":2,"line":410},{"id":3,"line":429},{"id":4,"line":487},{"id":5,"line":487},{"id":6,"line":489},{"id":7,"line":562}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[410]}]}
+    {"type":"GATES","at":[4,5],"guard":"(dm_reg.hartsel(2) = '0') and (dm_reg.hartsel(1 downto 0) = std_ulogic_vector(to_unsigned(i, 2)))","lines":[487],"targets":["dm_reg.hartsel_dec"]}
+    {"type":"GATES","at":[6],"guard":"(unsigned(dm_reg.hartsel) < NUM_HARTS)","lines":[489],"targets":["dm_reg.hartsel_inv"]}
+    {"type":"SOURCES","at":[7],"lines":[562],"targets":["dmi_rsp_o.data"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[429],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[410],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"dmi_req_i.addr = addr_dmcontrol_c","lines":[429],"targets":["dmi_req_i.addr"]}
+    {"type":"GATED_BY","at":[3],"guard":"dmi_wren_auth = '1'","lines":[429],"targets":["dmi_wren_auth"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[429],"targets":["dmi_req_i.data"]}
+SIGNAL {"name":"dm_reg.hartsel_dec","entity":"neorv32_debug_dm","kind":"signal","handling":["ORIGINATES","CONSUMES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":100},{"id":2,"line":266},{"id":3,"line":298},{"id":4,"line":299},{"id":5,"line":305},{"id":6,"line":366},{"id":7,"line":377},{"id":8,"line":384},{"id":9,"line":487},{"id":10,"line":500},{"id":11,"line":534},{"id":12,"line":535},{"id":13,"line":536},{"id":14,"line":537},{"id":15,"line":542},{"id":16,"line":543},{"id":17,"line":544},{"id":18,"line":545}]}
+    {"type":"GATES","at":[2],"guard":"not (or_reduce_f(dm_ctrl.hart_halted and dm_reg.hartsel_dec) = '1')","lines":[266],"targets":["dm_ctrl.illegal_state"]}
+    {"type":"GATES","at":[2],"guard":"not (or_reduce_f(dm_ctrl.hart_halted and dm_reg.hartsel_dec) = '1') | or_reduce_f(dm_ctrl.hart_halted and dm_reg.hartsel_dec) = '1'","lines":[266],"targets":["dm_ctrl.state"]}
+    {"type":"GATES","at":[4],"guard":"or_reduce_f(dci.ack_exe and dm_reg.hartsel_dec) = '1'","lines":[299],"targets":["dm_ctrl.state"]}
+    {"type":"GATES","at":[5],"guard":"or_reduce_f(dci.ack_hlt and dm_reg.hartsel_dec) = '1'","lines":[305],"targets":["dm_ctrl.state"]}
+    {"type":"GATES","at":[6],"guard":"(dm_reg.req_res = '1') and (dm_reg.hartsel_dec(i) = '1') | not ((dm_reg.req_res = '1') and (dm_reg.hartsel_dec(i) = '1'))","lines":[366],"targets":["dm_ctrl.hart_resume_req"]}
+    {"type":"GATES","at":[7],"guard":"(dm_reg.req_res = '1') and (dm_reg.hartsel_dec(i) = '1')","lines":[377],"targets":["dm_ctrl.hart_resume_ack"]}
+    {"type":"GATES","at":[8],"guard":"(dm_reg.reset_ack = '1') and (dm_reg.hartsel_dec(i) = '1')","lines":[384],"targets":["dm_ctrl.hart_reset"]}
+    {"type":"CARRIES","at":[3],"lines":[298],"targets":["dci.req_exe"]}
+    {"type":"SOURCES","at":[10],"lines":[500],"targets":["halt_req_o"]}
+    {"type":"SOURCES","at":[11,12,13,14,15,16,17,18],"lines":[534,535,536,537,542,543,544,545],"targets":["dmi_rsp_o.data"]}
+    {"type":"GATED_BY","at":[9],"guard":"(dm_reg.hartsel(2) = '0') and (dm_reg.hartsel(1 downto 0) = std_ulogic_vector(to_unsigned(i, 2)))","lines":[487],"targets":["dm_reg.hartsel"]}
+SIGNAL {"name":"dm_reg.hartsel_inv","entity":"neorv32_debug_dm","kind":"signal","handling":["ORIGINATES","CONSUMES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":100},{"id":2,"line":489},{"id":3,"line":538},{"id":4,"line":539}]}
+    {"type":"CARRIES","at":[3,4],"lines":[538,539],"targets":["dmi_rsp_o.data"]}
+    {"type":"GATED_BY","at":[2],"guard":"(unsigned(dm_reg.hartsel) < NUM_HARTS)","lines":[489],"targets":["dm_reg.hartsel"]}
+SIGNAL {"name":"dm_reg.wr_acc_err","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":100},{"id":2,"line":327},{"id":3,"line":411},{"id":4,"line":419},{"id":5,"line":478}]}
+    {"constant_drivers":[{"at":3,"value":"'0'","lines":[411]},{"at":4,"value":"'0'","lines":[419]},{"at":5,"value":"'1'","lines":[478]}]}
+    {"type":"GATES","at":[2],"guard":"(dm_reg.rd_acc_err = '1') or (dm_reg.wr_acc_err = '1')","lines":[327],"targets":["dm_ctrl.cmderr"]}
+    {"type":"CLOCKED_BY","at":[4,5],"lines":[419,478],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[3],"lines":[411],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[5],"guard":"(dmi_wren_auth = '1') and (dm_ctrl.busy = '1') and ((dmi_req_i.addr = addr_abstractcs_c) or (dmi_req_i.addr = addr_command_c) or (dmi_req_i.addr = addr_abstractauto_c) or (dmi_req_i.addr = addr_data0_c) or (dmi_req_i.addr = addr_progbuf0_c) or (dmi_req_i.addr = addr_progbuf1_c))","lines":[478],"targets":["dm_ctrl.busy","dmi_req_i.addr","dmi_wren_auth"]}
+SIGNAL {"name":"dm_reg.rd_acc_err","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":100},{"id":2,"line":327},{"id":3,"line":521},{"id":4,"line":628},{"id":5,"line":630}]}
+    {"constant_drivers":[{"at":3,"value":"'0'","lines":[521]},{"at":4,"value":"'1'","lines":[628]},{"at":5,"value":"'0'","lines":[630]}]}
+    {"type":"GATES","at":[2],"guard":"(dm_reg.rd_acc_err = '1') or (dm_reg.wr_acc_err = '1')","lines":[327],"targets":["dm_ctrl.cmderr"]}
+    {"type":"CLOCKED_BY","at":[4,5],"lines":[628,630],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[3],"lines":[521],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[4],"guard":"(dmi_rden_auth = '1') and (dm_ctrl.busy = '1') and ((dmi_req_i.addr = addr_data0_c) or (dmi_req_i.addr = addr_progbuf0_c) or (dmi_req_i.addr = addr_progbuf1_c))","lines":[628],"targets":["dm_ctrl.busy","dmi_rden_auth","dmi_req_i.addr"]}
+    {"type":"GATED_BY","at":[5],"guard":"not ((dmi_rden_auth = '1') and (dm_ctrl.busy = '1') and ((dmi_req_i.addr = addr_data0_c) or (dmi_req_i.addr = addr_progbuf0_c) or (dmi_req_i.addr = addr_progbuf1_c)))","lines":[630],"targets":["dm_ctrl.busy","dmi_rden_auth","dmi_req_i.addr"]}
+SIGNAL {"name":"dm_reg.clr_acc_err","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":100},{"id":2,"line":330},{"id":3,"line":412},{"id":4,"line":420},{"id":5,"line":460}]}
+    {"constant_drivers":[{"at":3,"value":"'0'","lines":[412]},{"at":4,"value":"'0'","lines":[420]},{"at":5,"value":"'1'","lines":[460]}]}
+    {"type":"GATES","at":[2],"guard":"dm_reg.clr_acc_err = '1'","lines":[330],"targets":["dm_ctrl.cmderr"]}
+    {"type":"CLOCKED_BY","at":[4,5],"lines":[420,460],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[3],"lines":[412],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[5],"guard":"(dmi_req_i.addr = addr_abstractcs_c) and (dmi_wren_auth = '1') and (dmi_req_i.data(10 downto 8) = \"111\")","lines":[460],"targets":["dmi_req_i.addr","dmi_req_i.data","dmi_wren_auth"]}
+SIGNAL {"name":"dm_reg.autoexec_wr","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":100},{"id":2,"line":255},{"id":3,"line":413},{"id":4,"line":421},{"id":5,"line":454}]}
+    {"constant_drivers":[{"at":3,"value":"'0'","lines":[413]},{"at":4,"value":"'0'","lines":[421]},{"at":5,"value":"'1'","lines":[454]}]}
+    {"type":"GATES","at":[2],"guard":"(dm_reg.autoexec_rd = '1') or (dm_reg.autoexec_wr = '1')","lines":[255],"targets":["dm_ctrl.state"]}
+    {"type":"CLOCKED_BY","at":[4,5],"lines":[421,454],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[3],"lines":[413],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[5],"guard":"((dmi_req_i.addr = addr_data0_c) and (dm_reg.abstractauto_autoexecdata = '1')) or ((dmi_req_i.addr = addr_progbuf0_c) and (dm_reg.abstractauto_autoexecprogbuf(0) = '1')) or ((dmi_req_i.addr = addr_progbuf1_c) and (dm_reg.abstractauto_autoexecprogbuf(1) = '1'))","lines":[454],"targets":["dm_reg.abstractauto_autoexecdata","dm_reg.abstractauto_autoexecprogbuf","dmi_req_i.addr"]}
+    {"type":"GATED_BY","at":[5],"guard":"dmi_wren_auth = '1'","lines":[454],"targets":["dmi_wren_auth"]}
+SIGNAL {"name":"dm_reg.autoexec_rd","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":100},{"id":2,"line":255},{"id":3,"line":522},{"id":4,"line":639},{"id":5,"line":641}]}
+    {"constant_drivers":[{"at":3,"value":"'0'","lines":[522]},{"at":4,"value":"'1'","lines":[639]},{"at":5,"value":"'0'","lines":[641]}]}
+    {"type":"GATES","at":[2],"guard":"(dm_reg.autoexec_rd = '1') or (dm_reg.autoexec_wr = '1')","lines":[255],"targets":["dm_ctrl.state"]}
+    {"type":"CLOCKED_BY","at":[4,5],"lines":[639,641],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[3],"lines":[522],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[4],"guard":"(dmi_rden_auth = '1') and (((dmi_req_i.addr = addr_data0_c) and (dm_reg.abstractauto_autoexecdata = '1')) or ((dmi_req_i.addr = addr_progbuf0_c) and (dm_reg.abstractauto_autoexecprogbuf(0) = '1')) or ((dmi_req_i.addr = addr_progbuf1_c) and (dm_reg.abstractauto_autoexecprogbuf(1) = '1')))","lines":[639],"targets":["dm_reg.abstractauto_autoexecdata","dm_reg.abstractauto_autoexecprogbuf","dmi_rden_auth","dmi_req_i.addr"]}
+    {"type":"GATED_BY","at":[5],"guard":"not ((dmi_rden_auth = '1') and (((dmi_req_i.addr = addr_data0_c) and (dm_reg.abstractauto_autoexecdata = '1')) or ((dmi_req_i.addr = addr_progbuf0_c) and (dm_reg.abstractauto_autoexecprogbuf(0) = '1')) or ((dmi_req_i.addr = addr_progbuf1_c) and (dm_reg.abstractauto_autoexecprogbuf(1) = '1'))))","lines":[641],"targets":["dm_reg.abstractauto_autoexecdata","dm_reg.abstractauto_autoexecprogbuf","dmi_rden_auth","dmi_req_i.addr"]}
+SIGNAL {"name":"cpu_progbuf","entity":"neorv32_debug_dm","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":104},{"id":2,"line":508},{"id":3,"line":509},{"id":4,"line":510},{"id":5,"line":511},{"id":6,"line":694}]}
+    {"constant_drivers":[{"at":5,"value":"instr_ebreak_c","lines":[511]}]}
+    {"type":"SOURCES","at":[6],"lines":[694],"targets":["bus_rsp_o.data"]}
+    {"type":"GATED_BY","at":[3,4],"guard":"(dm_ctrl.pbuf_en = '0')","lines":[509,510],"targets":["dm_ctrl.pbuf_en"]}
+    {"type":"COPIES","at":[2],"lines":[508],"targets":["dm_ctrl.ldsw_progbuf"]}
+    {"type":"DERIVES_FROM","at":[3,4],"lines":[509,510],"targets":["dm_reg.progbuf"]}
+SIGNAL {"name":"dm_ctrl","entity":"neorv32_debug_dm","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":131},{"id":2,"line":221},{"id":3,"line":222},{"id":4,"line":224},{"id":5,"line":225},{"id":6,"line":226},{"id":7,"line":227},{"id":8,"line":230},{"id":9,"line":231},{"id":10,"line":233},{"id":11,"line":234},{"id":12,"line":235},{"id":13,"line":236},{"id":14,"line":241},{"id":15,"line":242},{"id":16,"line":245},{"id":17,"line":251},{"id":18,"line":252},{"id":19,"line":256},{"id":20,"line":266},{"id":21,"line":267},{"id":22,"line":269},{"id":23,"line":270},{"id":24,"line":273},{"id":25,"line":274},{"id":26,"line":281},{"id":27,"line":282},{"id":28,"line":283},{"id":29,"line":284},{"id":30,"line":286},{"id":31,"line":287},{"id":32,"line":288},{"id":33,"line":291},{"id":34,"line":293},{"id":35,"line":294},{"id":36,"line":300},{"id":37,"line":306},{"id":38,"line":311},{"id":39,"line":315},{"id":40,"line":320},{"id":41,"line":321},{"id":42,"line":322},{"id":43,"line":324},{"id":44,"line":325},{"id":45,"line":326},{"id":46,"line":328},{"id":47,"line":331},{"id":48,"line":339},{"id":49,"line":339},{"id":50,"line":347},{"id":51,"line":348},{"id":52,"line":349},{"id":53,"line":350},{"id":54,"line":356},{"id":55,"line":358},{"id":56,"line":360},{"id":57,"line":365},{"id":58,"line":367},{"id":59,"line":369},{"id":60,"line":374},{"id":61,"line":376},{"id":62,"line":378},{"id":63,"line":383},{"id":64,"line":385},{"id":65,"line":438},{"id":66,"line":438},{"id":67,"line":443},{"id":68,"line":464},{"id":69,"line":469},{"id":70,"line":474}]}
+    {"occurrences":[{"id":71,"line":495},{"id":72,"line":501},{"id":73,"line":508},{"id":74,"line":509},{"id":75,"line":510},{"id":76,"line":534},{"id":77,"line":535},{"id":78,"line":536},{"id":79,"line":537},{"id":80,"line":542},{"id":81,"line":543},{"id":82,"line":544},{"id":83,"line":545},{"id":84,"line":587},{"id":85,"line":589},{"id":86,"line":615},{"id":87,"line":626}]}
+SIGNAL {"name":"dm_ctrl.state","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":131},{"id":2,"line":221},{"id":3,"line":230},{"id":4,"line":245},{"id":5,"line":252},{"id":6,"line":256},{"id":7,"line":267},{"id":8,"line":270},{"id":9,"line":274},{"id":10,"line":294},{"id":11,"line":300},{"id":12,"line":306},{"id":13,"line":311},{"id":14,"line":315},{"id":15,"line":339}]}
+    {"constant_drivers":[{"at":2,"value":"CMD_IDLE","lines":[221]},{"at":3,"value":"CMD_IDLE","lines":[230]},{"at":5,"value":"CMD_CHECK","lines":[252]},{"at":6,"value":"CMD_CHECK","lines":[256]},{"at":7,"value":"CMD_PREPARE","lines":[267]},{"at":8,"value":"CMD_ERROR","lines":[270]},{"at":9,"value":"CMD_ERROR","lines":[274]},{"at":10,"value":"CMD_TRIGGER","lines":[294]},{"at":11,"value":"CMD_BUSY","lines":[300]},{"at":12,"value":"CMD_IDLE","lines":[306]},{"at":13,"value":"CMD_IDLE","lines":[311]},{"at":14,"value":"CMD_IDLE","lines":[315]}]}
+    {"type":"SELECTS","at":[4],"guard":"dm_ctrl.state = CMD_TRIGGER","lines":[245],"targets":["dci.req_exe"]}
+    {"type":"SELECTS","at":[4],"guard":"dm_ctrl.state = CMD_CHECK","lines":[245],"targets":["dm_ctrl.illegal_cmd","dm_ctrl.illegal_state"]}
+    {"type":"SELECTS","at":[4],"guard":"dm_ctrl.state = CMD_PREPARE","lines":[245],"targets":["dm_ctrl.ldsw_progbuf","dm_ctrl.pbuf_en"]}
+    {"type":"SELECTS","at":[4],"guard":"dm_ctrl.state = CMD_BUSY | dm_ctrl.state = CMD_CHECK | dm_ctrl.state = CMD_ERROR | dm_ctrl.state = CMD_IDLE | dm_ctrl.state = CMD_PREPARE | dm_ctrl.state = CMD_TRIGGER | not (dm_ctrl.state in {CMD_IDLE, CMD_CHECK, CMD_PREPARE, CMD_TRIGGER, CMD_BUSY, CMD_ERROR})","lines":[245],"targets":["dm_ctrl.state"]}
+    {"type":"GATES","at":[15],"guard":"(dm_ctrl.state = CMD_IDLE)","lines":[339],"targets":["dm_ctrl.busy"]}
+    {"type":"CLOCKED_BY","at":[3,5,6,7,8,9,10,11,12,13,14],"lines":[230,252,256,267,270,274,294,300,306,311,315],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[221],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[10],"guard":"dm_ctrl.state = CMD_PREPARE","lines":[294],"targets":["dm_ctrl.state"]}
+    {"type":"SELECTED_BY","at":[11],"guard":"dm_ctrl.state = CMD_TRIGGER","lines":[300],"targets":["dm_ctrl.state"]}
+    {"type":"SELECTED_BY","at":[12],"guard":"dm_ctrl.state = CMD_BUSY","lines":[306],"targets":["dm_ctrl.state"]}
+    {"type":"SELECTED_BY","at":[13],"guard":"dm_ctrl.state = CMD_ERROR","lines":[311],"targets":["dm_ctrl.state"]}
+    {"type":"SELECTED_BY","at":[14],"guard":"not (dm_ctrl.state in {CMD_IDLE, CMD_CHECK, CMD_PREPARE, CMD_TRIGGER, CMD_BUSY, CMD_ERROR})","lines":[315],"targets":["dm_ctrl.state"]}
+    {"type":"SELECTED_BY","at":[5,6],"guard":"dm_ctrl.state = CMD_IDLE","lines":[252,256],"targets":["dm_ctrl.state"]}
+    {"type":"SELECTED_BY","at":[7,8,9],"guard":"dm_ctrl.state = CMD_CHECK","lines":[267,270,274],"targets":["dm_ctrl.state"]}
+    {"type":"GATED_BY","at":[5,6,7,8,9,10,11,12,13,14],"guard":"not (dm_reg.dmcontrol_dmactive = '0')","lines":[252,256,267,270,274,294,300,306,311,315],"targets":["dm_reg.dmcontrol_dmactive"]}
+    {"type":"GATED_BY","at":[11],"guard":"or_reduce_f(dci.ack_exe and dm_reg.hartsel_dec) = '1'","lines":[300],"targets":["dci.ack_exe","dm_reg.hartsel_dec"]}
+    {"type":"GATED_BY","at":[12],"guard":"or_reduce_f(dci.ack_hlt and dm_reg.hartsel_dec) = '1'","lines":[306],"targets":["dci.ack_hlt","dm_reg.hartsel_dec"]}
+    {"type":"GATED_BY","at":[3],"guard":"dm_reg.dmcontrol_dmactive = '0'","lines":[230],"targets":["dm_reg.dmcontrol_dmactive"]}
+    {"type":"GATED_BY","at":[5],"guard":"dm_ctrl.cmderr = \"000\"","lines":[252],"targets":["dm_ctrl.cmderr"]}
+    {"type":"GATED_BY","at":[5],"guard":"dmi_req_i.addr = addr_command_c","lines":[252],"targets":["dmi_req_i.addr"]}
+    {"type":"GATED_BY","at":[5],"guard":"dmi_wren_auth = '1'","lines":[252],"targets":["dmi_wren_auth"]}
+    {"type":"GATED_BY","at":[6],"guard":"(dm_reg.autoexec_rd = '1') or (dm_reg.autoexec_wr = '1')","lines":[256],"targets":["dm_reg.autoexec_rd","dm_reg.autoexec_wr"]}
+    {"type":"GATED_BY","at":[6],"guard":"not (dmi_wren_auth = '1')","lines":[256],"targets":["dmi_wren_auth"]}
+    {"type":"GATED_BY","at":[7],"guard":"or_reduce_f(dm_ctrl.hart_halted and dm_reg.hartsel_dec) = '1'","lines":[267],"targets":["dm_ctrl.hart_halted","dm_reg.hartsel_dec"]}
+    {"type":"GATED_BY","at":[7,8],"guard":"(dm_reg.command(31 downto 24) = x\"00\") and (dm_reg.command(23) = '0') and (dm_reg.command(22 downto 20) = \"010\") and (dm_reg.command(19) = '0') and ((dm_reg.command(17) = '0') or (dm_reg.command(15 downto 5) = \"00010000000\"))","lines":[267,270],"targets":["dm_reg.command"]}
+    {"type":"GATED_BY","at":[8],"guard":"not (or_reduce_f(dm_ctrl.hart_halted and dm_reg.hartsel_dec) = '1')","lines":[270],"targets":["dm_ctrl.hart_halted","dm_reg.hartsel_dec"]}
+    {"type":"GATED_BY","at":[9],"guard":"not ((dm_reg.command(31 downto 24) = x\"00\") and (dm_reg.command(23) = '0') and (dm_reg.command(22 downto 20) = \"010\") and (dm_reg.command(19) = '0') and ((dm_reg.command(17) = '0') or (dm_reg.command(15 downto 5) = \"00010000000\")))","lines":[274],"targets":["dm_reg.command"]}
+SIGNAL {"name":"dm_ctrl.busy","entity":"neorv32_debug_dm","kind":"signal","handling":["ORIGINATES","CONSUMES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":131},{"id":2,"line":339},{"id":3,"line":438},{"id":4,"line":443},{"id":5,"line":464},{"id":6,"line":469},{"id":7,"line":474},{"id":8,"line":495},{"id":9,"line":587},{"id":10,"line":626}]}
+    {"type":"GATES","at":[10],"guard":"(dmi_rden_auth = '1') and (dm_ctrl.busy = '1') and ((dmi_req_i.addr = addr_data0_c) or (dmi_req_i.addr = addr_progbuf0_c) or (dmi_req_i.addr = addr_progbuf1_c)) | not ((dmi_rden_auth = '1') and (dm_ctrl.busy = '1') and ((dmi_req_i.addr = addr_data0_c) or (dmi_req_i.addr = addr_progbuf0_c) or (dmi_req_i.addr = addr_progbuf1_c)))","lines":[626],"targets":["dm_reg.rd_acc_err"]}
+    {"type":"GATES","at":[3],"guard":"(dmi_req_i.addr = addr_command_c) and (dmi_wren_auth = '1') and (dm_ctrl.busy = '0') and (dm_ctrl.cmderr = \"000\")","lines":[438],"targets":["dm_reg.command"]}
+    {"type":"GATES","at":[4],"guard":"(dmi_req_i.addr = addr_abstractauto_c) and (dmi_wren_auth = '1') and (dm_ctrl.busy = '0')","lines":[443],"targets":["dm_reg.abstractauto_autoexecdata","dm_reg.abstractauto_autoexecprogbuf"]}
+    {"type":"GATES","at":[5],"guard":"(dmi_req_i.addr = addr_progbuf0_c) and (dmi_wren_auth = '1') and (dm_ctrl.busy = '0')","lines":[464],"targets":["dm_reg.progbuf"]}
+    {"type":"GATES","at":[6],"guard":"(dmi_req_i.addr = addr_progbuf1_c) and (dmi_wren_auth = '1') and (dm_ctrl.busy = '0')","lines":[469],"targets":["dm_reg.progbuf"]}
+    {"type":"GATES","at":[7],"guard":"(dmi_wren_auth = '1') and (dm_ctrl.busy = '1') and ((dmi_req_i.addr = addr_abstractcs_c) or (dmi_req_i.addr = addr_command_c) or (dmi_req_i.addr = addr_abstractauto_c) or (dmi_req_i.addr = addr_data0_c) or (dmi_req_i.addr = addr_progbuf0_c) or (dmi_req_i.addr = addr_progbuf1_c))","lines":[474],"targets":["dm_reg.wr_acc_err"]}
+    {"type":"GATES","at":[8],"guard":"(dmi_wren_auth = '1') and (dmi_req_i.addr = addr_data0_c) and (dm_ctrl.busy = '0')","lines":[495],"targets":["dci.data_reg_we"]}
+    {"type":"CARRIES","at":[9],"lines":[587],"targets":["dmi_rsp_o.data"]}
+    {"type":"GATED_BY","at":[2],"guard":"(dm_ctrl.state = CMD_IDLE)","lines":[339],"targets":["dm_ctrl.state"]}
+SIGNAL {"name":"dm_ctrl.ldsw_progbuf","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","FORWARDS"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":131},{"id":2,"line":222},{"id":3,"line":231},{"id":4,"line":281},{"id":5,"line":282},{"id":6,"line":283},{"id":7,"line":284},{"id":8,"line":286},{"id":9,"line":287},{"id":10,"line":288},{"id":11,"line":291},{"id":12,"line":508}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[222]},{"at":3,"value":"instr_sw_c","lines":[231]},{"at":4,"value":"instr_sw_c","lines":[281]},{"at":5,"value":"dataaddr_c(11 downto 5)","lines":[282]},{"at":7,"value":"dataaddr_c(4 downto 0)","lines":[284]},{"at":8,"value":"instr_lw_c","lines":[286]},{"at":9,"value":"dataaddr_c(11 downto 0)","lines":[287]},{"at":11,"value":"instr_nop_c","lines":[291]}]}
+    {"type":"CARRIES","at":[12],"lines":[508],"targets":["cpu_progbuf"]}
+    {"type":"CLOCKED_BY","at":[3,4,5,6,7,8,9,10,11],"lines":[231,281,282,283,284,286,287,288,291],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[222],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[4,5,6,7,8,9,10,11],"guard":"dm_ctrl.state = CMD_PREPARE","lines":[281,282,283,284,286,287,288,291],"targets":["dm_ctrl.state"]}
+    {"type":"GATED_BY","at":[8,9,10],"guard":"dm_reg.command(17) = '1' and not (dm_reg.command(16) = '0')","lines":[286,287,288],"targets":["dm_reg.command"]}
+    {"type":"GATED_BY","at":[4,5,6,7,8,9,10,11],"guard":"not (dm_reg.dmcontrol_dmactive = '0')","lines":[281,282,283,284,286,287,288,291],"targets":["dm_reg.dmcontrol_dmactive"]}
+    {"type":"GATED_BY","at":[11],"guard":"not (dm_reg.command(17) = '1')","lines":[291],"targets":["dm_reg.command"]}
+    {"type":"GATED_BY","at":[3],"guard":"dm_reg.dmcontrol_dmactive = '0'","lines":[231],"targets":["dm_reg.dmcontrol_dmactive"]}
+    {"type":"GATED_BY","at":[4,5,6,7],"guard":"dm_reg.command(17) = '1' and dm_reg.command(16) = '0'","lines":[281,282,283,284],"targets":["dm_reg.command"]}
+    {"type":"DERIVES_FROM","at":[6,10],"lines":[283,288],"targets":["dm_reg.command"]}
+SIGNAL {"name":"dm_ctrl.pbuf_en","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":131},{"id":2,"line":224},{"id":3,"line":233},{"id":4,"line":293},{"id":5,"line":509},{"id":6,"line":510}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[224]},{"at":3,"value":"'0'","lines":[233]}]}
+    {"type":"GATES","at":[5,6],"guard":"(dm_ctrl.pbuf_en = '0')","lines":[509,510],"targets":["cpu_progbuf"]}
+    {"type":"CLOCKED_BY","at":[3,4],"lines":[233,293],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[224],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[4],"guard":"dm_ctrl.state = CMD_PREPARE","lines":[293],"targets":["dm_ctrl.state"]}
+    {"type":"GATED_BY","at":[3],"guard":"dm_reg.dmcontrol_dmactive = '0'","lines":[233],"targets":["dm_reg.dmcontrol_dmactive"]}
+    {"type":"GATED_BY","at":[4],"guard":"not (dm_reg.dmcontrol_dmactive = '0')","lines":[293],"targets":["dm_reg.dmcontrol_dmactive"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[293],"targets":["dm_reg.command"]}
+SIGNAL {"name":"dm_ctrl.illegal_state","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":131},{"id":2,"line":226},{"id":3,"line":235},{"id":4,"line":242},{"id":5,"line":269},{"id":6,"line":321}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[226]},{"at":3,"value":"'0'","lines":[235]},{"at":4,"value":"'0'","lines":[242]},{"at":5,"value":"'1'","lines":[269]}]}
+    {"type":"GATES","at":[6],"guard":"dm_ctrl.illegal_state = '1' | not (dm_ctrl.illegal_state = '1')","lines":[321],"targets":["dm_ctrl.cmderr"]}
+    {"type":"CLOCKED_BY","at":[3,4,5],"lines":[235,242,269],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[226],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[5],"guard":"dm_ctrl.state = CMD_CHECK","lines":[269],"targets":["dm_ctrl.state"]}
+    {"type":"GATED_BY","at":[3],"guard":"dm_reg.dmcontrol_dmactive = '0'","lines":[235],"targets":["dm_reg.dmcontrol_dmactive"]}
+    {"type":"GATED_BY","at":[4,5],"guard":"not (dm_reg.dmcontrol_dmactive = '0')","lines":[242,269],"targets":["dm_reg.dmcontrol_dmactive"]}
+    {"type":"GATED_BY","at":[5],"guard":"not (or_reduce_f(dm_ctrl.hart_halted and dm_reg.hartsel_dec) = '1')","lines":[269],"targets":["dm_ctrl.hart_halted","dm_reg.hartsel_dec"]}
+    {"type":"GATED_BY","at":[5],"guard":"(dm_reg.command(31 downto 24) = x\"00\") and (dm_reg.command(23) = '0') and (dm_reg.command(22 downto 20) = \"010\") and (dm_reg.command(19) = '0') and ((dm_reg.command(17) = '0') or (dm_reg.command(15 downto 5) = \"00010000000\"))","lines":[269],"targets":["dm_reg.command"]}
+SIGNAL {"name":"dm_ctrl.illegal_cmd","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":131},{"id":2,"line":225},{"id":3,"line":234},{"id":4,"line":241},{"id":5,"line":273},{"id":6,"line":325}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[225]},{"at":3,"value":"'0'","lines":[234]},{"at":4,"value":"'0'","lines":[241]},{"at":5,"value":"'1'","lines":[273]}]}
+    {"type":"GATES","at":[6],"guard":"dm_ctrl.illegal_cmd = '1' | not (dm_ctrl.illegal_cmd = '1')","lines":[325],"targets":["dm_ctrl.cmderr"]}
+    {"type":"CLOCKED_BY","at":[3,4,5],"lines":[234,241,273],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[225],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[5],"guard":"dm_ctrl.state = CMD_CHECK","lines":[273],"targets":["dm_ctrl.state"]}
+    {"type":"GATED_BY","at":[3],"guard":"dm_reg.dmcontrol_dmactive = '0'","lines":[234],"targets":["dm_reg.dmcontrol_dmactive"]}
+    {"type":"GATED_BY","at":[4,5],"guard":"not (dm_reg.dmcontrol_dmactive = '0')","lines":[241,273],"targets":["dm_reg.dmcontrol_dmactive"]}
+    {"type":"GATED_BY","at":[5],"guard":"not ((dm_reg.command(31 downto 24) = x\"00\") and (dm_reg.command(23) = '0') and (dm_reg.command(22 downto 20) = \"010\") and (dm_reg.command(19) = '0') and ((dm_reg.command(17) = '0') or (dm_reg.command(15 downto 5) = \"00010000000\")))","lines":[273],"targets":["dm_reg.command"]}
+SIGNAL {"name":"dm_ctrl.cmderr","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":131},{"id":2,"line":227},{"id":3,"line":236},{"id":4,"line":251},{"id":5,"line":320},{"id":6,"line":322},{"id":7,"line":324},{"id":8,"line":326},{"id":9,"line":328},{"id":10,"line":331},{"id":11,"line":438},{"id":12,"line":589}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[227]},{"at":3,"value":"(others => '0')","lines":[236]},{"at":6,"value":"\"100\"","lines":[322]},{"at":7,"value":"\"011\"","lines":[324]},{"at":8,"value":"\"010\"","lines":[326]},{"at":9,"value":"\"001\"","lines":[328]},{"at":10,"value":"\"000\"","lines":[331]}]}
+    {"type":"GATES","at":[11],"guard":"(dmi_req_i.addr = addr_command_c) and (dmi_wren_auth = '1') and (dm_ctrl.busy = '0') and (dm_ctrl.cmderr = \"000\")","lines":[438],"targets":["dm_reg.command"]}
+    {"type":"GATES","at":[4],"guard":"dm_ctrl.cmderr = \"000\"","lines":[251],"targets":["dm_ctrl.state"]}
+    {"type":"GATES","at":[5],"guard":"dm_ctrl.cmderr = \"000\" | not (dm_ctrl.cmderr = \"000\")","lines":[320],"targets":["dm_ctrl.cmderr"]}
+    {"type":"CARRIES","at":[12],"lines":[589],"targets":["dmi_rsp_o.data"]}
+    {"type":"CLOCKED_BY","at":[3,6,7,8,9,10],"lines":[236,322,324,326,328,331],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[227],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[10],"guard":"not (dm_ctrl.cmderr = \"000\")","lines":[331],"targets":["dm_ctrl.cmderr"]}
+    {"type":"GATED_BY","at":[10],"guard":"dm_reg.clr_acc_err = '1'","lines":[331],"targets":["dm_reg.clr_acc_err"]}
+    {"type":"GATED_BY","at":[6,7,8,9,10],"guard":"not (dm_reg.dmcontrol_dmactive = '0')","lines":[322,324,326,328,331],"targets":["dm_reg.dmcontrol_dmactive"]}
+    {"type":"GATED_BY","at":[3],"guard":"dm_reg.dmcontrol_dmactive = '0'","lines":[236],"targets":["dm_reg.dmcontrol_dmactive"]}
+    {"type":"GATED_BY","at":[6,7,8,9],"guard":"dm_ctrl.cmderr = \"000\"","lines":[322,324,326,328],"targets":["dm_ctrl.cmderr"]}
+    {"type":"GATED_BY","at":[6],"guard":"dm_ctrl.illegal_state = '1'","lines":[322],"targets":["dm_ctrl.illegal_state"]}
+    {"type":"GATED_BY","at":[7],"guard":"dci.ack_exc = '1'","lines":[324],"targets":["dci.ack_exc"]}
+    {"type":"GATED_BY","at":[7,8,9],"guard":"not (dm_ctrl.illegal_state = '1')","lines":[324,326,328],"targets":["dm_ctrl.illegal_state"]}
+    {"type":"GATED_BY","at":[8,9],"guard":"not (dci.ack_exc = '1')","lines":[326,328],"targets":["dci.ack_exc"]}
+    {"type":"GATED_BY","at":[8],"guard":"dm_ctrl.illegal_cmd = '1'","lines":[326],"targets":["dm_ctrl.illegal_cmd"]}
+    {"type":"GATED_BY","at":[9],"guard":"not (dm_ctrl.illegal_cmd = '1')","lines":[328],"targets":["dm_ctrl.illegal_cmd"]}
+    {"type":"GATED_BY","at":[9],"guard":"(dm_reg.rd_acc_err = '1') or (dm_reg.wr_acc_err = '1')","lines":[328],"targets":["dm_reg.rd_acc_err","dm_reg.wr_acc_err"]}
+SIGNAL {"name":"dm_ctrl.hart_halted","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":131},{"id":2,"line":266},{"id":3,"line":347},{"id":4,"line":356},{"id":5,"line":358},{"id":6,"line":360},{"id":7,"line":542},{"id":8,"line":543},{"id":9,"line":544},{"id":10,"line":545},{"id":11,"line":615}]}
+    {"constant_drivers":[{"at":3,"value":"(others => '0')","lines":[347]},{"at":4,"value":"'0'","lines":[356]},{"at":5,"value":"'1'","lines":[358]},{"at":6,"value":"'0'","lines":[360]}]}
+    {"type":"GATES","at":[2],"guard":"not (or_reduce_f(dm_ctrl.hart_halted and dm_reg.hartsel_dec) = '1')","lines":[266],"targets":["dm_ctrl.illegal_state"]}
+    {"type":"GATES","at":[2],"guard":"not (or_reduce_f(dm_ctrl.hart_halted and dm_reg.hartsel_dec) = '1') | or_reduce_f(dm_ctrl.hart_halted and dm_reg.hartsel_dec) = '1'","lines":[266],"targets":["dm_ctrl.state"]}
+    {"type":"SOURCES","at":[7,8,9,10,11],"lines":[542,543,544,545,615],"targets":["dmi_rsp_o.data"]}
+    {"type":"CLOCKED_BY","at":[4,5,6],"lines":[356,358,360],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[3],"lines":[347],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[4],"guard":"dm_reg.dmcontrol_ndmreset = '1'","lines":[356],"targets":["dm_reg.dmcontrol_ndmreset"]}
+    {"type":"GATED_BY","at":[5],"guard":"dci.ack_hlt(i) = '1'","lines":[358],"targets":["dci.ack_hlt"]}
+    {"type":"GATED_BY","at":[5,6],"guard":"not (dm_reg.dmcontrol_ndmreset = '1')","lines":[358,360],"targets":["dm_reg.dmcontrol_ndmreset"]}
+    {"type":"GATED_BY","at":[6],"guard":"not (dci.ack_hlt(i) = '1')","lines":[360],"targets":["dci.ack_hlt"]}
+    {"type":"GATED_BY","at":[6],"guard":"dci.ack_res(i) = '1'","lines":[360],"targets":["dci.ack_res"]}
+SIGNAL {"name":"dm_ctrl.hart_resume_req","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":131},{"id":2,"line":348},{"id":3,"line":365},{"id":4,"line":367},{"id":5,"line":369},{"id":6,"line":501}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[348]},{"at":3,"value":"'0'","lines":[365]},{"at":4,"value":"'1'","lines":[367]},{"at":5,"value":"'0'","lines":[369]}]}
+    {"type":"SOURCES","at":[6],"lines":[501],"targets":["dci.req_res"]}
+    {"type":"CLOCKED_BY","at":[3,4,5],"lines":[365,367,369],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[348],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"dm_reg.dmcontrol_ndmreset = '1'","lines":[365],"targets":["dm_reg.dmcontrol_ndmreset"]}
+    {"type":"GATED_BY","at":[4,5],"guard":"not (dm_reg.dmcontrol_ndmreset = '1')","lines":[367,369],"targets":["dm_reg.dmcontrol_ndmreset"]}
+    {"type":"GATED_BY","at":[4],"guard":"(dm_reg.req_res = '1') and (dm_reg.hartsel_dec(i) = '1')","lines":[367],"targets":["dm_reg.hartsel_dec","dm_reg.req_res"]}
+    {"type":"GATED_BY","at":[5],"guard":"dci.ack_res(i) = '1'","lines":[369],"targets":["dci.ack_res"]}
+    {"type":"GATED_BY","at":[5],"guard":"not ((dm_reg.req_res = '1') and (dm_reg.hartsel_dec(i) = '1'))","lines":[369],"targets":["dm_reg.hartsel_dec","dm_reg.req_res"]}
+SIGNAL {"name":"dm_ctrl.hart_resume_ack","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":131},{"id":2,"line":349},{"id":3,"line":374},{"id":4,"line":376},{"id":5,"line":378},{"id":6,"line":536},{"id":7,"line":537}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[349]},{"at":3,"value":"'0'","lines":[374]},{"at":4,"value":"'1'","lines":[376]},{"at":5,"value":"'0'","lines":[378]}]}
+    {"type":"SOURCES","at":[6,7],"lines":[536,537],"targets":["dmi_rsp_o.data"]}
+    {"type":"CLOCKED_BY","at":[3,4,5],"lines":[374,376,378],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[349],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"dm_reg.dmcontrol_ndmreset = '1'","lines":[374],"targets":["dm_reg.dmcontrol_ndmreset"]}
+    {"type":"GATED_BY","at":[4],"guard":"dci.ack_res(i) = '1'","lines":[376],"targets":["dci.ack_res"]}
+    {"type":"GATED_BY","at":[4,5],"guard":"not (dm_reg.dmcontrol_ndmreset = '1')","lines":[376,378],"targets":["dm_reg.dmcontrol_ndmreset"]}
+    {"type":"GATED_BY","at":[5],"guard":"not (dci.ack_res(i) = '1')","lines":[378],"targets":["dci.ack_res"]}
+    {"type":"GATED_BY","at":[5],"guard":"(dm_reg.req_res = '1') and (dm_reg.hartsel_dec(i) = '1')","lines":[378],"targets":["dm_reg.hartsel_dec","dm_reg.req_res"]}
+SIGNAL {"name":"dm_ctrl.hart_reset","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":131},{"id":2,"line":350},{"id":3,"line":383},{"id":4,"line":385},{"id":5,"line":534},{"id":6,"line":535}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[350]},{"at":3,"value":"'1'","lines":[383]},{"at":4,"value":"'0'","lines":[385]}]}
+    {"type":"SOURCES","at":[5,6],"lines":[534,535],"targets":["dmi_rsp_o.data"]}
+    {"type":"CLOCKED_BY","at":[3,4],"lines":[383,385],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[350],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"dm_reg.dmcontrol_ndmreset = '1'","lines":[383],"targets":["dm_reg.dmcontrol_ndmreset"]}
+    {"type":"GATED_BY","at":[4],"guard":"not (dm_reg.dmcontrol_ndmreset = '1')","lines":[385],"targets":["dm_reg.dmcontrol_ndmreset"]}
+    {"type":"GATED_BY","at":[4],"guard":"(dm_reg.reset_ack = '1') and (dm_reg.hartsel_dec(i) = '1')","lines":[385],"targets":["dm_reg.hartsel_dec","dm_reg.reset_ack"]}
+SIGNAL {"name":"auth","entity":"neorv32_debug_dm","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":141},{"id":2,"line":212},{"id":3,"line":213},{"id":4,"line":500},{"id":5,"line":505},{"id":6,"line":530},{"id":7,"line":549},{"id":8,"line":550},{"id":9,"line":555},{"id":10,"line":573},{"id":11,"line":584},{"id":12,"line":596},{"id":13,"line":604},{"id":14,"line":610},{"id":15,"line":614},{"id":16,"line":738},{"id":17,"line":739},{"id":18,"line":741},{"id":19,"line":744},{"id":20,"line":745},{"id":21,"line":747},{"id":22,"line":748},{"id":23,"line":753},{"id":24,"line":754},{"id":25,"line":755},{"id":26,"line":756},{"id":27,"line":757}]}
+SIGNAL {"name":"auth.busy","entity":"neorv32_debug_dm","kind":"signal","handling":["ORIGINATES","CONSUMES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":141},{"id":2,"line":550},{"id":3,"line":744},{"id":4,"line":753}]}
+    {"constant_drivers":[{"at":4,"value":"'0'","lines":[753]}]}
+    {"configuration":[{"condition":"[generic] not AUTHENTICATOR","at":[4],"lines":[753]}]}
+    {"connections":[{"at":3,"instance":"neorv32_debug_auth_inst","formal":"busy_o","mode":"out","lines":[744]}]}
+    {"type":"CARRIES","at":[2],"lines":[550],"targets":["dmi_rsp_o.data"]}
+SIGNAL {"name":"auth.valid","entity":"neorv32_debug_dm","kind":"signal","handling":["ORIGINATES","CONSUMES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":141},{"id":2,"line":212},{"id":3,"line":213},{"id":4,"line":500},{"id":5,"line":505},{"id":6,"line":530},{"id":7,"line":549},{"id":8,"line":555},{"id":9,"line":573},{"id":10,"line":584},{"id":11,"line":596},{"id":12,"line":604},{"id":13,"line":614},{"id":14,"line":745},{"id":15,"line":754}]}
+    {"constant_drivers":[{"at":15,"value":"'1'","lines":[754]}]}
+    {"configuration":[{"condition":"[generic] not AUTHENTICATOR","at":[15],"lines":[754]}]}
+    {"connections":[{"at":14,"instance":"neorv32_debug_auth_inst","formal":"valid_o","mode":"out","lines":[745]}]}
+    {"type":"GATES","at":[2],"guard":"(not AUTHENTICATOR) or (auth.valid = '1')","lines":[212],"targets":["dmi_wren_auth"]}
+    {"type":"GATES","at":[3],"guard":"(not AUTHENTICATOR) or (auth.valid = '1')","lines":[213],"targets":["dmi_rden_auth"]}
+    {"type":"GATES","at":[6,8,9,10,11,12,13],"guard":"(not AUTHENTICATOR) or (auth.valid = '1')","lines":[530,555,573,584,596,604,614],"targets":["dmi_rsp_o.data"]}
+    {"type":"GATES","at":[4],"guard":"((not AUTHENTICATOR) or (auth.valid = '1'))","lines":[500],"targets":["halt_req_o"]}
+    {"type":"GATES","at":[5],"guard":"(dm_reg.dmcontrol_ndmreset = '1') and (dm_reg.dmcontrol_dmactive = '1') and ((not AUTHENTICATOR) or (auth.valid = '1'))","lines":[505],"targets":["ndmrstn_o"]}
+    {"type":"CARRIES","at":[7],"lines":[549],"targets":["dmi_rsp_o.data"]}
+SIGNAL {"name":"auth.re","entity":"neorv32_debug_dm","kind":"signal","handling":["ORIGINATES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":141},{"id":2,"line":739},{"id":3,"line":747},{"id":4,"line":755}]}
+    {"constant_drivers":[{"at":4,"value":"'0'","lines":[755]}]}
+    {"configuration":[{"condition":"[generic] AUTHENTICATOR","at":[3],"lines":[747]},{"condition":"[generic] not AUTHENTICATOR","at":[4],"lines":[755]}]}
+    {"connections":[{"at":2,"instance":"neorv32_debug_auth_inst","formal":"re_i","mode":"in","lines":[739]}]}
+    {"type":"GATED_BY","at":[3],"guard":"(dmi_rden = '1') and (dmi_req_i.addr = addr_authdata_c)","lines":[747],"targets":["dmi_rden","dmi_req_i.addr"]}
+SIGNAL {"name":"auth.we","entity":"neorv32_debug_dm","kind":"signal","handling":["ORIGINATES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":141},{"id":2,"line":738},{"id":3,"line":748},{"id":4,"line":756}]}
+    {"constant_drivers":[{"at":4,"value":"'0'","lines":[756]}]}
+    {"configuration":[{"condition":"[generic] AUTHENTICATOR","at":[3],"lines":[748]},{"condition":"[generic] not AUTHENTICATOR","at":[4],"lines":[756]}]}
+    {"connections":[{"at":2,"instance":"neorv32_debug_auth_inst","formal":"we_i","mode":"in","lines":[738]}]}
+    {"type":"GATED_BY","at":[3],"guard":"(dmi_wren = '1') and (dmi_req_i.addr = addr_authdata_c)","lines":[748],"targets":["dmi_req_i.addr","dmi_wren"]}
+SIGNAL {"name":"auth.rdata","entity":"neorv32_debug_dm","kind":"signal","handling":["ORIGINATES","CONSUMES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":141},{"id":2,"line":610},{"id":3,"line":741},{"id":4,"line":757}]}
+    {"constant_drivers":[{"at":4,"value":"(others => '0')","lines":[757]}]}
+    {"configuration":[{"condition":"[generic] not AUTHENTICATOR","at":[4],"lines":[757]}]}
+    {"connections":[{"at":3,"instance":"neorv32_debug_auth_inst","formal":"rdata_o","mode":"out","lines":[741]}]}
+    {"type":"CARRIES","at":[2],"lines":[610],"targets":["dmi_rsp_o.data"]}
+SIGNAL {"name":"accen","entity":"neorv32_debug_dm","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":186},{"id":2,"line":661},{"id":3,"line":708},{"id":4,"line":709},{"id":5,"line":710}]}
+    {"type":"GATES","at":[4],"guard":"accen and (not bus_req_i.rw)","lines":[709],"targets":["rden"]}
+    {"type":"GATES","at":[5],"guard":"accen and (    bus_req_i.rw) and and_reduce_f(bus_req_i.ben)","lines":[710],"targets":["wren"]}
+    {"type":"CARRIES","at":[2],"lines":[661],"targets":["bus_rsp_o.ack"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.debug and bus_req_i.stb","lines":[708],"targets":["bus_req_i.debug","bus_req_i.stb"]}
+SIGNAL {"name":"rden","entity":"neorv32_debug_dm","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":186},{"id":2,"line":689},{"id":3,"line":709}]}
+    {"type":"GATES","at":[2],"guard":"rden = '1'","lines":[689],"targets":["bus_rsp_o.data"]}
+    {"type":"GATED_BY","at":[3],"guard":"accen and (not bus_req_i.rw)","lines":[709],"targets":["accen","bus_req_i.rw"]}
+SIGNAL {"name":"wren","entity":"neorv32_debug_dm","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":186},{"id":2,"line":667},{"id":3,"line":676},{"id":4,"line":710}]}
+    {"type":"GATES","at":[2],"guard":"(wren = '1') and (bus_req_i.addr(8 downto 7) = dm_data_base_c(8 downto 7))","lines":[667],"targets":["dci.data_reg"]}
+    {"type":"GATES","at":[3],"guard":"(wren = '1') and (bus_req_i.addr(8 downto 7) = dm_sreg_base_c(8 downto 7))","lines":[676],"targets":["dci.ack_exc","dci.ack_exe","dci.ack_hlt","dci.ack_res"]}
+    {"type":"GATED_BY","at":[4],"guard":"accen and (    bus_req_i.rw) and and_reduce_f(bus_req_i.ben)","lines":[710],"targets":["accen","bus_req_i.rw"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[710],"targets":["bus_req_i.ben"]}
+SIGNAL {"name":"cpu_rsp_dec","entity":"neorv32_debug_dm","kind":"signal","storage":"none"}
+    {"occurrences":[{"id":1,"line":189},{"id":2,"line":679},{"id":3,"line":680},{"id":4,"line":681},{"id":5,"line":715},{"id":6,"line":723}]}
+    {"constant_drivers":[{"at":5,"value":"(others => '1')","lines":[715]}]}
+    {"configuration":[{"condition":"[generic] NUM_HARTS = 1","at":[5],"lines":[715]},{"condition":"[generic] NUM_HARTS > 1","at":[6],"lines":[723]}]}
+    {"type":"SOURCES","at":[2],"lines":[679],"targets":["dci.ack_hlt"]}
+    {"type":"SOURCES","at":[3],"lines":[680],"targets":["dci.ack_res"]}
+    {"type":"SOURCES","at":[4],"lines":[681],"targets":["dci.ack_exe"]}
+    {"type":"GATED_BY","at":[6],"guard":"(bus_req_i.data(1 downto 0) = std_ulogic_vector(to_unsigned(i, 2)))","lines":[723],"targets":["bus_req_i.data"]}
+SIGNAL {"name":"dci","entity":"neorv32_debug_dm","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":202},{"id":2,"line":223},{"id":3,"line":232},{"id":4,"line":240},{"id":5,"line":298},{"id":6,"line":299},{"id":7,"line":305},{"id":8,"line":323},{"id":9,"line":357},{"id":10,"line":359},{"id":11,"line":368},{"id":12,"line":375},{"id":13,"line":495},{"id":14,"line":501},{"id":15,"line":605},{"id":16,"line":654},{"id":17,"line":655},{"id":18,"line":656},{"id":19,"line":657},{"id":20,"line":658},{"id":21,"line":665},{"id":22,"line":666},{"id":23,"line":668},{"id":24,"line":672},{"id":25,"line":673},{"id":26,"line":674},{"id":27,"line":675},{"id":28,"line":679},{"id":29,"line":680},{"id":30,"line":681},{"id":31,"line":682},{"id":32,"line":696},{"id":33,"line":699},{"id":34,"line":700}]}
+SIGNAL {"name":"dci.ack_hlt","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":202},{"id":2,"line":305},{"id":3,"line":357},{"id":4,"line":655},{"id":5,"line":672},{"id":6,"line":679}]}
+    {"constant_drivers":[{"at":4,"value":"(others => '0')","lines":[655]},{"at":5,"value":"(others => '0')","lines":[672]}]}
+    {"type":"GATES","at":[2],"guard":"or_reduce_f(dci.ack_hlt and dm_reg.hartsel_dec) = '1'","lines":[305],"targets":["dm_ctrl.state"]}
+    {"type":"GATES","at":[3],"guard":"dci.ack_hlt(i) = '1' | not (dci.ack_hlt(i) = '1')","lines":[357],"targets":["dm_ctrl.hart_halted"]}
+    {"type":"CLOCKED_BY","at":[5,6],"lines":[672,679],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[4],"lines":[655],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[6],"guard":"(wren = '1') and (bus_req_i.addr(8 downto 7) = dm_sreg_base_c(8 downto 7)) and bus_req_i.addr(3 downto 2) = \"00\"","lines":[679],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[6],"guard":"(wren = '1') and (bus_req_i.addr(8 downto 7) = dm_sreg_base_c(8 downto 7)) and bus_req_i.addr(3 downto 2) = \"00\"","lines":[679],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[6],"guard":"(wren = '1') and (bus_req_i.addr(8 downto 7) = dm_sreg_base_c(8 downto 7))","lines":[679],"targets":["wren"]}
+    {"type":"DERIVES_FROM","at":[6],"lines":[679],"targets":["cpu_rsp_dec"]}
+SIGNAL {"name":"dci.req_res","entity":"neorv32_debug_dm","kind":"signal","handling":["ORIGINATES","CONSUMES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":202},{"id":2,"line":501},{"id":3,"line":699}]}
+    {"type":"SOURCES","at":[3],"lines":[699],"targets":["bus_rsp_o.data"]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[501],"targets":["dm_ctrl.hart_resume_req"]}
+SIGNAL {"name":"dci.ack_res","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":202},{"id":2,"line":359},{"id":3,"line":368},{"id":4,"line":375},{"id":5,"line":656},{"id":6,"line":673},{"id":7,"line":680}]}
+    {"constant_drivers":[{"at":5,"value":"(others => '0')","lines":[656]},{"at":6,"value":"(others => '0')","lines":[673]}]}
+    {"type":"GATES","at":[2],"guard":"dci.ack_res(i) = '1'","lines":[359],"targets":["dm_ctrl.hart_halted"]}
+    {"type":"GATES","at":[3],"guard":"dci.ack_res(i) = '1'","lines":[368],"targets":["dm_ctrl.hart_resume_req"]}
+    {"type":"GATES","at":[4],"guard":"dci.ack_res(i) = '1' | not (dci.ack_res(i) = '1')","lines":[375],"targets":["dm_ctrl.hart_resume_ack"]}
+    {"type":"CLOCKED_BY","at":[6,7],"lines":[673,680],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[5],"lines":[656],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[7],"guard":"(wren = '1') and (bus_req_i.addr(8 downto 7) = dm_sreg_base_c(8 downto 7)) and bus_req_i.addr(3 downto 2) = \"01\"","lines":[680],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[7],"guard":"(wren = '1') and (bus_req_i.addr(8 downto 7) = dm_sreg_base_c(8 downto 7)) and bus_req_i.addr(3 downto 2) = \"01\"","lines":[680],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[7],"guard":"(wren = '1') and (bus_req_i.addr(8 downto 7) = dm_sreg_base_c(8 downto 7))","lines":[680],"targets":["wren"]}
+    {"type":"DERIVES_FROM","at":[7],"lines":[680],"targets":["cpu_rsp_dec"]}
+SIGNAL {"name":"dci.req_exe","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":202},{"id":2,"line":223},{"id":3,"line":232},{"id":4,"line":240},{"id":5,"line":298},{"id":6,"line":700}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[223]},{"at":3,"value":"(others => '0')","lines":[232]},{"at":4,"value":"(others => '0')","lines":[240]}]}
+    {"type":"SOURCES","at":[6],"lines":[700],"targets":["bus_rsp_o.data"]}
+    {"type":"CLOCKED_BY","at":[3,4,5],"lines":[232,240,298],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[223],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[5],"guard":"dm_ctrl.state = CMD_TRIGGER","lines":[298],"targets":["dm_ctrl.state"]}
+    {"type":"GATED_BY","at":[3],"guard":"dm_reg.dmcontrol_dmactive = '0'","lines":[232],"targets":["dm_reg.dmcontrol_dmactive"]}
+    {"type":"GATED_BY","at":[4,5],"guard":"not (dm_reg.dmcontrol_dmactive = '0')","lines":[240,298],"targets":["dm_reg.dmcontrol_dmactive"]}
+    {"type":"COPIES","at":[5],"lines":[298],"targets":["dm_reg.hartsel_dec"]}
+SIGNAL {"name":"dci.ack_exe","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":202},{"id":2,"line":299},{"id":3,"line":657},{"id":4,"line":674},{"id":5,"line":681}]}
+    {"constant_drivers":[{"at":3,"value":"(others => '0')","lines":[657]},{"at":4,"value":"(others => '0')","lines":[674]}]}
+    {"type":"GATES","at":[2],"guard":"or_reduce_f(dci.ack_exe and dm_reg.hartsel_dec) = '1'","lines":[299],"targets":["dm_ctrl.state"]}
+    {"type":"CLOCKED_BY","at":[4,5],"lines":[674,681],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[3],"lines":[657],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[5],"guard":"(wren = '1') and (bus_req_i.addr(8 downto 7) = dm_sreg_base_c(8 downto 7)) and bus_req_i.addr(3 downto 2) = \"10\"","lines":[681],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[5],"guard":"(wren = '1') and (bus_req_i.addr(8 downto 7) = dm_sreg_base_c(8 downto 7)) and bus_req_i.addr(3 downto 2) = \"10\"","lines":[681],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[5],"guard":"(wren = '1') and (bus_req_i.addr(8 downto 7) = dm_sreg_base_c(8 downto 7))","lines":[681],"targets":["wren"]}
+    {"type":"DERIVES_FROM","at":[5],"lines":[681],"targets":["cpu_rsp_dec"]}
+SIGNAL {"name":"dci.ack_exc","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":202},{"id":2,"line":323},{"id":3,"line":658},{"id":4,"line":675},{"id":5,"line":682}]}
+    {"constant_drivers":[{"at":3,"value":"'0'","lines":[658]},{"at":4,"value":"'0'","lines":[675]},{"at":5,"value":"'1'","lines":[682]}]}
+    {"type":"GATES","at":[2],"guard":"dci.ack_exc = '1' | not (dci.ack_exc = '1')","lines":[323],"targets":["dm_ctrl.cmderr"]}
+    {"type":"CLOCKED_BY","at":[4,5],"lines":[675,682],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[3],"lines":[658],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[5],"guard":"(wren = '1') and (bus_req_i.addr(8 downto 7) = dm_sreg_base_c(8 downto 7)) and not (bus_req_i.addr(3 downto 2) in {\"00\", \"01\", \"10\"})","lines":[682],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[5],"guard":"(wren = '1') and (bus_req_i.addr(8 downto 7) = dm_sreg_base_c(8 downto 7)) and not (bus_req_i.addr(3 downto 2) in {\"00\", \"01\", \"10\"})","lines":[682],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[5],"guard":"(wren = '1') and (bus_req_i.addr(8 downto 7) = dm_sreg_base_c(8 downto 7))","lines":[682],"targets":["wren"]}
+SIGNAL {"name":"dci.data_reg_we","entity":"neorv32_debug_dm","kind":"signal","handling":["ORIGINATES","CONSUMES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":202},{"id":2,"line":495},{"id":3,"line":665}]}
+    {"type":"GATES","at":[3],"guard":"dci.data_reg_we = '1' | not (dci.data_reg_we = '1')","lines":[665],"targets":["dci.data_reg"]}
+    {"type":"GATED_BY","at":[2],"guard":"(dmi_wren_auth = '1') and (dmi_req_i.addr = addr_data0_c) and (dm_ctrl.busy = '0')","lines":[495],"targets":["dm_ctrl.busy","dmi_req_i.addr","dmi_wren_auth"]}
+SIGNAL {"name":"dci.data_reg","entity":"neorv32_debug_dm","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":202},{"id":2,"line":605},{"id":3,"line":654},{"id":4,"line":666},{"id":5,"line":668},{"id":6,"line":696}]}
+    {"constant_drivers":[{"at":3,"value":"(others => '0')","lines":[654]}]}
+    {"type":"CARRIES","at":[2],"lines":[605],"targets":["dmi_rsp_o.data"]}
+    {"type":"CARRIES","at":[6],"lines":[696],"targets":["bus_rsp_o.data"]}
+    {"type":"CLOCKED_BY","at":[4,5],"lines":[666,668],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[3],"lines":[654],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[4],"guard":"dci.data_reg_we = '1'","lines":[666],"targets":["dci.data_reg_we"]}
+    {"type":"GATED_BY","at":[5],"guard":"(wren = '1') and (bus_req_i.addr(8 downto 7) = dm_data_base_c(8 downto 7))","lines":[668],"targets":["bus_req_i.addr","wren"]}
+    {"type":"GATED_BY","at":[5],"guard":"not (dci.data_reg_we = '1')","lines":[668],"targets":["dci.data_reg_we"]}
+    {"type":"COPIES","at":[4],"lines":[666],"targets":["dmi_req_i.data"]}
+    {"type":"COPIES","at":[5],"lines":[668],"targets":["bus_req_i.data"]}
+
+=== RELATIONSHIP MAP: FLOW GRAPH (computed by a program from the records above) ===
+MAP CHECK {"elements":82,"driving records":256,"receiving records":256,"driving without receiving":0,"receiving without driving":0}
+    {"clock or reset (drive SEQUENCES / RESETS)":["clk_i","rstn_i"]}
+    {"whole records (their fields carry the records)":["auth","bus_req_i","bus_rsp_o","dci","dm_ctrl","dm_reg","dmi_req_i","dmi_rsp_o"]}
+PATH {"from":"auth.re","source":"constant-valued"}
+    {"sub-block":["neorv32_debug_auth_inst.re_i"]}
+    {"influence":["dmi_rden","dmi_req_i.addr"]}
+PATH {"from":"auth.we","source":"constant-valued"}
+    {"sub-block":["neorv32_debug_auth_inst.we_i"]}
+    {"influence":["dmi_req_i.addr","dmi_wren"]}
+PATH {"from":"bus_req_i.data","source":"input"}
+    {"stores":["bus_rsp_o.data","dci.data_reg","dmi_rsp_o.data"]}
+    {"exits":["bus_rsp_o.data","dmi_rsp_o.data"]}
+    {"influence":["auth.valid","bus_req_i.addr","dci.data_reg_we","dmi_req_i.addr","rden","wren"]}
+PATH {"from":"cpu_rsp_dec","source":"constant-valued"}
+    {"stores":["dci.ack_exe","dci.ack_hlt","dci.ack_res"]}
+    {"influence":["bus_req_i.addr","bus_req_i.data","wren"]}
+PATH {"from":"dm_ctrl.cmderr","source":"constant-valued"}
+    {"stores":["dmi_rsp_o.data"]}
+    {"exits":["dmi_rsp_o.data"]}
+    {"influence":["auth.valid","dci.ack_exc","dm_ctrl.illegal_cmd","dm_ctrl.illegal_state","dm_reg.clr_acc_err","dm_reg.dmcontrol_dmactive","dm_reg.rd_acc_err","dm_reg.wr_acc_err","dmi_req_i.addr"]}
+PATH {"from":"dm_ctrl.hart_halted","source":"constant-valued"}
+    {"stores":["dmi_rsp_o.data"]}
+    {"exits":["dmi_rsp_o.data"]}
+    {"influence":["auth.valid","dci.ack_hlt","dci.ack_res","dm_reg.dmcontrol_ndmreset","dmi_req_i.addr"]}
+PATH {"from":"dm_ctrl.hart_reset","source":"constant-valued"}
+    {"stores":["dmi_rsp_o.data"]}
+    {"exits":["dmi_rsp_o.data"]}
+    {"influence":["auth.valid","dm_reg.dmcontrol_ndmreset","dm_reg.hartsel_dec","dm_reg.reset_ack","dmi_req_i.addr"]}
+PATH {"from":"dm_ctrl.hart_resume_ack","source":"constant-valued"}
+    {"stores":["dmi_rsp_o.data"]}
+    {"exits":["dmi_rsp_o.data"]}
+    {"influence":["auth.valid","dci.ack_res","dm_reg.dmcontrol_ndmreset","dm_reg.hartsel_dec","dm_reg.req_res","dmi_req_i.addr"]}
+PATH {"from":"dm_ctrl.hart_resume_req","source":"constant-valued"}
+    {"stores":["bus_rsp_o.data"]}
+    {"exits":["bus_rsp_o.data"]}
+    {"influence":["bus_req_i.addr","dci.ack_res","dm_reg.dmcontrol_ndmreset","dm_reg.hartsel_dec","dm_reg.req_res","rden"]}
+PATH {"from":"dmi_req_i.data","source":"input"}
+    {"stores":["bus_rsp_o.data","dci.data_reg","dm_ctrl.ldsw_progbuf","dm_ctrl.pbuf_en","dm_reg.abstractauto_autoexecdata","dm_reg.abstractauto_autoexecprogbuf","dm_reg.command","dm_reg.dmcontrol_dmactive","dm_reg.dmcontrol_ndmreset","dm_reg.halt_req","dm_reg.hartsel","dm_reg.progbuf","dm_reg.req_res","dm_reg.reset_ack","dmi_rsp_o.data"]}
+    {"exits":["bus_rsp_o.data","dmi_rsp_o.data","halt_req_o"]}
+    {"sub-block":["neorv32_debug_auth_inst.enable_i","neorv32_debug_auth_inst.wdata_i"]}
+    {"influence":["auth.valid","bus_req_i.addr","dci.data_reg_we","dm_ctrl.busy","dm_ctrl.cmderr","dm_ctrl.pbuf_en","dm_ctrl.state","dm_reg.command","dm_reg.dmcontrol_dmactive","dmi_req_i.addr","dmi_wren","dmi_wren_auth","rden","wren"]}
+CONTROL-ONLY {"from":"bus_req_i.addr","source":"input","gates or selects":["bus_rsp_o.data","dci.ack_exc","dci.ack_exe","dci.ack_hlt","dci.ack_res","dci.data_reg"]}
+CONTROL-ONLY {"from":"bus_req_i.debug","source":"input","gates or selects":["accen"]}
+CONTROL-ONLY {"from":"bus_req_i.rw","source":"input","gates or selects":["rden","wren"]}
+CONTROL-ONLY {"from":"bus_req_i.stb","source":"input","gates or selects":["accen"]}
+CONTROL-ONLY {"from":"dci.ack_exc","source":"constant-valued","gates or selects":["dm_ctrl.cmderr"]}
+CONTROL-ONLY {"from":"dm_ctrl.illegal_cmd","source":"constant-valued","gates or selects":["dm_ctrl.cmderr"]}
+CONTROL-ONLY {"from":"dm_ctrl.illegal_state","source":"constant-valued","gates or selects":["dm_ctrl.cmderr"]}
+CONTROL-ONLY {"from":"dm_ctrl.state","source":"constant-valued","gates or selects":["dci.req_exe","dm_ctrl.busy","dm_ctrl.illegal_cmd","dm_ctrl.illegal_state","dm_ctrl.ldsw_progbuf","dm_ctrl.pbuf_en","dm_ctrl.state"]}
+CONTROL-ONLY {"from":"dm_reg.autoexec_rd","source":"constant-valued","gates or selects":["dm_ctrl.state"]}
+CONTROL-ONLY {"from":"dm_reg.autoexec_wr","source":"constant-valued","gates or selects":["dm_ctrl.state"]}
+CONTROL-ONLY {"from":"dm_reg.clr_acc_err","source":"constant-valued","gates or selects":["dm_ctrl.cmderr"]}
+CONTROL-ONLY {"from":"dm_reg.rd_acc_err","source":"constant-valued","gates or selects":["dm_ctrl.cmderr"]}
+CONTROL-ONLY {"from":"dm_reg.wr_acc_err","source":"constant-valued","gates or selects":["dm_ctrl.cmderr"]}
+CONTROL-ONLY {"from":"dmi_req_i.addr","source":"input","gates or selects":["auth.re","auth.we","dci.data_reg_we","dm_ctrl.state","dm_reg.abstractauto_autoexecdata","dm_reg.abstractauto_autoexecprogbuf","dm_reg.autoexec_rd","dm_reg.autoexec_wr","dm_reg.clr_acc_err","dm_reg.command","dm_reg.dmcontrol_dmactive","dm_reg.dmcontrol_ndmreset","dm_reg.halt_req","dm_reg.hartsel","dm_reg.progbuf","dm_reg.rd_acc_err","dm_reg.req_res","dm_reg.reset_ack","dm_reg.wr_acc_err","dmi_rsp_o.data"]}
+CONTROL-ONLY {"from":"dmi_req_i.op","source":"input","gates or selects":["dmi_rden","dmi_wren"]}
+    {"no local use (no relationship, connection or constant driver)":["bus_req_i.amo","bus_req_i.amoop","bus_req_i.fence","bus_req_i.lock","bus_req_i.priv","bus_req_i.src"]}
+    {"not reached from an input or constant-valued element":["accen","auth.busy","auth.rdata","auth.valid","bus_rsp_o.ack","dci.data_reg_we","dci.req_exe","dm_ctrl.busy","dm_reg.hartsel_dec","dm_reg.hartsel_inv","dmi_rden","dmi_rden_auth","dmi_wren","dmi_wren_auth","ndmrstn_o","rden"]}
+
+Identify the primary security assets for 'neorv32_debug_dm' and return the JSON object per the contract.

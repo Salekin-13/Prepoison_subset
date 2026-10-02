@@ -1,0 +1,156 @@
+{
+  "module name": "neorv32_cpu_frontend",
+  "conceptual assets": [
+    {
+      "concept": "Program counter (PC) used to address and advance instruction fetches",
+      "security objective": "Integrity",
+      "reasoning": "The fetch FSM stores and updates a program counter that determines fetch addresses and is advanced on responses: reset and restart set the register and 'when S_PENDING and ibus_rsp_i.ack = '1'' the FSM performs 'fetch.pc <= std_ulogic_vector(unsigned(fetch.pc) + 4); fetch.pc(1) <= '0';'. The PC also forms the bus address with 'ibus_req_o.addr <= fetch.pc(XLEN-1 downto 2) & \"00\"'. The fetch/addressing flow depends on this stored value; corrupting it would make the module issue wrong fetch addresses or advance incorrectly, establishing an Integrity requirement. The PC is set from the control input on restart ('fetch.pc <= ctrl_i.pc_nxt').",
+      "related structural assets": [
+        {
+          "asset rtl": "fetch.pc",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Fetch restart flag used to clear prefetch FIFOs and restart the fetch FSM",
+      "security objective": "Integrity",
+      "reasoning": "The restart event is an internal stored flag that clears the prefetch FIFOs and drives FSM restart behavior: the FIFO instances map 'clear_i => fetch.restart', and fetch.restart is driven in the FSM ('fetch.restart <= fetch.restart or ctrl_i.if_reset' and cleared in the 'others' branch). Incorrect assertion or retention of fetch.restart would clear buffers or force restart transitions unexpectedly, so Integrity of this flag is required for correct fetch flow.",
+      "related structural assets": [
+        {
+          "asset rtl": "fetch.restart",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Prefetch-buffer instruction data (fetched words and error bit) as written into and read from the FIFOs",
+      "security objective": "Integrity",
+      "reasoning": "Bus responses drive the FIFO write data and the FIFO outputs supply the stored instruction words used to form frontend outputs: 'ipb.wdata(0) <= ibus_rsp_i.err & ibus_rsp_i.data(15 downto 0)' and similarly for wdata(1); FIFO rdata_o ports drive 'ipb.rdata(i)', and those fields are used to produce the instruction and fault signals (for example frontend_o.instr is assigned from ipb.rdata concatenation and frontend_o.fault <= ipb.rdata(...)(16)). The correctness of the data written into and read from the prefetch buffer is required so the frontend presents the intended instruction/fault values, establishing Integrity. The write enables are computed in the RTL (ipb.we(0/1)).",
+      "related structural assets": [
+        {
+          "asset rtl": "ipb.wdata(0)",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "ipb.wdata(1)",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "ipb.rdata(0)",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ipb.rdata(1)",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ipb.we(0)",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "ipb.we(1)",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Prefetch-buffer free-slot indicators (ipb.free) that gate new fetch requests and the halted signal",
+      "security objective": "Availability",
+      "reasoning": "The RTL uses the FIFO free flags to decide whether to issue a new bus request and whether to report a halted frontend: 'ibus_req_o.stb <= '1' when (fetch.state = S_REQUEST) and (ipb.free = \"11\") else '0'' and 'frontend_o.halted <= '1' when (fetch.state = S_REQUEST) and (ipb.free /= \"11\") else '0''. The FIFO free outputs map to ipb.free(i) via the instances. If ipb.free never reports available slots (never becomes \"11\") the frontend will not issue requests and will report halted, so Availability of the free-slot indication matters for forward progress.",
+      "related structural assets": [
+        {
+          "asset rtl": "ipb.free(0)",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ipb.free(1)",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Prefetch-buffer availability flags (ipb.avail) that indicate valid entries and gate instruction issuance",
+      "security objective": "Integrity",
+      "reasoning": "The module uses FIFO availability signals to present instructions and choose which entries to consume: combinational logic assigns 'frontend_o.valid <= ipb.avail(0)' or 'frontend_o.valid <= ipb.avail(1) and ipb.avail(0)' and sets internal ack/control signals from ipb.avail(i) (for example 'issue.aset <= ipb.avail(0)'). These avail signals come from FIFO avail_o ports mapped to ipb.avail(i). Corruption of ipb.avail would cause incorrect valid/ack decisions and wrong instruction presentation, establishing an Integrity requirement.",
+      "related structural assets": [
+        {
+          "asset rtl": "ipb.avail(0)",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ipb.avail(1)",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Instruction alignment state (issue.algn) that selects decompression/concatenation paths",
+      "security objective": "Integrity",
+      "reasoning": "The design records an alignment bit and uses it to select how fetched half-words are combined or decompressed: issue.algn is a register updated in issue_fsm_sync (reset to '0'; on restart 'issue.algn <= ctrl_i.pc_nxt(1)'; on ack it updates via 'issue.aset'/'issue.aclr'), and issue_fsm_comb branches on 'if (issue.algn = '0') then ... else ...' to choose ipb.rdata indices, frontend_o.instr, and frontend_o.compr. Corruption of issue.algn would cause incorrect assembly or decompression of instructions, so Integrity is required.",
+      "related structural assets": [
+        {
+          "asset rtl": "issue.algn",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Assembled instruction and status exported to the CPU via the frontend interface",
+      "security objective": "Integrity",
+      "reasoning": "The module drives the frontend interface record with the assembled instruction and status fields: combinational/process assignments set frontend_o.valid, frontend_o.instr, frontend_o.compr and frontend_o.fault (and frontend_o.halted earlier). These assignments originate from internal state (ipb.rdata, issue.cmd32, ipb.avail, etc.) and the entire instruction/status record leaves the entity through the port 'frontend_o'. The CPU's subsequent behavior depends on these outputs matching the implemented selection and assembly rules, establishing an Integrity requirement for the exported instruction/status.",
+      "related structural assets": [
+        {
+          "asset rtl": "frontend_o",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Privilege bit used to tag fetch requests",
+      "security objective": "Integrity",
+      "reasoning": "The FSM stores a privilege bit 'fetch.priv' that is set on restart from the control input ('fetch.priv <= ctrl_i.cpu_priv') and is assigned to the request record ('ibus_req_o.priv <= fetch.priv'). The privilege value carried on fetch requests is determined by this stored bit; corruption of fetch.priv would make requests carry an incorrect privilege indication, establishing an Integrity requirement.",
+      "related structural assets": [
+        {
+          "asset rtl": "fetch.priv",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_frontend",
+          "realization": "sets"
+        }
+      ]
+    }
+  ]
+}

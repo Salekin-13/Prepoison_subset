@@ -1,0 +1,73 @@
+{
+ "module name": "neorv32_imem",
+ "module purpose": "neorv32_imem is a word-addressed memory behind a bus request/response record pair: with IMEM_INIT true it returns words of a constant pre-initialized image (lines 44, 81); otherwise it stores byte-enabled bus writes in four byte-lane RAM arrays (lines 114-125) and returns the addressed word (lines 128-131). Read data is driven on bus_rsp_o.data one cycle after a read request and is zero otherwise (lines 176, 185); requests are acknowledged (lines 178, 180) and err is tied to '0' (line 186).",
+ "use-case flows": [
+  {
+   "flow": "start",
+   "value": "bus access request: strobe with direction (rw='1' write, rw='0' read) that begins a memory write or read",
+   "lines": [114, 176, 178, 180]
+  },
+  {
+   "flow": "operate",
+   "value": "byte-enabled write of bus write data into the addressed word of the four byte-lane RAM arrays (builds with IMEM_INIT false)",
+   "lines": [101, 114, 115, 116, 118, 119, 121, 122, 124, 125]
+  },
+  {
+   "flow": "read out",
+   "value": "addressed memory word (constant image when IMEM_INIT is true, RAM bytes otherwise) registered in rdata and driven on the response one cycle after a read request, zero otherwise",
+   "lines": [44, 81, 101, 128, 129, 130, 131, 176, 185]
+  },
+  {
+   "flow": "report",
+   "value": "acknowledge of a request (reads only when IMEM_INIT is true, every strobe otherwise); error tied to '0'",
+   "lines": [177, 178, 180, 186]
+  },
+  {
+   "flow": "reset",
+   "value": "rden and bus_rsp_o.ack cleared to '0' while rstn_i is '0'",
+   "lines": [172, 173, 174]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "Memory word contents -- the word held at the addressed location and returned to a read requester",
+   "security objective": "Integrity",
+   "reasoning": "The read-out flow registers the addressed word and returns it: `rdata <= mem_rom_c(to_integer(addr));` (line 81, IMEM_INIT build), `rdata(7 downto 0) <= mem_ram_b0(to_integer(addr));` with lines 129-131 (RAM build), then `bus_rsp_o.data <= rdata when (rden = '1') else (others => '0');` (line 185). The word leaves through an output field to a requester that is not supplied, so Integrity is Established: the requester must receive exactly the word held at the location given by bus_req_i.addr(addr_hi_c downto 2) (line 101), which in the RAM build is the result of the byte-enabled writes to that word (lines 114-125). Availability is also Established: on each rising edge of clk_i rdata loads the addressed word (lines 80-81, 113, 128-131) and it is delivered in the next cycle when rden is '1'. Confidentiality is not claimed: any request with stb='1' and rw='0' reads (line 176), and no line restricts the requester. rdata stores: CLOCKED_BY clk_i (occurrence 2, line 81) and SOURCES bus_rsp_o.data (occurrence 12, line 185), a use into an output field. Its 'mixed' storage comes only from the alt_style_c branches (lines 95, 159-162), which never elaborate because alt_style_c is the constant false (line 38). mem_ram_b0 to mem_ram_b3 hold the RAM array (CLOCKED_BY clk_i, lines 116-125), but their only use records are SOURCES rdata (lines 128-131), an internal register, and they are not configure-flow settings; under the rule that a register whose records show only data passed on to other internal elements is secondary, rdata is the realization point. mem_rom_c is a constant, not a candidate. bus_req_i.data (write value in) and bus_rsp_o.data (read value out) are fields of transport records and are excluded. addr only selects the word (SELECTS rdata, line 81) and is a slice of the transport address (DERIVES_FROM bus_req_i.addr, line 101); addr_ff is tied to zero (lines 84, 134) and read only in unelaborated branches.",
+   "related structural assets": [
+    {
+     "asset rtl": "rdata",
+     "entity": "neorv32_imem",
+     "realization": "stores",
+     "occurrence": 2,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Read-response qualification -- the registered decision that the previous cycle carried a read request, which lets the read word onto the response or forces it to zero",
+   "security objective": "Integrity",
+   "reasoning": "`rden <= bus_req_i.stb and (not bus_req_i.rw);` (line 176) registers whether the current request is a read, `rden <= '0';` clears it on reset (line 173), and `bus_rsp_o.data <= rdata when (rden = '1') else (others => '0');` (line 185) lets the read word onto the response only in the cycle after a read request. The decision is delivered across the boundary through bus_rsp_o.data, so Integrity is Established: the requester must receive the read word exactly when the previous cycle carried stb='1' and rw='0', and zeros otherwise (after writes, idle cycles and reset). Availability is Established under the implemented conditions: with rstn_i at '1' the decision is produced at every rising edge of clk_i (line 175). Confidentiality is context-dependent and not claimed: the zero forcing limits when memory data appears on the response, but no line restricts which requester may read. rden stores the decision: CLOCKED_BY clk_i (occurrence 3, line 176) and GATES bus_rsp_o.data (occurrence 4, line 185); its own value is a decision, so it is primary although it gates the read word. Its operands bus_req_i.stb and bus_req_i.rw are transport fields and are excluded. The flow graph lists rden as constant-valued because the map writes line 176 as GATED_BY with no data record; the RTL shows its value is the read-request decision.",
+   "related structural assets": [
+    {
+     "asset rtl": "rden",
+     "entity": "neorv32_imem",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "Memory write access -- whether a request changes the stored word, and which of its bytes (RAM build only)",
+   "security objective": "Integrity",
+   "reasoning": "With IMEM_INIT false, `if (bus_req_i.stb = '1') and (bus_req_i.rw = '1') then` (line 114) and `if (bus_req_i.ben(0) = '1') then` (line 115; lanes 1-3 at lines 118, 121, 124) decide whether and which bytes of the addressed word a request changes (lines 116, 119, 122, 125). The read-out flow returns those stored bytes (lines 128-131, 185), so Integrity is Established: a stored word may change only under this predicate. With IMEM_INIT true no write path exists (lines 73-98) and write requests get no acknowledge (line 178). No eligible declaration realizes the decision: it is formed inline from bus_req_i.stb, bus_req_i.rw and bus_req_i.ben, fields of the transport record bus_req_i, which is excluded whole and by field, and no declared signal holds it. mem_ram_b0 to mem_ram_b3 are the gated targets (GATED_BY bus_req_i.stb, line 116), not the decision, and addr only selects the word (SELECTS mem_ram_b0, line 116). The list is left empty as a mapping limitation.",
+   "related structural assets": []
+  },
+  {
+   "concept": "Access acknowledgement -- the per-request completion event returned to the requester",
+   "security objective": "Integrity",
+   "reasoning": "`bus_rsp_o.ack <= bus_req_i.stb and (not bus_req_i.rw);` (line 178, IMEM_INIT true) and `bus_rsp_o.ack <= bus_req_i.stb;` (line 180, IMEM_INIT false), cleared on reset (line 174), report completion one cycle after a request. The event is delivered across the boundary, so Integrity is Established: the requester must see an acknowledge exactly for the requests the configuration defines (reads only for the pre-initialized image, every strobe for the RAM). Availability is Established under the implemented conditions: with rstn_i at '1' the acknowledge follows each qualifying strobe at the next rising edge of clk_i (line 175). No eligible declaration realizes it: the decision is written directly into bus_rsp_o.ack from bus_req_i.stb and bus_req_i.rw, all fields of transport records, and no internal signal holds it. The list is left empty as a mapping limitation.",
+   "related structural assets": []
+  }
+ ]
+}

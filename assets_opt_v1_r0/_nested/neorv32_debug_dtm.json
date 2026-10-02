@@ -1,0 +1,286 @@
+{
+ "module name": "neorv32_debug_dtm",
+ "module purpose": "neorv32_debug_dtm samples the JTAG inputs (jtag_tck_i, jtag_tms_i, jtag_tdi_i) into the clk_i domain, runs the JTAG TAP state machine on detected TCK rising edges, shifts an instruction register and the IDCODE, dtmcs, DMI and bypass data registers and drives the selected bit on jtag_tdo_o; on a committed DMI update it latches an address, write data and a read/write operation and drives them on dmi_req_o, captures read data from dmi_rsp_i until it is acknowledged, and keeps a sticky error flag and dtmcs-controlled DMI reset bits.",
+ "use-case flows": [
+  {
+   "flow": "operate",
+   "value": "TAP controller state advanced from the synchronized TMS level at each detected TCK rising edge",
+   "lines": [99, 101, 106, 110, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139]
+  },
+  {
+   "flow": "configure",
+   "value": "JTAG instruction shifted in from TDI during IR_SHIFT, preset to the IDCODE address in LOGIC_RESET and IR_CAPTURE",
+   "lines": [100, 111, 178, 179, 180, 181]
+  },
+  {
+   "flow": "read out",
+   "value": "selected data register (IDCODE, dtmcs, DMI access register, bypass) captured in DR_CAPTURE, shifted in DR_SHIFT, and its low bit (or the instruction bit in IR_SHIFT) driven on jtag_tdo_o at TCK falling edges",
+   "lines": [107, 185, 186, 187, 188, 189, 190, 192, 193, 194, 195, 196, 197, 202, 203, 204, 206, 207, 208, 209, 210]
+  },
+  {
+   "flow": "start",
+   "value": "DMI request (address, write data, read/write operation) latched from the scanned DMI register at a committed DR update while no access is outstanding, and driven to dmi_req_o",
+   "lines": [151, 152, 154, 156, 161, 263, 264, 265, 266, 267, 268, 269, 270, 283, 284, 285]
+  },
+  {
+   "flow": "operate",
+   "value": "DMI response: read data captured from dmi_rsp_i while busy, busy cleared when dmi_rsp_i.ack is set",
+   "lines": [273, 274, 275, 276]
+  },
+  {
+   "flow": "report",
+   "value": "sticky DMI error set when an access is committed while another is outstanding, and the status words dtmcs_nxt and dmi_nxt assembled from the error, the reset bits, the address and the read data",
+   "lines": [219, 220, 221, 222, 223, 224, 225, 226, 229, 256, 258, 259]
+  },
+  {
+   "flow": "configure",
+   "value": "dmireset and dmihardreset requests taken from dtmcs bits 16 and 17 at a committed dtmcs update, and self-cleared when no access is outstanding",
+   "lines": [195, 247, 248, 249, 250, 251, 252]
+  },
+  {
+   "flow": "reset",
+   "value": "synchronizer, TAP, scan and DMI registers forced to constants while rstn_i is low (dmihardreset to '1'); the sticky error cleared by dmireset or dmihardreset; new requests blocked while dmihardreset is set",
+   "lines": [94, 95, 96, 97, 118, 119, 148, 149, 168, 169, 170, 171, 172, 173, 174, 236, 237, 238, 239, 240, 241, 242, 243, 244, 256, 257, 265]
+  }
+ ],
+ "conceptual assets": [
+  {
+   "concept": "TAP controller state -- the JTAG state-machine position that decides when the instruction and data registers capture, shift and update",
+   "security objective": "Integrity",
+   "reasoning": "The operate flow advances tap_ctrl_state at each detected TCK rising edge by the synchronized TMS level (`if (tap_sync.tck_rising = '1') then` line 121, transitions lines 123-139, `when others => tap_ctrl_state <= LOGIC_RESET;` line 139). The state decides the instruction preset and shift (GATES tap_reg.ireg, lines 178, 180), data-register capture and shift (GATES at lines 185, 192), the TDO source (line 203) and the DR_UPDATE commit history (GATES dr_trigger.sreg, line 151). A wrong state would capture, shift or commit the wrong register, so Integrity is Established. Availability is Established under the implemented conditions: the state changes only on TCK rising edges and returns to LOGIC_RESET by reset (line 119) or TMS (line 132). tap_ctrl_state is self-updating (SELECTS itself, line 122) and stores the state (CLOCKED_BY clk_i). jtag_tms_i sets it: this entity reads it into tap_sync.tms_ff (SOURCES, line 101), and its synchronized copy tap_sync.tms gates every transition (lines 123-138); tap_sync.tms_ff and tap_sync.tms only carry that level. jtag_tck_i only enables clocked updates through tap_sync.tck_rising and tap_sync.tck_falling (lines 106-107, 121, 180, 192, 202), so it is a clock-enable input and is not reported; clk_i and rstn_i drive SEQUENCES and RESETS.",
+   "related structural assets": [
+    {
+     "asset rtl": "tap_ctrl_state",
+     "entity": "neorv32_debug_dtm",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "jtag_tms_i",
+     "entity": "neorv32_debug_dtm",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "SOURCES", "partner": "tap_sync.tms_ff"}
+    }
+   ]
+  },
+  {
+   "concept": "Active JTAG instruction -- which data register a scan accesses and which DMI-side action a committed update performs",
+   "security objective": "Integrity",
+   "reasoning": "The configure flow shifts the instruction in from TDI (`tap_reg.ireg <= tap_sync.tdi & tap_reg.ireg(tap_reg.ireg'left downto 1);` line 181) and presets it to addr_idcode_c (line 179). Its value selects the captured and shifted register (SELECTS at lines 186, 193), the TDO source (SELECTS jtag_tdo_o, line 206), and qualifies the dtmcs reset application (GATES, line 247), the error (line 258) and the DMI request issue (GATES dmi_ctrl.addr/busy/op/wdata, line 265). A wrong instruction would turn a DR update into a DMI request or a DMI reset, so Integrity is Established. tap_reg.ireg stores it (CLOCKED_BY clk_i) and its SELECTS and GATES records show the use. jtag_tdi_i sets it: this entity reads it into tap_sync.tdi_ff (SOURCES, line 100); tap_sync.tdi_ff and tap_sync.tdi only carry the bit. In IR_SHIFT the instruction bits leave on jtag_tdo_o (`jtag_tdo_o <= tap_reg.ireg(0);` line 204, DERIVES_FROM tap_reg.ireg), an exit port.",
+   "related structural assets": [
+    {
+     "asset rtl": "tap_reg.ireg",
+     "entity": "neorv32_debug_dtm",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "jtag_tdi_i",
+     "entity": "neorv32_debug_dtm",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "SOURCES", "partner": "tap_sync.tdi_ff"}
+    },
+    {
+     "asset rtl": "jtag_tdo_o",
+     "entity": "neorv32_debug_dtm",
+     "realization": "exit port",
+     "occurrence": 3,
+     "edge": {"type": "DERIVES_FROM", "partner": "tap_reg.ireg"}
+    }
+   ]
+  },
+  {
+   "concept": "Data-register update commit -- the one-cycle event, on entry to DR_UPDATE, that applies a scanned DMI or dtmcs value",
+   "security objective": "Integrity",
+   "reasoning": "The start and configure flows act only when this event is set: dr_trigger.sreg(0) follows `tap_ctrl_state = DR_UPDATE` (lines 151-154), sreg(1) delays it (line 156), and `dr_trigger.valid <= '1' when (dr_trigger.sreg = \"01\") else '0';` (line 161) yields one pulse per entry. The pulse gates the dmireset/dmihardreset load (GATES, line 247), the error set (line 258) and the DMI request issue (line 265). A spurious, missing or repeated pulse would issue, drop or repeat a DMI request or a DMI reset, so Integrity is Established; availability holds once per entry into DR_UPDATE. dr_trigger.valid computes the event (GATED_BY dr_trigger.sreg, line 161). dr_trigger.sreg is the operand of that condition, not the result, and is not reported. The flow graph lists dr_trigger.valid as not reached from a source; its records still hold.",
+   "related structural assets": [
+    {
+     "asset rtl": "dr_trigger.valid",
+     "entity": "neorv32_debug_dtm",
+     "realization": "computes",
+     "occurrence": 2,
+     "edge": {"type": "GATED_BY", "partner": "dr_trigger.sreg"}
+    }
+   ]
+  },
+  {
+   "concept": "DMI request issued to the debug module -- the address, write data and read/write operation latched at a committed DMI update and held while the access is outstanding",
+   "security objective": "Integrity",
+   "reasoning": "The start flow latches `dmi_ctrl.addr <= tap_reg.dmi(40 downto 34);` (line 266), `dmi_ctrl.wdata <= tap_reg.dmi(33 downto 02);` (line 267) and, only for a read or write code, `dmi_ctrl.op <= tap_reg.dmi(1 downto 0);` (lines 268-269), when busy is '0', dmihardreset is '0', the commit pulse is set and the instruction is addr_dmi_c (lines 264-265); op returns to dmi_req_nop_c every other cycle (line 263). The values are delivered to the debug module, which is not supplied (lines 283-285), so Integrity is Established as delivery of exactly the latched request. Availability is Established under these conditions: addr and wdata are held while busy (line 264). Each register stores its part (CLOCKED_BY clk_i) and CARRIES it into a dmi_req_o field (lines 283-285). dmi_req_o (addr, data, op) and dmi_rsp_i (data, ack) carry complete DMI transactions, so they are transport records and are not reported. tap_reg.dmi is the scan register the request is latched from; it can shift again while the request is held (line 196), and it is reported under the host-facing DMI register concept. jtag_tdi_i sets the request bits, which enter at line 100.",
+   "related structural assets": [
+    {
+     "asset rtl": "dmi_ctrl.addr",
+     "entity": "neorv32_debug_dtm",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "dmi_ctrl.wdata",
+     "entity": "neorv32_debug_dtm",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "dmi_ctrl.op",
+     "entity": "neorv32_debug_dtm",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "jtag_tdi_i",
+     "entity": "neorv32_debug_dtm",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "SOURCES", "partner": "tap_sync.tdi_ff"}
+    }
+   ]
+  },
+  {
+   "concept": "DMI access outstanding state -- whether a request has been issued and its response not yet acknowledged",
+   "security objective": "Integrity",
+   "reasoning": "busy is set when a request is issued (`dmi_ctrl.busy <= '1';` line 270) and cleared on `if (dmi_rsp_i.ack = '1') then` (lines 275-276). It decides whether a commit issues a new request (GATES dmi_ctrl.addr/op/wdata, line 264) or sets the error instead (GATES dmi_ctrl.err, line 258), whether read data is captured (line 274), and whether dmireset/dmihardreset self-clear (line 250). A wrong busy value would let a new request overwrite an outstanding one or block requests, so Integrity is Established. Availability is Established in the RTL-visible sense that requests stay blocked until an acknowledge arrives; no timeout exists and none is assumed. dmi_ctrl.busy stores the state (CLOCKED_BY clk_i) and its GATES records show the use. dmi_rsp_i.ack is a field of a transport record and is not reported.",
+   "related structural assets": [
+    {
+     "asset rtl": "dmi_ctrl.busy",
+     "entity": "neorv32_debug_dtm",
+     "realization": "stores",
+     "occurrence": 6,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    }
+   ]
+  },
+  {
+   "concept": "DMI reset requests -- the dmireset and dmihardreset controls applied from a committed dtmcs write",
+   "security objective": "Integrity",
+   "reasoning": "The configure flow loads `dmi_ctrl.dmireset <= tap_reg.dtmcs(16);` and `dmi_ctrl.dmihardreset <= tap_reg.dtmcs(17);` on a committed dtmcs update (lines 247-249) and clears them when no access is outstanding (lines 250-252); dmihardreset is '1' after rstn_i (line 239). Either bit clears the sticky error (GATES dmi_ctrl.err, lines 256-257), and dmihardreset blocks new DMI requests (GATES dmi_ctrl.addr/busy/op/wdata, line 265). Both are reported back in dtmcs (lines 220-221). Integrity is Established: the applied reset must follow the committed dtmcs bits. Both registers store their control (CLOCKED_BY clk_i) and their GATES records show the use. tap_reg.dtmcs is the scan register they are loaded from and is reported under the dtmcs concept. jtag_tdi_i sets the requested bits (line 100).",
+   "related structural assets": [
+    {
+     "asset rtl": "dmi_ctrl.dmireset",
+     "entity": "neorv32_debug_dtm",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "dmi_ctrl.dmihardreset",
+     "entity": "neorv32_debug_dtm",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "jtag_tdi_i",
+     "entity": "neorv32_debug_dtm",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "SOURCES", "partner": "tap_sync.tdi_ff"}
+    }
+   ]
+  },
+  {
+   "concept": "Sticky DMI error status -- set when an access is committed while another is outstanding, reported to the JTAG host",
+   "security objective": "Integrity",
+   "reasoning": "The report flow sets `dmi_ctrl.err <= '1';` when busy, the commit pulse and addr_dmi_c hold (lines 258-259), and clears it on dmireset or dmihardreset (lines 256-257). The flag is placed in the DMI capture word (`tap_reg.dmi_nxt <= dmi_ctrl.addr & dmi_ctrl.rdata & replicate_f(dmi_ctrl.err, 2);` line 229) and in dtmcs bits 11-10 (line 224), captured (lines 188-189) and shifted out (lines 208-209). Integrity is Established: the reported status must match the overrun condition of line 258. dmi_ctrl.err computes the decision (GATED_BY dmi_ctrl.busy, line 259). It leaves the entity through jtag_tdo_o (DERIVES_FROM tap_reg.dmi, line 209). tap_reg.dmi_nxt and tap_reg.dtmcs_nxt only concatenate the flag.",
+   "related structural assets": [
+    {
+     "asset rtl": "dmi_ctrl.err",
+     "entity": "neorv32_debug_dtm",
+     "realization": "computes",
+     "occurrence": 5,
+     "edge": {"type": "GATED_BY", "partner": "dmi_ctrl.busy"}
+    },
+    {
+     "asset rtl": "jtag_tdo_o",
+     "entity": "neorv32_debug_dtm",
+     "realization": "exit port",
+     "occurrence": 6,
+     "edge": {"type": "DERIVES_FROM", "partner": "tap_reg.dmi"}
+    }
+   ]
+  },
+  {
+   "concept": "DMI access register exchanged with the JTAG host -- the access scanned in through TDI, and the captured address, read data and status scanned out",
+   "security objective": "Integrity",
+   "reasoning": "In the read-out flow, tap_reg.dmi captures `tap_reg.dmi <= tap_reg.dmi_nxt;` (line 189), which holds the address, the read data from the debug module and the error (line 229). It shifts through TDI (line 196) and its low bit leaves on `jtag_tdo_o <= tap_reg.dmi(0);` (line 209). The scanned-in content decides whether an operation is valid (GATES dmi_ctrl.busy/op, line 268) and sources the request (lines 266-267). The host that reads the value is not supplied, so Integrity is Established as delivery of exactly the captured word. No line restricts who reads it, so confidentiality is not established. tap_reg.dmi stores the word (CLOCKED_BY clk_i) and its GATES and SOURCES-into-jtag_tdo_o records show the use. jtag_tdo_o is the exit port (DERIVES_FROM tap_reg.dmi, line 209). jtag_tdi_i sets the scanned bits (line 100). dmi_ctrl.rdata only feeds tap_reg.dmi_nxt (SOURCES, line 229); it has no use record of its own, so it is secondary. dmi_rsp_i.data is a transport field.",
+   "related structural assets": [
+    {
+     "asset rtl": "tap_reg.dmi",
+     "entity": "neorv32_debug_dtm",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "jtag_tdo_o",
+     "entity": "neorv32_debug_dtm",
+     "realization": "exit port",
+     "occurrence": 6,
+     "edge": {"type": "DERIVES_FROM", "partner": "tap_reg.dmi"}
+    },
+    {
+     "asset rtl": "jtag_tdi_i",
+     "entity": "neorv32_debug_dtm",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "SOURCES", "partner": "tap_sync.tdi_ff"}
+    }
+   ]
+  },
+  {
+   "concept": "DTM control and status word (dtmcs) exchanged with the JTAG host -- reset requests written by the host and the reported DMI reset and error status",
+   "security objective": "Integrity",
+   "reasoning": "tap_reg.dtmcs captures `tap_reg.dtmcs <= tap_reg.dtmcs_nxt;` (line 188), which holds the reset bits (lines 220-221), the error status (line 224) and constant fields (lines 219, 222-223, 225-226). It shifts through TDI (line 195) and leaves on `jtag_tdo_o <= tap_reg.dtmcs(0);` (line 208). Its bits 16 and 17 are the source of the applied reset requests (SOURCES dmi_ctrl.dmireset/dmihardreset, lines 248-249). Integrity is Established: the host must receive exactly the captured status, and the written bits decide the applied reset. tap_reg.dtmcs stores the word (CLOCKED_BY clk_i), and its SOURCES record into jtag_tdo_o shows the use. jtag_tdo_o is the exit port (DERIVES_FROM tap_reg.dtmcs, line 208). jtag_tdi_i sets the written bits (line 100). tap_reg.dtmcs_nxt only assembles the word.",
+   "related structural assets": [
+    {
+     "asset rtl": "tap_reg.dtmcs",
+     "entity": "neorv32_debug_dtm",
+     "realization": "stores",
+     "occurrence": 4,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "jtag_tdo_o",
+     "entity": "neorv32_debug_dtm",
+     "realization": "exit port",
+     "occurrence": 5,
+     "edge": {"type": "DERIVES_FROM", "partner": "tap_reg.dtmcs"}
+    },
+    {
+     "asset rtl": "jtag_tdi_i",
+     "entity": "neorv32_debug_dtm",
+     "realization": "sets",
+     "occurrence": 2,
+     "edge": {"type": "SOURCES", "partner": "tap_sync.tdi_ff"}
+    }
+   ]
+  },
+  {
+   "concept": "Device identification code -- the IDCODE value built from the generics, captured and scanned out to the JTAG host",
+   "security objective": "Integrity",
+   "reasoning": "In the read-out flow, `tap_reg.idcode <= IDCODE_VERSION & IDCODE_PARTID & IDCODE_MANID & '1';` (line 187) captures the identification word in DR_CAPTURE when the instruction is addr_idcode_c. It shifts in DR_SHIFT (line 194) and leaves on `jtag_tdo_o <= tap_reg.idcode(0);` (line 207). The host that reads it is not supplied, so Integrity is Established as delivery of exactly the value line 187 defines. tap_reg.idcode stores it (CLOCKED_BY clk_i), and its SOURCES record into jtag_tdo_o (line 207) shows the use. jtag_tdo_o is the exit port (DERIVES_FROM tap_reg.idcode). tap_reg.bypass only holds the TDI bit for one shift (COPIES tap_sync.tdi, line 197) and is a forwarding element, so it is not reported.",
+   "related structural assets": [
+    {
+     "asset rtl": "tap_reg.idcode",
+     "entity": "neorv32_debug_dtm",
+     "realization": "stores",
+     "occurrence": 3,
+     "edge": {"type": "CLOCKED_BY", "partner": "clk_i"}
+    },
+    {
+     "asset rtl": "jtag_tdo_o",
+     "entity": "neorv32_debug_dtm",
+     "realization": "exit port",
+     "occurrence": 4,
+     "edge": {"type": "DERIVES_FROM", "partner": "tap_reg.idcode"}
+    }
+   ]
+  }
+ ]
+}

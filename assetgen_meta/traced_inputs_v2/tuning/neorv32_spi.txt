@@ -1,0 +1,790 @@
+TARGET IP MODULE: neorv32_spi
+
+=== RTL (comments removed, blank lines left out; each line starts with its line number in the source file) ===
+   18 | entity neorv32_spi is
+   19 |   generic (
+   20 |     IO_SPI_FIFO : natural range 1 to 2**15
+   21 |   );
+   22 |   port (
+   23 |     clk_i       : in  std_ulogic;
+   24 |     rstn_i      : in  std_ulogic;
+   25 |     bus_req_i   : in  bus_req_t;
+   26 |     bus_rsp_o   : out bus_rsp_t;
+   27 |     clkgen_en_o : out std_ulogic;
+   28 |     clkgen_i    : in  std_ulogic_vector(7 downto 0);
+   29 |     spi_clk_o   : out std_ulogic;
+   30 |     spi_dat_o   : out std_ulogic;
+   31 |     spi_dat_i   : in  std_ulogic;
+   32 |     spi_csn_o   : out std_ulogic_vector(7 downto 0);
+   33 |     irq_o       : out std_ulogic
+   34 |   );
+   35 | end neorv32_spi;
+
+   37 | architecture neorv32_spi_rtl of neorv32_spi is
+   40 |   constant ctrl_en_c           : natural :=  0;
+   41 |   constant ctrl_cpha_c         : natural :=  1;
+   42 |   constant ctrl_cpol_c         : natural :=  2;
+   43 |   constant ctrl_prsc0_c        : natural :=  3;
+   44 |   constant ctrl_prsc1_c        : natural :=  4;
+   45 |   constant ctrl_prsc2_c        : natural :=  5;
+   46 |   constant ctrl_cdiv0_c        : natural :=  6;
+   47 |   constant ctrl_cdiv1_c        : natural :=  7;
+   48 |   constant ctrl_cdiv2_c        : natural :=  8;
+   49 |   constant ctrl_cdiv3_c        : natural :=  9;
+   50 |   constant ctrl_highspeed_c    : natural := 10;
+   52 |   constant ctrl_rx_avail_c     : natural := 16;
+   53 |   constant ctrl_tx_empty_c     : natural := 17;
+   54 |   constant ctrl_tx_nhalf_c     : natural := 18;
+   55 |   constant ctrl_tx_full_c      : natural := 19;
+   56 |   constant ctrl_irq_rx_avail_c : natural := 20;
+   57 |   constant ctrl_irq_tx_empty_c : natural := 21;
+   58 |   constant ctrl_irq_tx_nhalf_c : natural := 22;
+   59 |   constant ctrl_irq_idle_c     : natural := 23;
+   60 |   constant ctrl_fifo_size0_c   : natural := 24;
+   61 |   constant ctrl_fifo_size1_c   : natural := 25;
+   62 |   constant ctrl_fifo_size2_c   : natural := 26;
+   63 |   constant ctrl_fifo_size3_c   : natural := 27;
+   65 |   constant ctrl_cs_active_c    : natural := 30;
+   66 |   constant ctrl_busy_c         : natural := 31;
+   69 |   constant log2_fifo_size_c : natural := index_size_f(IO_SPI_FIFO);
+   72 |   type ctrl_t is record
+   73 |     enable       : std_ulogic;
+   74 |     cpha         : std_ulogic;
+   75 |     cpol         : std_ulogic;
+   76 |     prsc         : std_ulogic_vector(2 downto 0);
+   77 |     cdiv         : std_ulogic_vector(3 downto 0);
+   78 |     highspeed    : std_ulogic;
+   79 |     irq_rx_avail : std_ulogic;
+   80 |     irq_tx_empty : std_ulogic;
+   81 |     irq_tx_nhalf : std_ulogic;
+   82 |     irq_idle     : std_ulogic;
+   83 |   end record;
+   84 |   signal ctrl : ctrl_t;
+   87 |   signal cdiv_cnt   : std_ulogic_vector(3 downto 0);
+   88 |   signal spi_clk_en : std_ulogic;
+   91 |   type rtx_engine_t is record
+   92 |     state    : std_ulogic_vector(2 downto 0);
+   93 |     busy     : std_ulogic;
+   94 |     sreg     : std_ulogic_vector(7 downto 0);
+   95 |     bitcnt   : std_ulogic_vector(3 downto 0);
+   96 |     sdi_sync : std_ulogic;
+   97 |     sck      : std_ulogic;
+   98 |     cs_ctrl  : std_ulogic_vector(3 downto 0);
+   99 |     done     : std_ulogic;
+  100 |   end record;
+  101 |   signal rtx_engine : rtx_engine_t;
+  104 |   type fifo_t is record
+  105 |     we,    re    : std_ulogic;
+  106 |     wdata, rdata : std_ulogic_vector(8 downto 0);
+  107 |     avail, free  : std_ulogic;
+  108 |     clear, half  : std_ulogic;
+  109 |   end record;
+  110 |   signal tx_fifo, rx_fifo : fifo_t;
+  112 | begin
+  116 |   bus_access: process(rstn_i, clk_i)
+  117 |   begin
+  118 |     if (rstn_i = '0') then
+  119 |       bus_rsp_o         <= rsp_terminate_c;
+  120 |       ctrl.enable       <= '0';
+  121 |       ctrl.cpha         <= '0';
+  122 |       ctrl.cpol         <= '0';
+  123 |       ctrl.prsc         <= (others => '0');
+  124 |       ctrl.cdiv         <= (others => '0');
+  125 |       ctrl.highspeed    <= '0';
+  126 |       ctrl.irq_rx_avail <= '0';
+  127 |       ctrl.irq_tx_empty <= '0';
+  128 |       ctrl.irq_tx_nhalf <= '0';
+  129 |       ctrl.irq_idle     <= '0';
+  130 |     elsif rising_edge(clk_i) then
+  132 |       bus_rsp_o.ack  <= bus_req_i.stb;
+  133 |       bus_rsp_o.err  <= '0';
+  134 |       bus_rsp_o.data <= (others => '0');
+  137 |       if (bus_req_i.stb = '1') then
+  138 |         if (bus_req_i.rw = '1') then
+  139 |           if (bus_req_i.addr(2) = '0') then
+  140 |             ctrl.enable       <= bus_req_i.data(ctrl_en_c);
+  141 |             ctrl.cpha         <= bus_req_i.data(ctrl_cpha_c);
+  142 |             ctrl.cpol         <= bus_req_i.data(ctrl_cpol_c);
+  143 |             ctrl.prsc         <= bus_req_i.data(ctrl_prsc2_c downto ctrl_prsc0_c);
+  144 |             ctrl.cdiv         <= bus_req_i.data(ctrl_cdiv3_c downto ctrl_cdiv0_c);
+  145 |             ctrl.highspeed    <= bus_req_i.data(ctrl_highspeed_c);
+  146 |             ctrl.irq_rx_avail <= bus_req_i.data(ctrl_irq_rx_avail_c);
+  147 |             ctrl.irq_tx_empty <= bus_req_i.data(ctrl_irq_tx_empty_c);
+  148 |             ctrl.irq_tx_nhalf <= bus_req_i.data(ctrl_irq_tx_nhalf_c);
+  149 |             ctrl.irq_idle     <= bus_req_i.data(ctrl_irq_idle_c);
+  150 |           end if;
+  151 |         else
+  152 |           if (bus_req_i.addr(2) = '0') then
+  153 |             bus_rsp_o.data(ctrl_en_c)                        <= ctrl.enable;
+  154 |             bus_rsp_o.data(ctrl_cpha_c)                      <= ctrl.cpha;
+  155 |             bus_rsp_o.data(ctrl_cpol_c)                      <= ctrl.cpol;
+  156 |             bus_rsp_o.data(ctrl_prsc2_c downto ctrl_prsc0_c) <= ctrl.prsc;
+  157 |             bus_rsp_o.data(ctrl_cdiv3_c downto ctrl_cdiv0_c) <= ctrl.cdiv;
+  158 |             bus_rsp_o.data(ctrl_highspeed_c)                 <= ctrl.highspeed;
+  160 |             bus_rsp_o.data(ctrl_rx_avail_c)     <= rx_fifo.avail;
+  161 |             bus_rsp_o.data(ctrl_tx_empty_c)     <= not tx_fifo.avail;
+  162 |             bus_rsp_o.data(ctrl_tx_nhalf_c)     <= not tx_fifo.half;
+  163 |             bus_rsp_o.data(ctrl_tx_full_c)      <= not tx_fifo.free;
+  164 |             bus_rsp_o.data(ctrl_irq_rx_avail_c) <= ctrl.irq_rx_avail;
+  165 |             bus_rsp_o.data(ctrl_irq_tx_empty_c) <= ctrl.irq_tx_empty;
+  166 |             bus_rsp_o.data(ctrl_irq_tx_nhalf_c) <= ctrl.irq_tx_nhalf;
+  167 |             bus_rsp_o.data(ctrl_irq_idle_c)     <= ctrl.irq_idle;
+  169 |             bus_rsp_o.data(ctrl_fifo_size3_c downto ctrl_fifo_size0_c) <= std_ulogic_vector(to_unsigned(log2_fifo_size_c, 4));
+  171 |             bus_rsp_o.data(ctrl_cs_active_c) <= rtx_engine.cs_ctrl(3);
+  172 |             bus_rsp_o.data(ctrl_busy_c)      <= rtx_engine.busy or tx_fifo.avail;
+  173 |           else
+  174 |             bus_rsp_o.data(7 downto 0) <= rx_fifo.rdata(7 downto 0);
+  175 |           end if;
+  176 |         end if;
+  177 |       end if;
+  178 |     end if;
+  179 |   end process bus_access;
+  186 |   tx_fifo_inst: entity neorv32.neorv32_fifo
+  187 |   generic map (
+  188 |     FIFO_DEPTH => IO_SPI_FIFO,
+  189 |     FIFO_WIDTH => 9,
+  190 |     FIFO_RSYNC => true,
+  191 |     FIFO_SAFE  => true,
+  192 |     FULL_RESET => false
+  193 |   )
+  194 |   port map (
+  196 |     clk_i   => clk_i,
+  197 |     rstn_i  => rstn_i,
+  198 |     clear_i => tx_fifo.clear,
+  199 |     half_o  => tx_fifo.half,
+  200 |     level_o => open,
+  202 |     wdata_i => tx_fifo.wdata,
+  203 |     we_i    => tx_fifo.we,
+  204 |     free_o  => tx_fifo.free,
+  206 |     re_i    => tx_fifo.re,
+  207 |     rdata_o => tx_fifo.rdata,
+  208 |     avail_o => tx_fifo.avail
+  209 |   );
+  211 |   tx_fifo.clear <= not ctrl.enable;
+  212 |   tx_fifo.we    <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '1') else '0';
+  213 |   tx_fifo.wdata <= bus_req_i.data(31) & bus_req_i.data(7 downto 0);
+  214 |   tx_fifo.re    <= '1' when (rtx_engine.state = "100") else '0';
+  218 |   rx_fifo_inst: entity neorv32.neorv32_fifo
+  219 |   generic map (
+  220 |     FIFO_DEPTH => IO_SPI_FIFO,
+  221 |     FIFO_WIDTH => 9,
+  222 |     FIFO_RSYNC => true,
+  223 |     FIFO_SAFE  => true,
+  224 |     FULL_RESET => false
+  225 |   )
+  226 |   port map (
+  228 |     clk_i   => clk_i,
+  229 |     rstn_i  => rstn_i,
+  230 |     clear_i => rx_fifo.clear,
+  231 |     half_o  => rx_fifo.half,
+  232 |     level_o => open,
+  234 |     wdata_i => rx_fifo.wdata,
+  235 |     we_i    => rx_fifo.we,
+  236 |     free_o  => rx_fifo.free,
+  238 |     re_i    => rx_fifo.re,
+  239 |     rdata_o => rx_fifo.rdata,
+  240 |     avail_o => rx_fifo.avail
+  241 |   );
+  243 |   rx_fifo.clear <= not ctrl.enable;
+  244 |   rx_fifo.wdata <= '0' & rtx_engine.sreg;
+  245 |   rx_fifo.we    <= rtx_engine.done;
+  246 |   rx_fifo.re    <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(2) = '1') else '0';
+  250 |   irq_generator: process(rstn_i, clk_i)
+  251 |   begin
+  252 |     if (rstn_i = '0') then
+  253 |       irq_o <= '0';
+  254 |     elsif rising_edge(clk_i) then
+  255 |       irq_o <= ctrl.enable and (
+  256 |                (ctrl.irq_rx_avail and      rx_fifo.avail)  or
+  257 |                (ctrl.irq_tx_empty and (not tx_fifo.avail)) or
+  258 |                (ctrl.irq_tx_nhalf and (not tx_fifo.half))  or
+  259 |                (ctrl.irq_idle     and (not tx_fifo.avail) and (not rtx_engine.busy)));
+  260 |     end if;
+  261 |   end process irq_generator;
+  266 |   transceiver: process(rstn_i, clk_i)
+  267 |   begin
+  268 |     if (rstn_i = '0') then
+  269 |       rtx_engine.done     <= '0';
+  270 |       rtx_engine.state    <= (others => '0');
+  271 |       rtx_engine.bitcnt   <= (others => '0');
+  272 |       rtx_engine.sreg     <= (others => '0');
+  273 |       rtx_engine.sdi_sync <= '0';
+  274 |       rtx_engine.sck      <= '0';
+  275 |       rtx_engine.cs_ctrl  <= (others => '0');
+  276 |     elsif rising_edge(clk_i) then
+  278 |       rtx_engine.done <= '0';
+  281 |       rtx_engine.state(2) <= ctrl.enable;
+  282 |       case rtx_engine.state is
+  284 |         when "100" =>
+  286 |           rtx_engine.sck    <= ctrl.cpol;
+  287 |           rtx_engine.bitcnt <= (others => '0');
+  288 |           if (tx_fifo.avail = '1') then
+  289 |             if (tx_fifo.rdata(8) = '1') then
+  290 |               rtx_engine.cs_ctrl <= tx_fifo.rdata(3 downto 0);
+  291 |             else
+  292 |               rtx_engine.sreg              <= tx_fifo.rdata(7 downto 0);
+  293 |               rtx_engine.state(1 downto 0) <= "01";
+  294 |             end if;
+  295 |           end if;
+  297 |         when "101" =>
+  299 |           if (spi_clk_en = '1') then
+  300 |             if (ctrl.cpha = '1') then
+  301 |               rtx_engine.sck <= not ctrl.cpol;
+  302 |             end if;
+  303 |             rtx_engine.state(1 downto 0) <= "10";
+  304 |           end if;
+  306 |         when "110" =>
+  308 |           if (spi_clk_en = '1') then
+  309 |             rtx_engine.sck               <= not (ctrl.cpha xor ctrl.cpol);
+  310 |             rtx_engine.sdi_sync          <= spi_dat_i;
+  311 |             rtx_engine.bitcnt            <= std_ulogic_vector(unsigned(rtx_engine.bitcnt) + 1);
+  312 |             rtx_engine.state(1 downto 0) <= "11";
+  313 |           end if;
+  315 |         when "111" =>
+  317 |           if (spi_clk_en = '1') then
+  318 |             rtx_engine.sreg <= rtx_engine.sreg(6 downto 0) & rtx_engine.sdi_sync;
+  319 |             if (rtx_engine.bitcnt(3) = '1') then
+  320 |               rtx_engine.sck               <= ctrl.cpol;
+  321 |               rtx_engine.done              <= '1';
+  322 |               rtx_engine.state(1 downto 0) <= "00";
+  323 |             else
+  324 |               rtx_engine.sck               <= ctrl.cpha xor ctrl.cpol;
+  325 |               rtx_engine.state(1 downto 0) <= "10";
+  326 |             end if;
+  327 |           end if;
+  329 |         when others =>
+  331 |           rtx_engine.sck               <= ctrl.cpol;
+  332 |           rtx_engine.cs_ctrl           <= (others => '0');
+  333 |           rtx_engine.state(1 downto 0) <= "00";
+  335 |       end case;
+  336 |     end if;
+  337 |   end process transceiver;
+  340 |   rtx_engine.busy <= '0' when (rtx_engine.state(1 downto 0) = "00") else '1';
+  343 |   spi_dat_o <= rtx_engine.sreg(7);
+  344 |   spi_clk_o <= rtx_engine.sck;
+  347 |   chip_select: process(rstn_i, clk_i)
+  348 |   begin
+  349 |     if (rstn_i = '0') then
+  350 |       spi_csn_o <= (others => '1');
+  351 |     elsif rising_edge(clk_i) then
+  352 |       spi_csn_o <= (others => '1');
+  353 |       if (rtx_engine.cs_ctrl(3) = '1') then
+  354 |         spi_csn_o(to_integer(unsigned(rtx_engine.cs_ctrl(2 downto 0)))) <= '0';
+  355 |       end if;
+  356 |     end if;
+  357 |   end process chip_select;
+  362 |   clock_generator: process(rstn_i, clk_i)
+  363 |   begin
+  364 |     if (rstn_i = '0') then
+  365 |       spi_clk_en <= '0';
+  366 |       cdiv_cnt   <= (others => '0');
+  367 |     elsif rising_edge(clk_i) then
+  368 |       spi_clk_en <= '0';
+  369 |       if (ctrl.enable = '0') then
+  370 |         cdiv_cnt <= (others => '0');
+  371 |       elsif (clkgen_i(to_integer(unsigned(ctrl.prsc))) = '1') or (ctrl.highspeed = '1') then
+  372 |         if (cdiv_cnt = ctrl.cdiv) then
+  373 |           spi_clk_en <= '1';
+  374 |           cdiv_cnt   <= (others => '0');
+  375 |         else
+  376 |           cdiv_cnt <= std_ulogic_vector(unsigned(cdiv_cnt) + 1);
+  377 |         end if;
+  378 |       end if;
+  379 |     end if;
+  380 |   end process clock_generator;
+  383 |   clkgen_en_o <= ctrl.enable;
+  386 | end neorv32_spi_rtl;
+
+=== RELATIONSHIP MAP: ELEMENTS AND RECORDS ===
+PORT {"name":"clk_i","entity":"neorv32_spi","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":23},{"id":2,"line":116},{"id":3,"line":130},{"id":4,"line":196},{"id":5,"line":228},{"id":6,"line":250},{"id":7,"line":254},{"id":8,"line":266},{"id":9,"line":276},{"id":10,"line":347},{"id":11,"line":351},{"id":12,"line":362},{"id":13,"line":367}]}
+    {"connections":[{"at":4,"instance":"tx_fifo_inst","formal":"clk_i","mode":"in","lines":[196]},{"at":5,"instance":"rx_fifo_inst","formal":"clk_i","mode":"in","lines":[228]}]}
+    {"type":"SEQUENCES","at":[3],"lines":[130],"targets":["bus_rsp_o.ack","bus_rsp_o.data","bus_rsp_o.err","ctrl.cdiv","ctrl.cpha","ctrl.cpol","ctrl.enable","ctrl.highspeed","ctrl.irq_idle","ctrl.irq_rx_avail","ctrl.irq_tx_empty","ctrl.irq_tx_nhalf","ctrl.prsc"]}
+    {"type":"SEQUENCES","at":[7],"lines":[254],"targets":["irq_o"]}
+    {"type":"SEQUENCES","at":[9],"lines":[276],"targets":["rtx_engine.bitcnt","rtx_engine.cs_ctrl","rtx_engine.done","rtx_engine.sck","rtx_engine.sdi_sync","rtx_engine.sreg","rtx_engine.state"]}
+    {"type":"SEQUENCES","at":[11],"lines":[351],"targets":["spi_csn_o"]}
+    {"type":"SEQUENCES","at":[13],"lines":[367],"targets":["cdiv_cnt","spi_clk_en"]}
+PORT {"name":"rstn_i","entity":"neorv32_spi","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":24},{"id":2,"line":116},{"id":3,"line":118},{"id":4,"line":197},{"id":5,"line":229},{"id":6,"line":250},{"id":7,"line":252},{"id":8,"line":266},{"id":9,"line":268},{"id":10,"line":347},{"id":11,"line":349},{"id":12,"line":362},{"id":13,"line":364}]}
+    {"connections":[{"at":4,"instance":"tx_fifo_inst","formal":"rstn_i","mode":"in","lines":[197]},{"at":5,"instance":"rx_fifo_inst","formal":"rstn_i","mode":"in","lines":[229]}]}
+    {"type":"RESETS","at":[3],"lines":[118],"targets":["bus_rsp_o","ctrl.cdiv","ctrl.cpha","ctrl.cpol","ctrl.enable","ctrl.highspeed","ctrl.irq_idle","ctrl.irq_rx_avail","ctrl.irq_tx_empty","ctrl.irq_tx_nhalf","ctrl.prsc"]}
+    {"type":"RESETS","at":[7],"lines":[252],"targets":["irq_o"]}
+    {"type":"RESETS","at":[9],"lines":[268],"targets":["rtx_engine.bitcnt","rtx_engine.cs_ctrl","rtx_engine.done","rtx_engine.sck","rtx_engine.sdi_sync","rtx_engine.sreg","rtx_engine.state"]}
+    {"type":"RESETS","at":[11],"lines":[349],"targets":["spi_csn_o"]}
+    {"type":"RESETS","at":[13],"lines":[364],"targets":["cdiv_cnt","spi_clk_en"]}
+PORT {"name":"bus_req_i","entity":"neorv32_spi","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25},{"id":2,"line":132},{"id":3,"line":137},{"id":4,"line":138},{"id":5,"line":139},{"id":6,"line":140},{"id":7,"line":141},{"id":8,"line":142},{"id":9,"line":143},{"id":10,"line":144},{"id":11,"line":145},{"id":12,"line":146},{"id":13,"line":147},{"id":14,"line":148},{"id":15,"line":149},{"id":16,"line":152},{"id":17,"line":212},{"id":18,"line":212},{"id":19,"line":212},{"id":20,"line":213},{"id":21,"line":213},{"id":22,"line":246},{"id":23,"line":246},{"id":24,"line":246}]}
+PORT {"name":"bus_req_i.addr","entity":"neorv32_spi","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25},{"id":2,"line":139},{"id":3,"line":152},{"id":4,"line":212},{"id":5,"line":246}]}
+    {"type":"GATES","at":[2],"guard":"bus_req_i.addr(2) = '0'","lines":[139],"targets":["ctrl.cdiv","ctrl.cpha","ctrl.cpol","ctrl.enable","ctrl.highspeed","ctrl.irq_idle","ctrl.irq_rx_avail","ctrl.irq_tx_empty","ctrl.irq_tx_nhalf","ctrl.prsc"]}
+    {"type":"GATES","at":[3],"guard":"bus_req_i.addr(2) = '0' | not (bus_req_i.addr(2) = '0')","lines":[152],"targets":["bus_rsp_o.data"]}
+    {"type":"GATES","at":[4],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '1')","lines":[212],"targets":["tx_fifo.we"]}
+    {"type":"GATES","at":[5],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(2) = '1')","lines":[246],"targets":["rx_fifo.re"]}
+PORT {"name":"bus_req_i.data","entity":"neorv32_spi","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25},{"id":2,"line":140},{"id":3,"line":141},{"id":4,"line":142},{"id":5,"line":143},{"id":6,"line":144},{"id":7,"line":145},{"id":8,"line":146},{"id":9,"line":147},{"id":10,"line":148},{"id":11,"line":149},{"id":12,"line":213},{"id":13,"line":213}]}
+    {"type":"SOURCES","at":[2],"lines":[140],"targets":["ctrl.enable"]}
+    {"type":"SOURCES","at":[3],"lines":[141],"targets":["ctrl.cpha"]}
+    {"type":"SOURCES","at":[4],"lines":[142],"targets":["ctrl.cpol"]}
+    {"type":"SOURCES","at":[5],"lines":[143],"targets":["ctrl.prsc"]}
+    {"type":"SOURCES","at":[6],"lines":[144],"targets":["ctrl.cdiv"]}
+    {"type":"SOURCES","at":[7],"lines":[145],"targets":["ctrl.highspeed"]}
+    {"type":"SOURCES","at":[8],"lines":[146],"targets":["ctrl.irq_rx_avail"]}
+    {"type":"SOURCES","at":[9],"lines":[147],"targets":["ctrl.irq_tx_empty"]}
+    {"type":"SOURCES","at":[10],"lines":[148],"targets":["ctrl.irq_tx_nhalf"]}
+    {"type":"SOURCES","at":[11],"lines":[149],"targets":["ctrl.irq_idle"]}
+    {"type":"SOURCES","at":[12,13],"lines":[213],"targets":["tx_fifo.wdata"]}
+PORT {"name":"bus_req_i.ben","entity":"neorv32_spi","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25}]}
+PORT {"name":"bus_req_i.stb","entity":"neorv32_spi","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25},{"id":2,"line":132},{"id":3,"line":137},{"id":4,"line":212},{"id":5,"line":246}]}
+    {"type":"GATES","at":[3],"guard":"bus_req_i.stb = '1'","lines":[137],"targets":["bus_rsp_o.data","ctrl.cdiv","ctrl.cpha","ctrl.cpol","ctrl.enable","ctrl.highspeed","ctrl.irq_idle","ctrl.irq_rx_avail","ctrl.irq_tx_empty","ctrl.irq_tx_nhalf","ctrl.prsc"]}
+    {"type":"GATES","at":[4],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '1')","lines":[212],"targets":["tx_fifo.we"]}
+    {"type":"GATES","at":[5],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(2) = '1')","lines":[246],"targets":["rx_fifo.re"]}
+    {"type":"CARRIES","at":[2],"lines":[132],"targets":["bus_rsp_o.ack"]}
+PORT {"name":"bus_req_i.rw","entity":"neorv32_spi","handling":["CONSUMES"],"boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25},{"id":2,"line":138},{"id":3,"line":212},{"id":4,"line":246}]}
+    {"type":"GATES","at":[2],"guard":"not (bus_req_i.rw = '1')","lines":[138],"targets":["bus_rsp_o.data"]}
+    {"type":"GATES","at":[2],"guard":"bus_req_i.rw = '1'","lines":[138],"targets":["ctrl.cdiv","ctrl.cpha","ctrl.cpol","ctrl.enable","ctrl.highspeed","ctrl.irq_idle","ctrl.irq_rx_avail","ctrl.irq_tx_empty","ctrl.irq_tx_nhalf","ctrl.prsc"]}
+    {"type":"GATES","at":[3],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '1')","lines":[212],"targets":["tx_fifo.we"]}
+    {"type":"GATES","at":[4],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(2) = '1')","lines":[246],"targets":["rx_fifo.re"]}
+PORT {"name":"bus_req_i.src","entity":"neorv32_spi","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25}]}
+PORT {"name":"bus_req_i.priv","entity":"neorv32_spi","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25}]}
+PORT {"name":"bus_req_i.debug","entity":"neorv32_spi","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25}]}
+PORT {"name":"bus_req_i.amo","entity":"neorv32_spi","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25}]}
+PORT {"name":"bus_req_i.amoop","entity":"neorv32_spi","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25}]}
+PORT {"name":"bus_req_i.lock","entity":"neorv32_spi","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25}]}
+PORT {"name":"bus_req_i.fence","entity":"neorv32_spi","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":25}]}
+PORT {"name":"bus_rsp_o","entity":"neorv32_spi","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":26},{"id":2,"line":119},{"id":3,"line":132},{"id":4,"line":133},{"id":5,"line":134},{"id":6,"line":153},{"id":7,"line":154},{"id":8,"line":155},{"id":9,"line":156},{"id":10,"line":157},{"id":11,"line":158},{"id":12,"line":160},{"id":13,"line":161},{"id":14,"line":162},{"id":15,"line":163},{"id":16,"line":164},{"id":17,"line":165},{"id":18,"line":166},{"id":19,"line":167},{"id":20,"line":169},{"id":21,"line":171},{"id":22,"line":172},{"id":23,"line":174}]}
+    {"constant_drivers":[{"at":2,"value":"rsp_terminate_c","lines":[119]}]}
+    {"type":"RESET_BY","at":[2],"lines":[119],"targets":["rstn_i"]}
+PORT {"name":"bus_rsp_o.ack","entity":"neorv32_spi","handling":["ORIGINATES"],"boundary":{"mode":"out","drive":"driven"},"storage":"edge"}
+    {"occurrences":[{"id":1,"line":26},{"id":2,"line":132}]}
+    {"type":"CLOCKED_BY","at":[2],"lines":[132],"targets":["clk_i"]}
+    {"type":"COPIES","at":[2],"lines":[132],"targets":["bus_req_i.stb"]}
+PORT {"name":"bus_rsp_o.err","entity":"neorv32_spi","handling":["ORIGINATES"],"boundary":{"mode":"out","drive":"driven"},"storage":"edge"}
+    {"occurrences":[{"id":1,"line":26},{"id":2,"line":133}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[133]}]}
+    {"type":"CLOCKED_BY","at":[2],"lines":[133],"targets":["clk_i"]}
+PORT {"name":"bus_rsp_o.data","entity":"neorv32_spi","handling":["ORIGINATES"],"boundary":{"mode":"out","drive":"driven"},"storage":"edge"}
+    {"occurrences":[{"id":1,"line":26},{"id":2,"line":134},{"id":3,"line":153},{"id":4,"line":154},{"id":5,"line":155},{"id":6,"line":156},{"id":7,"line":157},{"id":8,"line":158},{"id":9,"line":160},{"id":10,"line":161},{"id":11,"line":162},{"id":12,"line":163},{"id":13,"line":164},{"id":14,"line":165},{"id":15,"line":166},{"id":16,"line":167},{"id":17,"line":169},{"id":18,"line":171},{"id":19,"line":172},{"id":20,"line":174}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[134]},{"at":17,"value":"std_ulogic_vector(to_unsigned(log2_fifo_size_c, 4))","lines":[169]}]}
+    {"type":"CLOCKED_BY","at":[2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20],"lines":[134,153,154,155,156,157,158,160,161,162,163,164,165,166,167,169,171,172,174],"targets":["clk_i"]}
+    {"type":"GATED_BY","at":[3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19],"guard":"bus_req_i.addr(2) = '0'","lines":[153,154,155,156,157,158,160,161,162,163,164,165,166,167,169,171,172],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20],"guard":"not (bus_req_i.rw = '1')","lines":[153,154,155,156,157,158,160,161,162,163,164,165,166,167,169,171,172,174],"targets":["bus_req_i.rw"]}
+    {"type":"GATED_BY","at":[3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20],"guard":"bus_req_i.stb = '1'","lines":[153,154,155,156,157,158,160,161,162,163,164,165,166,167,169,171,172,174],"targets":["bus_req_i.stb"]}
+    {"type":"GATED_BY","at":[19],"guard":"rtx_engine.busy or tx_fifo.avail","lines":[172],"targets":["rtx_engine.busy","tx_fifo.avail"]}
+    {"type":"GATED_BY","at":[20],"guard":"not (bus_req_i.addr(2) = '0')","lines":[174],"targets":["bus_req_i.addr"]}
+    {"type":"COPIES","at":[3],"lines":[153],"targets":["ctrl.enable"]}
+    {"type":"COPIES","at":[4],"lines":[154],"targets":["ctrl.cpha"]}
+    {"type":"COPIES","at":[5],"lines":[155],"targets":["ctrl.cpol"]}
+    {"type":"COPIES","at":[6],"lines":[156],"targets":["ctrl.prsc"]}
+    {"type":"COPIES","at":[7],"lines":[157],"targets":["ctrl.cdiv"]}
+    {"type":"COPIES","at":[8],"lines":[158],"targets":["ctrl.highspeed"]}
+    {"type":"COPIES","at":[9],"lines":[160],"targets":["rx_fifo.avail"]}
+    {"type":"COPIES","at":[13],"lines":[164],"targets":["ctrl.irq_rx_avail"]}
+    {"type":"COPIES","at":[14],"lines":[165],"targets":["ctrl.irq_tx_empty"]}
+    {"type":"COPIES","at":[15],"lines":[166],"targets":["ctrl.irq_tx_nhalf"]}
+    {"type":"COPIES","at":[16],"lines":[167],"targets":["ctrl.irq_idle"]}
+    {"type":"DERIVES_FROM","at":[10],"lines":[161],"targets":["tx_fifo.avail"]}
+    {"type":"DERIVES_FROM","at":[11],"lines":[162],"targets":["tx_fifo.half"]}
+    {"type":"DERIVES_FROM","at":[12],"lines":[163],"targets":["tx_fifo.free"]}
+    {"type":"DERIVES_FROM","at":[18],"lines":[171],"targets":["rtx_engine.cs_ctrl"]}
+    {"type":"DERIVES_FROM","at":[20],"lines":[174],"targets":["rx_fifo.rdata"]}
+PORT {"name":"clkgen_en_o","entity":"neorv32_spi","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":27},{"id":2,"line":383}]}
+    {"type":"COPIES","at":[2],"lines":[383],"targets":["ctrl.enable"]}
+PORT {"name":"clkgen_i","entity":"neorv32_spi","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":28},{"id":2,"line":371}]}
+    {"type":"GATES","at":[2],"guard":"(clkgen_i(to_integer(unsigned(ctrl.prsc))) = '1') or (ctrl.highspeed = '1')","lines":[371],"targets":["cdiv_cnt","spi_clk_en"]}
+PORT {"name":"spi_clk_o","entity":"neorv32_spi","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":29},{"id":2,"line":344}]}
+    {"type":"COPIES","at":[2],"lines":[344],"targets":["rtx_engine.sck"]}
+PORT {"name":"spi_dat_o","entity":"neorv32_spi","boundary":{"mode":"out","drive":"driven"},"storage":"none"}
+    {"occurrences":[{"id":1,"line":30},{"id":2,"line":343}]}
+    {"type":"DERIVES_FROM","at":[2],"lines":[343],"targets":["rtx_engine.sreg"]}
+PORT {"name":"spi_dat_i","entity":"neorv32_spi","boundary":{"mode":"in","drive":"n/a"},"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":31},{"id":2,"line":310}]}
+    {"type":"CARRIES","at":[2],"lines":[310],"targets":["rtx_engine.sdi_sync"]}
+PORT {"name":"spi_csn_o","entity":"neorv32_spi","boundary":{"mode":"out","drive":"driven"},"storage":"edge"}
+    {"occurrences":[{"id":1,"line":32},{"id":2,"line":350},{"id":3,"line":352},{"id":4,"line":354}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '1')","lines":[350]},{"at":3,"value":"(others => '1')","lines":[352]},{"at":4,"value":"'0'","lines":[354]}]}
+    {"type":"CLOCKED_BY","at":[3,4],"lines":[352,354],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[350],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[4],"guard":"rtx_engine.cs_ctrl(3) = '1'","lines":[354],"targets":["rtx_engine.cs_ctrl"]}
+    {"type":"GATED_BY","at":[4],"guard":"rtx_engine.cs_ctrl(3) = '1'","lines":[354],"targets":["rtx_engine.cs_ctrl"]}
+PORT {"name":"irq_o","entity":"neorv32_spi","boundary":{"mode":"out","drive":"driven"},"storage":"edge"}
+    {"occurrences":[{"id":1,"line":33},{"id":2,"line":253},{"id":3,"line":255}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[253]}]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[255],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[253],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"ctrl.enable and (","lines":[255],"targets":["ctrl.enable"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[255],"targets":["ctrl.irq_idle","ctrl.irq_rx_avail","ctrl.irq_tx_empty","ctrl.irq_tx_nhalf","rtx_engine.busy","rx_fifo.avail","tx_fifo.avail","tx_fifo.half"]}
+SIGNAL {"name":"ctrl","entity":"neorv32_spi","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":120},{"id":3,"line":121},{"id":4,"line":122},{"id":5,"line":123},{"id":6,"line":124},{"id":7,"line":125},{"id":8,"line":126},{"id":9,"line":127},{"id":10,"line":128},{"id":11,"line":129},{"id":12,"line":140},{"id":13,"line":141},{"id":14,"line":142},{"id":15,"line":143},{"id":16,"line":144},{"id":17,"line":145},{"id":18,"line":146},{"id":19,"line":147},{"id":20,"line":148},{"id":21,"line":149},{"id":22,"line":153},{"id":23,"line":154},{"id":24,"line":155},{"id":25,"line":156},{"id":26,"line":157},{"id":27,"line":158},{"id":28,"line":164},{"id":29,"line":165},{"id":30,"line":166},{"id":31,"line":167},{"id":32,"line":211},{"id":33,"line":243},{"id":34,"line":255},{"id":35,"line":256},{"id":36,"line":257},{"id":37,"line":258},{"id":38,"line":259},{"id":39,"line":281},{"id":40,"line":286},{"id":41,"line":300},{"id":42,"line":301},{"id":43,"line":309},{"id":44,"line":309},{"id":45,"line":320},{"id":46,"line":324},{"id":47,"line":324},{"id":48,"line":331},{"id":49,"line":369},{"id":50,"line":371},{"id":51,"line":371},{"id":52,"line":372},{"id":53,"line":383}]}
+SIGNAL {"name":"ctrl.enable","entity":"neorv32_spi","kind":"register","handling":["ORIGINATES","CONSUMES","FORWARDS"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":120},{"id":3,"line":140},{"id":4,"line":153},{"id":5,"line":211},{"id":6,"line":243},{"id":7,"line":255},{"id":8,"line":281},{"id":9,"line":369},{"id":10,"line":383}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[120]}]}
+    {"type":"GATES","at":[7],"guard":"ctrl.enable and (","lines":[255],"targets":["irq_o"]}
+    {"type":"GATES","at":[9],"guard":"ctrl.enable = '0' | not (ctrl.enable = '0')","lines":[369],"targets":["cdiv_cnt"]}
+    {"type":"GATES","at":[9],"guard":"not (ctrl.enable = '0')","lines":[369],"targets":["spi_clk_en"]}
+    {"type":"CARRIES","at":[4],"lines":[153],"targets":["bus_rsp_o.data"]}
+    {"type":"CARRIES","at":[8],"lines":[281],"targets":["rtx_engine.state"]}
+    {"type":"CARRIES","at":[10],"lines":[383],"targets":["clkgen_en_o"]}
+    {"type":"SOURCES","at":[5],"lines":[211],"targets":["tx_fifo.clear"]}
+    {"type":"SOURCES","at":[6],"lines":[243],"targets":["rx_fifo.clear"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[140],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[120],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.addr(2) = '0'","lines":[140],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.rw = '1'","lines":[140],"targets":["bus_req_i.rw"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.stb = '1'","lines":[140],"targets":["bus_req_i.stb"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[140],"targets":["bus_req_i.data"]}
+SIGNAL {"name":"ctrl.cpha","entity":"neorv32_spi","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":121},{"id":3,"line":141},{"id":4,"line":154},{"id":5,"line":300},{"id":6,"line":309},{"id":7,"line":324}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[121]}]}
+    {"type":"GATES","at":[5],"guard":"ctrl.cpha = '1'","lines":[300],"targets":["rtx_engine.sck"]}
+    {"type":"CARRIES","at":[4],"lines":[154],"targets":["bus_rsp_o.data"]}
+    {"type":"SOURCES","at":[6,7],"lines":[309,324],"targets":["rtx_engine.sck"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[141],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[121],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.addr(2) = '0'","lines":[141],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.rw = '1'","lines":[141],"targets":["bus_req_i.rw"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.stb = '1'","lines":[141],"targets":["bus_req_i.stb"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[141],"targets":["bus_req_i.data"]}
+SIGNAL {"name":"ctrl.cpol","entity":"neorv32_spi","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":122},{"id":3,"line":142},{"id":4,"line":155},{"id":5,"line":286},{"id":6,"line":301},{"id":7,"line":309},{"id":8,"line":320},{"id":9,"line":324},{"id":10,"line":331}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[122]}]}
+    {"type":"CARRIES","at":[4],"lines":[155],"targets":["bus_rsp_o.data"]}
+    {"type":"CARRIES","at":[5,8,10],"lines":[286,320,331],"targets":["rtx_engine.sck"]}
+    {"type":"SOURCES","at":[6,7,9],"lines":[301,309,324],"targets":["rtx_engine.sck"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[142],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[122],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.addr(2) = '0'","lines":[142],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.rw = '1'","lines":[142],"targets":["bus_req_i.rw"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.stb = '1'","lines":[142],"targets":["bus_req_i.stb"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[142],"targets":["bus_req_i.data"]}
+SIGNAL {"name":"ctrl.prsc","entity":"neorv32_spi","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":123},{"id":3,"line":143},{"id":4,"line":156},{"id":5,"line":371}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[123]}]}
+    {"type":"SELECTS","at":[5],"guard":"(clkgen_i(to_integer(unsigned(ctrl.prsc))) = '1') or (ctrl.highspeed = '1')","lines":[371],"targets":["cdiv_cnt","spi_clk_en"]}
+    {"type":"CARRIES","at":[4],"lines":[156],"targets":["bus_rsp_o.data"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[143],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[123],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.addr(2) = '0'","lines":[143],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.rw = '1'","lines":[143],"targets":["bus_req_i.rw"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.stb = '1'","lines":[143],"targets":["bus_req_i.stb"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[143],"targets":["bus_req_i.data"]}
+SIGNAL {"name":"ctrl.cdiv","entity":"neorv32_spi","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":124},{"id":3,"line":144},{"id":4,"line":157},{"id":5,"line":372}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[124]}]}
+    {"type":"CONSTRAINS","at":[5],"guard":"cdiv_cnt = ctrl.cdiv | not (cdiv_cnt = ctrl.cdiv)","lines":[372],"targets":["cdiv_cnt"]}
+    {"type":"CONSTRAINS","at":[5],"guard":"cdiv_cnt = ctrl.cdiv","lines":[372],"targets":["spi_clk_en"]}
+    {"type":"CARRIES","at":[4],"lines":[157],"targets":["bus_rsp_o.data"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[144],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[124],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.addr(2) = '0'","lines":[144],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.rw = '1'","lines":[144],"targets":["bus_req_i.rw"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.stb = '1'","lines":[144],"targets":["bus_req_i.stb"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[144],"targets":["bus_req_i.data"]}
+SIGNAL {"name":"ctrl.highspeed","entity":"neorv32_spi","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":125},{"id":3,"line":145},{"id":4,"line":158},{"id":5,"line":371}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[125]}]}
+    {"type":"GATES","at":[5],"guard":"(clkgen_i(to_integer(unsigned(ctrl.prsc))) = '1') or (ctrl.highspeed = '1')","lines":[371],"targets":["cdiv_cnt","spi_clk_en"]}
+    {"type":"CARRIES","at":[4],"lines":[158],"targets":["bus_rsp_o.data"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[145],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[125],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.addr(2) = '0'","lines":[145],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.rw = '1'","lines":[145],"targets":["bus_req_i.rw"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.stb = '1'","lines":[145],"targets":["bus_req_i.stb"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[145],"targets":["bus_req_i.data"]}
+SIGNAL {"name":"ctrl.irq_rx_avail","entity":"neorv32_spi","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":126},{"id":3,"line":146},{"id":4,"line":164},{"id":5,"line":256}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[126]}]}
+    {"type":"CARRIES","at":[4],"lines":[164],"targets":["bus_rsp_o.data"]}
+    {"type":"SOURCES","at":[5],"lines":[256],"targets":["irq_o"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[146],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[126],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.addr(2) = '0'","lines":[146],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.rw = '1'","lines":[146],"targets":["bus_req_i.rw"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.stb = '1'","lines":[146],"targets":["bus_req_i.stb"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[146],"targets":["bus_req_i.data"]}
+SIGNAL {"name":"ctrl.irq_tx_empty","entity":"neorv32_spi","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":127},{"id":3,"line":147},{"id":4,"line":165},{"id":5,"line":257}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[127]}]}
+    {"type":"CARRIES","at":[4],"lines":[165],"targets":["bus_rsp_o.data"]}
+    {"type":"SOURCES","at":[5],"lines":[257],"targets":["irq_o"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[147],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[127],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.addr(2) = '0'","lines":[147],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.rw = '1'","lines":[147],"targets":["bus_req_i.rw"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.stb = '1'","lines":[147],"targets":["bus_req_i.stb"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[147],"targets":["bus_req_i.data"]}
+SIGNAL {"name":"ctrl.irq_tx_nhalf","entity":"neorv32_spi","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":128},{"id":3,"line":148},{"id":4,"line":166},{"id":5,"line":258}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[128]}]}
+    {"type":"CARRIES","at":[4],"lines":[166],"targets":["bus_rsp_o.data"]}
+    {"type":"SOURCES","at":[5],"lines":[258],"targets":["irq_o"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[148],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[128],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.addr(2) = '0'","lines":[148],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.rw = '1'","lines":[148],"targets":["bus_req_i.rw"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.stb = '1'","lines":[148],"targets":["bus_req_i.stb"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[148],"targets":["bus_req_i.data"]}
+SIGNAL {"name":"ctrl.irq_idle","entity":"neorv32_spi","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":84},{"id":2,"line":129},{"id":3,"line":149},{"id":4,"line":167},{"id":5,"line":259}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[129]}]}
+    {"type":"CARRIES","at":[4],"lines":[167],"targets":["bus_rsp_o.data"]}
+    {"type":"SOURCES","at":[5],"lines":[259],"targets":["irq_o"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[149],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[129],"targets":["rstn_i"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.addr(2) = '0'","lines":[149],"targets":["bus_req_i.addr"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.rw = '1'","lines":[149],"targets":["bus_req_i.rw"]}
+    {"type":"GATED_BY","at":[3],"guard":"bus_req_i.stb = '1'","lines":[149],"targets":["bus_req_i.stb"]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[149],"targets":["bus_req_i.data"]}
+SIGNAL {"name":"cdiv_cnt","entity":"neorv32_spi","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":87},{"id":2,"line":366},{"id":3,"line":370},{"id":4,"line":372},{"id":5,"line":374},{"id":6,"line":376},{"id":7,"line":376}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[366]},{"at":3,"value":"(others => '0')","lines":[370]},{"at":5,"value":"(others => '0')","lines":[374]}]}
+    {"type":"CONSTRAINS","at":[4],"guard":"cdiv_cnt = ctrl.cdiv | not (cdiv_cnt = ctrl.cdiv)","lines":[372],"targets":["cdiv_cnt"]}
+    {"type":"CONSTRAINS","at":[4],"guard":"cdiv_cnt = ctrl.cdiv","lines":[372],"targets":["spi_clk_en"]}
+    {"type":"SOURCES","at":[7],"lines":[376],"targets":["cdiv_cnt"]}
+    {"type":"CLOCKED_BY","at":[3,5,6],"lines":[370,374,376],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[366],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[5,6],"guard":"(clkgen_i(to_integer(unsigned(ctrl.prsc))) = '1') or (ctrl.highspeed = '1')","lines":[374,376],"targets":["ctrl.prsc"]}
+    {"type":"CONSTRAINED_BY","at":[5],"guard":"cdiv_cnt = ctrl.cdiv","lines":[374],"targets":["cdiv_cnt","ctrl.cdiv"]}
+    {"type":"CONSTRAINED_BY","at":[6],"guard":"not (cdiv_cnt = ctrl.cdiv)","lines":[376],"targets":["cdiv_cnt","ctrl.cdiv"]}
+    {"type":"GATED_BY","at":[3],"guard":"ctrl.enable = '0'","lines":[370],"targets":["ctrl.enable"]}
+    {"type":"GATED_BY","at":[5,6],"guard":"(clkgen_i(to_integer(unsigned(ctrl.prsc))) = '1') or (ctrl.highspeed = '1')","lines":[374,376],"targets":["clkgen_i","ctrl.highspeed"]}
+    {"type":"GATED_BY","at":[5,6],"guard":"not (ctrl.enable = '0')","lines":[374,376],"targets":["ctrl.enable"]}
+    {"type":"DERIVES_FROM","at":[6],"lines":[376],"targets":["cdiv_cnt"]}
+SIGNAL {"name":"spi_clk_en","entity":"neorv32_spi","kind":"register","storage":"edge"}
+    {"occurrences":[{"id":1,"line":88},{"id":2,"line":299},{"id":3,"line":308},{"id":4,"line":317},{"id":5,"line":365},{"id":6,"line":368},{"id":7,"line":373}]}
+    {"constant_drivers":[{"at":5,"value":"'0'","lines":[365]},{"at":6,"value":"'0'","lines":[368]},{"at":7,"value":"'1'","lines":[373]}]}
+    {"type":"GATES","at":[2],"guard":"spi_clk_en = '1'","lines":[299],"targets":["rtx_engine.sck","rtx_engine.state"]}
+    {"type":"GATES","at":[3],"guard":"spi_clk_en = '1'","lines":[308],"targets":["rtx_engine.bitcnt","rtx_engine.sck","rtx_engine.sdi_sync","rtx_engine.state"]}
+    {"type":"GATES","at":[4],"guard":"spi_clk_en = '1'","lines":[317],"targets":["rtx_engine.done","rtx_engine.sck","rtx_engine.sreg","rtx_engine.state"]}
+    {"type":"CLOCKED_BY","at":[6,7],"lines":[368,373],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[5],"lines":[365],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[7],"guard":"(clkgen_i(to_integer(unsigned(ctrl.prsc))) = '1') or (ctrl.highspeed = '1')","lines":[373],"targets":["ctrl.prsc"]}
+    {"type":"CONSTRAINED_BY","at":[7],"guard":"cdiv_cnt = ctrl.cdiv","lines":[373],"targets":["cdiv_cnt","ctrl.cdiv"]}
+    {"type":"GATED_BY","at":[7],"guard":"(clkgen_i(to_integer(unsigned(ctrl.prsc))) = '1') or (ctrl.highspeed = '1')","lines":[373],"targets":["clkgen_i","ctrl.highspeed"]}
+    {"type":"GATED_BY","at":[7],"guard":"not (ctrl.enable = '0')","lines":[373],"targets":["ctrl.enable"]}
+SIGNAL {"name":"rtx_engine","entity":"neorv32_spi","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":101},{"id":2,"line":171},{"id":3,"line":172},{"id":4,"line":214},{"id":5,"line":244},{"id":6,"line":245},{"id":7,"line":259},{"id":8,"line":269},{"id":9,"line":270},{"id":10,"line":271},{"id":11,"line":272},{"id":12,"line":273},{"id":13,"line":274},{"id":14,"line":275},{"id":15,"line":278},{"id":16,"line":281},{"id":17,"line":282},{"id":18,"line":286},{"id":19,"line":287},{"id":20,"line":290},{"id":21,"line":292},{"id":22,"line":293},{"id":23,"line":301},{"id":24,"line":303},{"id":25,"line":309},{"id":26,"line":310},{"id":27,"line":311},{"id":28,"line":311},{"id":29,"line":312},{"id":30,"line":318},{"id":31,"line":318},{"id":32,"line":318},{"id":33,"line":319},{"id":34,"line":320},{"id":35,"line":321},{"id":36,"line":322},{"id":37,"line":324},{"id":38,"line":325},{"id":39,"line":331},{"id":40,"line":332},{"id":41,"line":333},{"id":42,"line":340},{"id":43,"line":340},{"id":44,"line":343},{"id":45,"line":344},{"id":46,"line":353},{"id":47,"line":354}]}
+SIGNAL {"name":"rtx_engine.state","entity":"neorv32_spi","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":101},{"id":2,"line":214},{"id":3,"line":270},{"id":4,"line":281},{"id":5,"line":282},{"id":6,"line":293},{"id":7,"line":303},{"id":8,"line":312},{"id":9,"line":322},{"id":10,"line":325},{"id":11,"line":333},{"id":12,"line":340}]}
+    {"constant_drivers":[{"at":3,"value":"(others => '0')","lines":[270]},{"at":6,"value":"\"01\"","lines":[293]},{"at":7,"value":"\"10\"","lines":[303]},{"at":8,"value":"\"11\"","lines":[312]},{"at":9,"value":"\"00\"","lines":[322]},{"at":10,"value":"\"10\"","lines":[325]},{"at":11,"value":"\"00\"","lines":[333]}]}
+    {"type":"SELECTS","at":[5],"guard":"rtx_engine.state = \"100\" | rtx_engine.state = \"110\"","lines":[282],"targets":["rtx_engine.bitcnt"]}
+    {"type":"SELECTS","at":[5],"guard":"not (rtx_engine.state in {\"100\", \"101\", \"110\", \"111\"}) | rtx_engine.state = \"100\"","lines":[282],"targets":["rtx_engine.cs_ctrl"]}
+    {"type":"SELECTS","at":[5],"guard":"rtx_engine.state = \"111\"","lines":[282],"targets":["rtx_engine.done"]}
+    {"type":"SELECTS","at":[5],"guard":"not (rtx_engine.state in {\"100\", \"101\", \"110\", \"111\"}) | rtx_engine.state = \"100\" | rtx_engine.state = \"101\" | rtx_engine.state = \"110\" | rtx_engine.state = \"111\"","lines":[282],"targets":["rtx_engine.sck","rtx_engine.state"]}
+    {"type":"SELECTS","at":[5],"guard":"rtx_engine.state = \"110\"","lines":[282],"targets":["rtx_engine.sdi_sync"]}
+    {"type":"SELECTS","at":[5],"guard":"rtx_engine.state = \"100\" | rtx_engine.state = \"111\"","lines":[282],"targets":["rtx_engine.sreg"]}
+    {"type":"GATES","at":[12],"guard":"(rtx_engine.state(1 downto 0) = \"00\")","lines":[340],"targets":["rtx_engine.busy"]}
+    {"type":"GATES","at":[2],"guard":"(rtx_engine.state = \"100\")","lines":[214],"targets":["tx_fifo.re"]}
+    {"type":"CLOCKED_BY","at":[4,6,7,8,9,10,11],"lines":[281,293,303,312,322,325,333],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[3],"lines":[270],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[9,10],"guard":"rtx_engine.state = \"111\"","lines":[322,325],"targets":["rtx_engine.state"]}
+    {"type":"SELECTED_BY","at":[11],"guard":"not (rtx_engine.state in {\"100\", \"101\", \"110\", \"111\"})","lines":[333],"targets":["rtx_engine.state"]}
+    {"type":"SELECTED_BY","at":[6],"guard":"rtx_engine.state = \"100\"","lines":[293],"targets":["rtx_engine.state"]}
+    {"type":"SELECTED_BY","at":[7],"guard":"rtx_engine.state = \"101\"","lines":[303],"targets":["rtx_engine.state"]}
+    {"type":"SELECTED_BY","at":[8],"guard":"rtx_engine.state = \"110\"","lines":[312],"targets":["rtx_engine.state"]}
+    {"type":"GATED_BY","at":[10],"guard":"not (rtx_engine.bitcnt(3) = '1')","lines":[325],"targets":["rtx_engine.bitcnt"]}
+    {"type":"GATED_BY","at":[7,8,9,10],"guard":"spi_clk_en = '1'","lines":[303,312,322,325],"targets":["spi_clk_en"]}
+    {"type":"GATED_BY","at":[6],"guard":"tx_fifo.avail = '1'","lines":[293],"targets":["tx_fifo.avail"]}
+    {"type":"GATED_BY","at":[6],"guard":"not (tx_fifo.rdata(8) = '1')","lines":[293],"targets":["tx_fifo.rdata"]}
+    {"type":"GATED_BY","at":[9],"guard":"rtx_engine.bitcnt(3) = '1'","lines":[322],"targets":["rtx_engine.bitcnt"]}
+    {"type":"COPIES","at":[4],"lines":[281],"targets":["ctrl.enable"]}
+SIGNAL {"name":"rtx_engine.busy","entity":"neorv32_spi","kind":"signal","handling":["ORIGINATES","CONSUMES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":101},{"id":2,"line":172},{"id":3,"line":259},{"id":4,"line":340}]}
+    {"type":"GATES","at":[2],"guard":"rtx_engine.busy or tx_fifo.avail","lines":[172],"targets":["bus_rsp_o.data"]}
+    {"type":"SOURCES","at":[3],"lines":[259],"targets":["irq_o"]}
+    {"type":"GATED_BY","at":[4],"guard":"(rtx_engine.state(1 downto 0) = \"00\")","lines":[340],"targets":["rtx_engine.state"]}
+SIGNAL {"name":"rtx_engine.sreg","entity":"neorv32_spi","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":101},{"id":2,"line":244},{"id":3,"line":272},{"id":4,"line":292},{"id":5,"line":318},{"id":6,"line":318},{"id":7,"line":343}]}
+    {"constant_drivers":[{"at":3,"value":"(others => '0')","lines":[272]}]}
+    {"type":"SOURCES","at":[2],"lines":[244],"targets":["rx_fifo.wdata"]}
+    {"type":"SOURCES","at":[6],"lines":[318],"targets":["rtx_engine.sreg"]}
+    {"type":"SOURCES","at":[7],"lines":[343],"targets":["spi_dat_o"]}
+    {"type":"CLOCKED_BY","at":[4,5],"lines":[292,318],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[3],"lines":[272],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[4],"guard":"rtx_engine.state = \"100\"","lines":[292],"targets":["rtx_engine.state"]}
+    {"type":"SELECTED_BY","at":[5],"guard":"rtx_engine.state = \"111\"","lines":[318],"targets":["rtx_engine.state"]}
+    {"type":"GATED_BY","at":[4],"guard":"tx_fifo.avail = '1'","lines":[292],"targets":["tx_fifo.avail"]}
+    {"type":"GATED_BY","at":[4],"guard":"not (tx_fifo.rdata(8) = '1')","lines":[292],"targets":["tx_fifo.rdata"]}
+    {"type":"GATED_BY","at":[5],"guard":"spi_clk_en = '1'","lines":[318],"targets":["spi_clk_en"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[292],"targets":["tx_fifo.rdata"]}
+    {"type":"DERIVES_FROM","at":[5],"lines":[318],"targets":["rtx_engine.sdi_sync","rtx_engine.sreg"]}
+SIGNAL {"name":"rtx_engine.bitcnt","entity":"neorv32_spi","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":101},{"id":2,"line":271},{"id":3,"line":287},{"id":4,"line":311},{"id":5,"line":311},{"id":6,"line":319}]}
+    {"constant_drivers":[{"at":2,"value":"(others => '0')","lines":[271]},{"at":3,"value":"(others => '0')","lines":[287]}]}
+    {"type":"GATES","at":[6],"guard":"rtx_engine.bitcnt(3) = '1'","lines":[319],"targets":["rtx_engine.done"]}
+    {"type":"GATES","at":[6],"guard":"not (rtx_engine.bitcnt(3) = '1') | rtx_engine.bitcnt(3) = '1'","lines":[319],"targets":["rtx_engine.sck","rtx_engine.state"]}
+    {"type":"SOURCES","at":[5],"lines":[311],"targets":["rtx_engine.bitcnt"]}
+    {"type":"CLOCKED_BY","at":[3,4],"lines":[287,311],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[271],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[3],"guard":"rtx_engine.state = \"100\"","lines":[287],"targets":["rtx_engine.state"]}
+    {"type":"SELECTED_BY","at":[4],"guard":"rtx_engine.state = \"110\"","lines":[311],"targets":["rtx_engine.state"]}
+    {"type":"GATED_BY","at":[4],"guard":"spi_clk_en = '1'","lines":[311],"targets":["spi_clk_en"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[311],"targets":["rtx_engine.bitcnt"]}
+SIGNAL {"name":"rtx_engine.sdi_sync","entity":"neorv32_spi","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":101},{"id":2,"line":273},{"id":3,"line":310},{"id":4,"line":318}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[273]}]}
+    {"type":"SOURCES","at":[4],"lines":[318],"targets":["rtx_engine.sreg"]}
+    {"type":"CLOCKED_BY","at":[3],"lines":[310],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[273],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[3],"guard":"rtx_engine.state = \"110\"","lines":[310],"targets":["rtx_engine.state"]}
+    {"type":"GATED_BY","at":[3],"guard":"spi_clk_en = '1'","lines":[310],"targets":["spi_clk_en"]}
+    {"type":"COPIES","at":[3],"lines":[310],"targets":["spi_dat_i"]}
+SIGNAL {"name":"rtx_engine.sck","entity":"neorv32_spi","kind":"register","handling":["ORIGINATES","FORWARDS"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":101},{"id":2,"line":274},{"id":3,"line":286},{"id":4,"line":301},{"id":5,"line":309},{"id":6,"line":320},{"id":7,"line":324},{"id":8,"line":331},{"id":9,"line":344}]}
+    {"constant_drivers":[{"at":2,"value":"'0'","lines":[274]}]}
+    {"type":"CARRIES","at":[9],"lines":[344],"targets":["spi_clk_o"]}
+    {"type":"CLOCKED_BY","at":[3,4,5,6,7,8],"lines":[286,301,309,320,324,331],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[2],"lines":[274],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[3],"guard":"rtx_engine.state = \"100\"","lines":[286],"targets":["rtx_engine.state"]}
+    {"type":"SELECTED_BY","at":[4],"guard":"rtx_engine.state = \"101\"","lines":[301],"targets":["rtx_engine.state"]}
+    {"type":"SELECTED_BY","at":[5],"guard":"rtx_engine.state = \"110\"","lines":[309],"targets":["rtx_engine.state"]}
+    {"type":"SELECTED_BY","at":[6,7],"guard":"rtx_engine.state = \"111\"","lines":[320,324],"targets":["rtx_engine.state"]}
+    {"type":"SELECTED_BY","at":[8],"guard":"not (rtx_engine.state in {\"100\", \"101\", \"110\", \"111\"})","lines":[331],"targets":["rtx_engine.state"]}
+    {"type":"GATED_BY","at":[4],"guard":"ctrl.cpha = '1'","lines":[301],"targets":["ctrl.cpha"]}
+    {"type":"GATED_BY","at":[4,5,6,7],"guard":"spi_clk_en = '1'","lines":[301,309,320,324],"targets":["spi_clk_en"]}
+    {"type":"GATED_BY","at":[6],"guard":"rtx_engine.bitcnt(3) = '1'","lines":[320],"targets":["rtx_engine.bitcnt"]}
+    {"type":"GATED_BY","at":[7],"guard":"not (rtx_engine.bitcnt(3) = '1')","lines":[324],"targets":["rtx_engine.bitcnt"]}
+    {"type":"COPIES","at":[3,6,8],"lines":[286,320,331],"targets":["ctrl.cpol"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[301],"targets":["ctrl.cpol"]}
+    {"type":"DERIVES_FROM","at":[5,7],"lines":[309,324],"targets":["ctrl.cpha","ctrl.cpol"]}
+SIGNAL {"name":"rtx_engine.cs_ctrl","entity":"neorv32_spi","kind":"register","handling":["ORIGINATES","CONSUMES"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":101},{"id":2,"line":171},{"id":3,"line":275},{"id":4,"line":290},{"id":5,"line":332},{"id":6,"line":353},{"id":7,"line":354}]}
+    {"constant_drivers":[{"at":3,"value":"(others => '0')","lines":[275]},{"at":5,"value":"(others => '0')","lines":[332]}]}
+    {"type":"SELECTS","at":[7],"guard":"rtx_engine.cs_ctrl(3) = '1'","lines":[354],"targets":["spi_csn_o"]}
+    {"type":"GATES","at":[6],"guard":"rtx_engine.cs_ctrl(3) = '1'","lines":[353],"targets":["spi_csn_o"]}
+    {"type":"SOURCES","at":[2],"lines":[171],"targets":["bus_rsp_o.data"]}
+    {"type":"CLOCKED_BY","at":[4,5],"lines":[290,332],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[3],"lines":[275],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[4],"guard":"rtx_engine.state = \"100\"","lines":[290],"targets":["rtx_engine.state"]}
+    {"type":"SELECTED_BY","at":[5],"guard":"not (rtx_engine.state in {\"100\", \"101\", \"110\", \"111\"})","lines":[332],"targets":["rtx_engine.state"]}
+    {"type":"GATED_BY","at":[4],"guard":"tx_fifo.avail = '1'","lines":[290],"targets":["tx_fifo.avail"]}
+    {"type":"GATED_BY","at":[4],"guard":"tx_fifo.rdata(8) = '1'","lines":[290],"targets":["tx_fifo.rdata"]}
+    {"type":"DERIVES_FROM","at":[4],"lines":[290],"targets":["tx_fifo.rdata"]}
+SIGNAL {"name":"rtx_engine.done","entity":"neorv32_spi","kind":"register","handling":["ORIGINATES","FORWARDS"],"storage":"edge"}
+    {"occurrences":[{"id":1,"line":101},{"id":2,"line":245},{"id":3,"line":269},{"id":4,"line":278},{"id":5,"line":321}]}
+    {"constant_drivers":[{"at":3,"value":"'0'","lines":[269]},{"at":4,"value":"'0'","lines":[278]},{"at":5,"value":"'1'","lines":[321]}]}
+    {"type":"CARRIES","at":[2],"lines":[245],"targets":["rx_fifo.we"]}
+    {"type":"CLOCKED_BY","at":[4,5],"lines":[278,321],"targets":["clk_i"]}
+    {"type":"RESET_BY","at":[3],"lines":[269],"targets":["rstn_i"]}
+    {"type":"SELECTED_BY","at":[5],"guard":"rtx_engine.state = \"111\"","lines":[321],"targets":["rtx_engine.state"]}
+    {"type":"GATED_BY","at":[5],"guard":"rtx_engine.bitcnt(3) = '1'","lines":[321],"targets":["rtx_engine.bitcnt"]}
+    {"type":"GATED_BY","at":[5],"guard":"spi_clk_en = '1'","lines":[321],"targets":["spi_clk_en"]}
+SIGNAL {"name":"tx_fifo","entity":"neorv32_spi","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":110},{"id":2,"line":161},{"id":3,"line":162},{"id":4,"line":163},{"id":5,"line":172},{"id":6,"line":198},{"id":7,"line":199},{"id":8,"line":202},{"id":9,"line":203},{"id":10,"line":204},{"id":11,"line":206},{"id":12,"line":207},{"id":13,"line":208},{"id":14,"line":211},{"id":15,"line":212},{"id":16,"line":213},{"id":17,"line":214},{"id":18,"line":257},{"id":19,"line":258},{"id":20,"line":259},{"id":21,"line":288},{"id":22,"line":289},{"id":23,"line":290},{"id":24,"line":292}]}
+SIGNAL {"name":"tx_fifo.we","entity":"neorv32_spi","kind":"signal","handling":["ORIGINATES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":110},{"id":2,"line":203},{"id":3,"line":212}]}
+    {"connections":[{"at":2,"instance":"tx_fifo_inst","formal":"we_i","mode":"in","lines":[203]}]}
+    {"type":"GATED_BY","at":[3],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '1')","lines":[212],"targets":["bus_req_i.addr","bus_req_i.rw","bus_req_i.stb"]}
+SIGNAL {"name":"tx_fifo.re","entity":"neorv32_spi","kind":"signal","handling":["ORIGINATES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":110},{"id":2,"line":206},{"id":3,"line":214}]}
+    {"connections":[{"at":2,"instance":"tx_fifo_inst","formal":"re_i","mode":"in","lines":[206]}]}
+    {"type":"GATED_BY","at":[3],"guard":"(rtx_engine.state = \"100\")","lines":[214],"targets":["rtx_engine.state"]}
+SIGNAL {"name":"tx_fifo.wdata","entity":"neorv32_spi","kind":"signal","handling":["ORIGINATES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":110},{"id":2,"line":202},{"id":3,"line":213}]}
+    {"connections":[{"at":2,"instance":"tx_fifo_inst","formal":"wdata_i","mode":"in","lines":[202]}]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[213],"targets":["bus_req_i.data"]}
+SIGNAL {"name":"tx_fifo.rdata","entity":"neorv32_spi","kind":"signal","handling":["CONSUMES"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":110},{"id":2,"line":207},{"id":3,"line":289},{"id":4,"line":290},{"id":5,"line":292}]}
+    {"connections":[{"at":2,"instance":"tx_fifo_inst","formal":"rdata_o","mode":"out","lines":[207]}]}
+    {"type":"GATES","at":[3],"guard":"tx_fifo.rdata(8) = '1'","lines":[289],"targets":["rtx_engine.cs_ctrl"]}
+    {"type":"GATES","at":[3],"guard":"not (tx_fifo.rdata(8) = '1')","lines":[289],"targets":["rtx_engine.sreg","rtx_engine.state"]}
+    {"type":"SOURCES","at":[4],"lines":[290],"targets":["rtx_engine.cs_ctrl"]}
+    {"type":"SOURCES","at":[5],"lines":[292],"targets":["rtx_engine.sreg"]}
+SIGNAL {"name":"tx_fifo.avail","entity":"neorv32_spi","kind":"signal","handling":["CONSUMES"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":110},{"id":2,"line":161},{"id":3,"line":172},{"id":4,"line":208},{"id":5,"line":257},{"id":6,"line":259},{"id":7,"line":288}]}
+    {"connections":[{"at":4,"instance":"tx_fifo_inst","formal":"avail_o","mode":"out","lines":[208]}]}
+    {"type":"GATES","at":[3],"guard":"rtx_engine.busy or tx_fifo.avail","lines":[172],"targets":["bus_rsp_o.data"]}
+    {"type":"GATES","at":[7],"guard":"tx_fifo.avail = '1'","lines":[288],"targets":["rtx_engine.cs_ctrl","rtx_engine.sreg","rtx_engine.state"]}
+    {"type":"SOURCES","at":[2],"lines":[161],"targets":["bus_rsp_o.data"]}
+    {"type":"SOURCES","at":[5,6],"lines":[257,259],"targets":["irq_o"]}
+SIGNAL {"name":"tx_fifo.free","entity":"neorv32_spi","kind":"signal","handling":["CONSUMES"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":110},{"id":2,"line":163},{"id":3,"line":204}]}
+    {"connections":[{"at":3,"instance":"tx_fifo_inst","formal":"free_o","mode":"out","lines":[204]}]}
+    {"type":"SOURCES","at":[2],"lines":[163],"targets":["bus_rsp_o.data"]}
+SIGNAL {"name":"tx_fifo.clear","entity":"neorv32_spi","kind":"signal","handling":["ORIGINATES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":110},{"id":2,"line":198},{"id":3,"line":211}]}
+    {"connections":[{"at":2,"instance":"tx_fifo_inst","formal":"clear_i","mode":"in","lines":[198]}]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[211],"targets":["ctrl.enable"]}
+SIGNAL {"name":"tx_fifo.half","entity":"neorv32_spi","kind":"signal","handling":["CONSUMES"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":110},{"id":2,"line":162},{"id":3,"line":199},{"id":4,"line":258}]}
+    {"connections":[{"at":3,"instance":"tx_fifo_inst","formal":"half_o","mode":"out","lines":[199]}]}
+    {"type":"SOURCES","at":[2],"lines":[162],"targets":["bus_rsp_o.data"]}
+    {"type":"SOURCES","at":[4],"lines":[258],"targets":["irq_o"]}
+SIGNAL {"name":"rx_fifo","entity":"neorv32_spi","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":110},{"id":2,"line":160},{"id":3,"line":174},{"id":4,"line":230},{"id":5,"line":231},{"id":6,"line":234},{"id":7,"line":235},{"id":8,"line":236},{"id":9,"line":238},{"id":10,"line":239},{"id":11,"line":240},{"id":12,"line":243},{"id":13,"line":244},{"id":14,"line":245},{"id":15,"line":246},{"id":16,"line":256}]}
+SIGNAL {"name":"rx_fifo.we","entity":"neorv32_spi","kind":"signal","handling":["ORIGINATES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":110},{"id":2,"line":235},{"id":3,"line":245}]}
+    {"connections":[{"at":2,"instance":"rx_fifo_inst","formal":"we_i","mode":"in","lines":[235]}]}
+    {"type":"COPIES","at":[3],"lines":[245],"targets":["rtx_engine.done"]}
+SIGNAL {"name":"rx_fifo.re","entity":"neorv32_spi","kind":"signal","handling":["ORIGINATES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":110},{"id":2,"line":238},{"id":3,"line":246}]}
+    {"connections":[{"at":2,"instance":"rx_fifo_inst","formal":"re_i","mode":"in","lines":[238]}]}
+    {"type":"GATED_BY","at":[3],"guard":"(bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(2) = '1')","lines":[246],"targets":["bus_req_i.addr","bus_req_i.rw","bus_req_i.stb"]}
+SIGNAL {"name":"rx_fifo.wdata","entity":"neorv32_spi","kind":"signal","handling":["ORIGINATES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":110},{"id":2,"line":234},{"id":3,"line":244}]}
+    {"connections":[{"at":2,"instance":"rx_fifo_inst","formal":"wdata_i","mode":"in","lines":[234]}]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[244],"targets":["rtx_engine.sreg"]}
+SIGNAL {"name":"rx_fifo.rdata","entity":"neorv32_spi","kind":"signal","handling":["CONSUMES"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":110},{"id":2,"line":174},{"id":3,"line":239}]}
+    {"connections":[{"at":3,"instance":"rx_fifo_inst","formal":"rdata_o","mode":"out","lines":[239]}]}
+    {"type":"SOURCES","at":[2],"lines":[174],"targets":["bus_rsp_o.data"]}
+SIGNAL {"name":"rx_fifo.avail","entity":"neorv32_spi","kind":"signal","handling":["CONSUMES"],"storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":110},{"id":2,"line":160},{"id":3,"line":240},{"id":4,"line":256}]}
+    {"connections":[{"at":3,"instance":"rx_fifo_inst","formal":"avail_o","mode":"out","lines":[240]}]}
+    {"type":"CARRIES","at":[2],"lines":[160],"targets":["bus_rsp_o.data"]}
+    {"type":"SOURCES","at":[4],"lines":[256],"targets":["irq_o"]}
+SIGNAL {"name":"rx_fifo.free","entity":"neorv32_spi","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":110},{"id":2,"line":236}]}
+    {"connections":[{"at":2,"instance":"rx_fifo_inst","formal":"free_o","mode":"out","lines":[236]}]}
+SIGNAL {"name":"rx_fifo.clear","entity":"neorv32_spi","kind":"signal","handling":["ORIGINATES"],"storage":"none"}
+    {"occurrences":[{"id":1,"line":110},{"id":2,"line":230},{"id":3,"line":243}]}
+    {"connections":[{"at":2,"instance":"rx_fifo_inst","formal":"clear_i","mode":"in","lines":[230]}]}
+    {"type":"DERIVES_FROM","at":[3],"lines":[243],"targets":["ctrl.enable"]}
+SIGNAL {"name":"rx_fifo.half","entity":"neorv32_spi","kind":"signal","storage":"not assigned"}
+    {"occurrences":[{"id":1,"line":110},{"id":2,"line":231}]}
+    {"connections":[{"at":2,"instance":"rx_fifo_inst","formal":"half_o","mode":"out","lines":[231]}]}
+
+=== RELATIONSHIP MAP: FLOW GRAPH (computed by a program from the records above) ===
+MAP CHECK {"elements":66,"driving records":181,"receiving records":181,"driving without receiving":0,"receiving without driving":0}
+    {"clock or reset (drive SEQUENCES / RESETS)":["clk_i","rstn_i"]}
+    {"whole records (their fields carry the records)":["bus_req_i","bus_rsp_o","ctrl","rtx_engine","rx_fifo","tx_fifo"]}
+    {"self-updating (X is computed from X: counters, state registers)":["cdiv_cnt","rtx_engine.bitcnt","rtx_engine.sreg"]}
+PATH {"from":"bus_req_i.data","source":"input"}
+    {"stores":["bus_rsp_o.data","ctrl.cdiv","ctrl.cpha","ctrl.cpol","ctrl.enable","ctrl.highspeed","ctrl.irq_idle","ctrl.irq_rx_avail","ctrl.irq_tx_empty","ctrl.irq_tx_nhalf","ctrl.prsc","irq_o","rtx_engine.sck","rtx_engine.state"]}
+    {"exits":["bus_rsp_o.data","clkgen_en_o","irq_o","spi_clk_o"]}
+    {"sub-block":["rx_fifo_inst.clear_i","tx_fifo_inst.clear_i","tx_fifo_inst.wdata_i"]}
+    {"influence":["bus_req_i.addr","bus_req_i.rw","bus_req_i.stb","ctrl.cpha","ctrl.enable","rtx_engine.bitcnt","rtx_engine.busy","rtx_engine.state","spi_clk_en","tx_fifo.avail","tx_fifo.rdata"]}
+PATH {"from":"bus_req_i.stb","source":"input"}
+    {"stores":["bus_rsp_o.ack"]}
+    {"exits":["bus_rsp_o.ack"]}
+PATH {"from":"rtx_engine.done","source":"constant-valued"}
+    {"sub-block":["rx_fifo_inst.we_i"]}
+    {"influence":["rtx_engine.bitcnt","rtx_engine.state","spi_clk_en"]}
+PATH {"from":"spi_dat_i","source":"input"}
+    {"stores":["rtx_engine.sdi_sync","rtx_engine.sreg"]}
+    {"exits":["spi_dat_o"]}
+    {"sub-block":["rx_fifo_inst.wdata_i"]}
+    {"influence":["rtx_engine.state","spi_clk_en","tx_fifo.avail","tx_fifo.rdata"]}
+CONTROL-ONLY {"from":"bus_req_i.addr","source":"input","gates or selects":["bus_rsp_o.data","ctrl.cdiv","ctrl.cpha","ctrl.cpol","ctrl.enable","ctrl.highspeed","ctrl.irq_idle","ctrl.irq_rx_avail","ctrl.irq_tx_empty","ctrl.irq_tx_nhalf","ctrl.prsc","rx_fifo.re","tx_fifo.we"]}
+CONTROL-ONLY {"from":"bus_req_i.rw","source":"input","gates or selects":["bus_rsp_o.data","ctrl.cdiv","ctrl.cpha","ctrl.cpol","ctrl.enable","ctrl.highspeed","ctrl.irq_idle","ctrl.irq_rx_avail","ctrl.irq_tx_empty","ctrl.irq_tx_nhalf","ctrl.prsc","rx_fifo.re","tx_fifo.we"]}
+CONTROL-ONLY {"from":"cdiv_cnt","source":"constant-valued","gates or selects":["cdiv_cnt","spi_clk_en"]}
+CONTROL-ONLY {"from":"clkgen_i","source":"input","gates or selects":["cdiv_cnt","spi_clk_en"]}
+CONTROL-ONLY {"from":"rtx_engine.bitcnt","source":"constant-valued","gates or selects":["rtx_engine.done","rtx_engine.sck","rtx_engine.state"]}
+CONTROL-ONLY {"from":"spi_clk_en","source":"constant-valued","gates or selects":["rtx_engine.bitcnt","rtx_engine.done","rtx_engine.sck","rtx_engine.sdi_sync","rtx_engine.sreg","rtx_engine.state"]}
+    {"no local use (no relationship, connection or constant driver)":["bus_req_i.amo","bus_req_i.amoop","bus_req_i.ben","bus_req_i.debug","bus_req_i.fence","bus_req_i.lock","bus_req_i.priv","bus_req_i.src"]}
+    {"not reached from an input or constant-valued element":["rtx_engine.busy","rtx_engine.cs_ctrl","rx_fifo.avail","rx_fifo.free","rx_fifo.half","rx_fifo.rdata","rx_fifo.re","tx_fifo.avail","tx_fifo.free","tx_fifo.half","tx_fifo.rdata","tx_fifo.re","tx_fifo.we"]}
+
+Identify the primary security assets for 'neorv32_spi' and return the JSON object per the contract.

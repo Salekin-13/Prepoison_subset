@@ -1,0 +1,249 @@
+{
+  "module name": "neorv32_trng",
+  "module purpose": "neorv32_trng is a bus-attached peripheral that stores enable and clear control, drives a neoTRNG generator, buffers generated 8-bit sample bytes in a FIFO, and returns status or buffered sample data on bus reads.",
+  "use-case flows": [
+    {
+      "flow": "configure",
+      "value": "enable setting written into the TRNG control register",
+      "lines": [
+        103,
+        104,
+        105
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "pool-clear control written and combined with disable to clear the sample FIFO",
+      "lines": [
+        106,
+        157,
+        170
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "cell outputs combined, debiased, accumulated into an 8-bit sample byte, and presented with a valid flag to the FIFO",
+      "lines": [
+        294,
+        301,
+        304,
+        306,
+        315,
+        320,
+        322,
+        334,
+        336,
+        341,
+        342,
+        354,
+        355,
+        358,
+        359,
+        360,
+        366,
+        367,
+        138,
+        139,
+        161,
+        162
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "status readout of the enable setting, configured FIFO size, simulation mode, and FIFO availability",
+      "lines": [
+        108,
+        109,
+        110,
+        111,
+        112
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "buffered sample byte returned on a data-register read, with a dequeue request to the FIFO",
+      "lines": [
+        114,
+        115,
+        117,
+        165,
+        171
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "asynchronous reset clears control and sample-generation state to zero",
+      "lines": [
+        92,
+        93,
+        94,
+        95,
+        330,
+        331,
+        332,
+        349,
+        350,
+        351,
+        352,
+        413,
+        414,
+        467,
+        468
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "TRNG enable setting -- whether sample generation is active and the pool is allowed to retain data",
+      "security objective": "Integrity",
+      "reasoning": "The configure flow stores a control bit in `enable` at line 105. That stored value is reported at line 109, passed into the generator at line 137, latched as `sample_en <= enable_i` at line 354, and when low forces FIFO clearing at line 170 and sample-state clearing at lines 355-357. Integrity is Established because on/off behavior, buffer retention, and reported status all depend on the exact stored bit; availability is also Established because the value is held between writes and reset only by `rstn_i` at line 95. The bus request/response ports are complete transport records, so the internal register and non-transport neoTRNG interface/state are the structural references.",
+      "related structural assets": [
+        {
+          "asset rtl": "enable",
+          "entity": "neorv32_trng",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "enable_i",
+          "entity": "neoTRNG",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "sample_en"
+          }
+        },
+        {
+          "asset rtl": "sample_en",
+          "entity": "neoTRNG",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Pool-clear control -- whether buffered sample bytes are discarded",
+      "security objective": "Integrity",
+      "reasoning": "A bus write loads `fifo_clr` from the control bit at line 106, and `fifo.clear <= '1' when (enable = '0') or (fifo_clr = '1') else '0'` at line 170 drives FIFO `clear_i` at line 157. Integrity is Established because these statements define exactly when buffered bytes are invalidated; availability is also Established because the clear action occurs whenever the stored clear request or disable condition is present. Transport bus fields are excluded, so the internal clear request register and computed FIFO clear signal are the realizations.",
+      "related structural assets": [
+        {
+          "asset rtl": "fifo_clr",
+          "entity": "neorv32_trng",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "fifo.clear",
+          "entity": "neorv32_trng",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "fifo_clr"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Generated 8-bit sample byte -- the byte assembled from debiased cell output and handed to the FIFO",
+      "security objective": "Integrity",
+      "reasoning": "The operate flow combines cell outputs into `cell_sum` at lines 315-322, shifts the debias register at line 334, forms `debias_valid` and `debias_data` at lines 341-342, and updates the byte register with `sample_sreg <= sample_sreg(6 downto 0) & (sample_sreg(7) xor debias_data)` at line 360. `data_o <= sample_sreg` at line 366, and the top-level wiring sends that byte to FIFO `wdata_i` through lines 139 and 161. Integrity is Established because the FIFO consumer must receive exactly the byte defined by these update rules; availability is conditionally Established while sampling remains enabled and accepted bits continue to arrive.",
+      "related structural assets": [
+        {
+          "asset rtl": "sample_sreg",
+          "entity": "neoTRNG",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "data_o",
+          "entity": "neoTRNG",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "sample_sreg"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Sample-byte ready decision -- whether the current sample byte is complete and may be written into the FIFO",
+      "security objective": "Integrity",
+      "reasoning": "`sample_cnt` is reset when sampling is disabled or a byte has completed at lines 355-356, increments only on `debias_valid` at line 359, and `valid_o <= sample_cnt(sample_cnt'left)` at line 367. Top-level wiring uses this decision as FIFO write enable via `valid_o => fifo.we` at line 138 and `we_i => fifo.we` at line 162. Integrity is Established because FIFO writes must occur exactly when the byte-complete condition is met; availability is Established under the RTL-visible condition that `debias_valid` continues to occur while sampling remains enabled.",
+      "related structural assets": [
+        {
+          "asset rtl": "sample_cnt",
+          "entity": "neoTRNG",
+          "realization": "stores",
+          "occurrence": 6,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "valid_o",
+          "entity": "neoTRNG",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "sample_cnt"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Buffered-data availability status -- whether the FIFO currently holds a byte to return",
+      "security objective": "Integrity",
+      "reasoning": "`fifo.avail` is driven from FIFO `avail_o` at line 167, copied into the status read at line 112, and tested in the data-read path at lines 114-117 to choose zero or `fifo.rdata`. Integrity is Established because both the reported status and the data-return qualification depend on this non-empty decision. The internal record-field exception applies because this field is locally tested in the `if (fifo.avail = '0')` condition at line 114.",
+      "related structural assets": [
+        {
+          "asset rtl": "fifo.avail",
+          "entity": "neorv32_trng",
+          "realization": "sets",
+          "occurrence": 4,
+          "edge": {
+            "type": "CONNECTS",
+            "partner": "rnd_pool_fifo_inst.avail_o"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Data-read dequeue decision -- whether a read of the data register consumes one FIFO entry",
+      "security objective": "Integrity",
+      "reasoning": "`fifo.re <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(2) = '1') else '0'` at line 171 drives FIFO `re_i` at line 165. Integrity is Established because the read-out flow should consume one buffered byte only on the addressed data-register read, not on writes or status reads; availability is also Established because such a read produces the dequeue request. The transport bus fields themselves are excluded, so the internally computed dequeue signal is the structural reference.",
+      "related structural assets": [
+        {
+          "asset rtl": "fifo.re",
+          "entity": "neorv32_trng",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "bus_req_i.addr"
+          }
+        }
+      ]
+    }
+  ]
+}

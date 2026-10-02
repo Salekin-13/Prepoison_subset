@@ -1,0 +1,155 @@
+{
+  "module name": "neorv32_pwm",
+  "conceptual assets": [
+    {
+      "concept": "Per-channel configuration registers (enable, prescaler index, polarity, clock divider, duty)",
+      "security objective": "Integrity",
+      "reasoning": "Each channel stores configuration in registers written when a channel write is enabled: in config_write process `if (we_i = '1') then cfg_en <= wdata_i(31); cfg_prsc <= wdata_i(30 downto 28); cfg_pol <= wdata_i(27); cfg_cdiv <= wdata_i(17 downto 8); cfg_duty <= wdata_i(7 downto 0); end if;`. Those registers drive pwm_core behavior (they determine cnt conditions and final `pwm_o` assignment) and are exposed for readback via `rdata_o <= cfg_en & ... & cfg_duty when (re_i = '1') else (others => '0')`. The RTL therefore establishes that correct stored configuration values are required for correct PWM generation and readback (Integrity).",
+      "related structural assets": [
+        {
+          "asset rtl": "cfg_en",
+          "entity": "neorv32_pwm_channel",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cfg_prsc",
+          "entity": "neorv32_pwm_channel",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cfg_pol",
+          "entity": "neorv32_pwm_channel",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cfg_cdiv",
+          "entity": "neorv32_pwm_channel",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "cfg_duty",
+          "entity": "neorv32_pwm_channel",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "wdata_i",
+          "entity": "neorv32_pwm_channel",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "we_i",
+          "entity": "neorv32_pwm_channel",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "rdata_o",
+          "entity": "neorv32_pwm_channel",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Aggregated readback data returned on the bus (rdata_sum)",
+      "security objective": "Integrity",
+      "reasoning": "The read_back process computes an aggregate read value by OR-ing per-channel read outputs into `rdata_sum`: `for i in 0 to NUM_CHANNELS-1 loop tmp_v := tmp_v or rdata(i); end loop; rdata_sum <= tmp_v;`. The bus response process then places this value on the response data when a bus access is present (`bus_rsp_o.data <= rdata_sum; bus_rsp_o.ack <= '1'` when `bus_req_i.stb = '1'`). The RTL therefore establishes that rdata_sum integrity is required for correct bus read responses.",
+      "related structural assets": [
+        {
+          "asset rtl": "rdata",
+          "entity": "neorv32_pwm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "rdata_sum",
+          "entity": "neorv32_pwm",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "rdata_o",
+          "entity": "neorv32_pwm_channel",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Channel selection and access decision (which channel a bus request targets, and whether it is a read or write)",
+      "security objective": "Integrity",
+      "reasoning": "Top-level generate computes per-channel selection and access gating: `sel(i) <= '1' when (bus_req_i.addr(5 downto 2) = std_ulogic_vector(to_unsigned(i, 4))) else '0';` and `we(i) <= sel(i) and bus_req_i.stb and (bus_req_i.rw);` and `re(i) <= sel(i) and bus_req_i.stb and (not bus_req_i.rw);`. Those signals determine which channel's `we_i`/`re_i` are asserted (they are port-mapped into each channel) and thus which channel is written or read. The RTL therefore establishes that integrity of the decode/strobe/rw decisions is required to route accesses to the intended channel.",
+      "related structural assets": [
+        {
+          "asset rtl": "sel",
+          "entity": "neorv32_pwm",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "we",
+          "entity": "neorv32_pwm",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "re",
+          "entity": "neorv32_pwm",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "we_i",
+          "entity": "neorv32_pwm_channel",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "re_i",
+          "entity": "neorv32_pwm_channel",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Per-channel PWM output bits produced by the channel and exported by the module",
+      "security objective": "Integrity",
+      "reasoning": "Each channel's pwm_core computes its output bit via the registered counters and configuration: e.g. on tick/compare the RTL assigns `if (cfg_en = '0') or (unsigned(cnt_duty) >= unsigned(cfg_duty)) then pwm_o <= cfg_pol; else pwm_o <= not cfg_pol;`. The channel `pwm_o` port is mapped to the top-level `pwm` vector and the top-level process assigns the module output port `pwm_o` from that vector (`pwm_o <= (others => '0'); pwm_o(pwm'range) <= pwm(pwm'range);`). The RTL therefore establishes that integrity of the produced PWM bits is required for the module to present the configured PWM signals.",
+      "related structural assets": [
+        {
+          "asset rtl": "pwm_o",
+          "entity": "neorv32_pwm",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "pwm",
+          "entity": "neorv32_pwm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "pwm_o",
+          "entity": "neorv32_pwm_channel",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Global clock-generator enable output (OR of per-channel enables)",
+      "security objective": "Integrity",
+      "reasoning": "Each channel drives its local clkgen_en_o from the stored enable (`clkgen_en_o <= cfg_en;`). The top-level binds those channel outputs into the `ce` vector and computes the module output `clkgen_en_o` as `clkgen_en_o <= or_reduce_f(ce);`. The RTL therefore establishes that the top-level clkgen_en_o is the OR of per-channel cfg_en values and that integrity of this aggregated enable is required for correct external clock-generator enable behavior.",
+      "related structural assets": [
+        {
+          "asset rtl": "clkgen_en_o",
+          "entity": "neorv32_pwm",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "ce",
+          "entity": "neorv32_pwm",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "clkgen_en_o",
+          "entity": "neorv32_pwm_channel",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "cfg_en",
+          "entity": "neorv32_pwm_channel",
+          "realization": "stores"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,105 @@
+{
+  "module name": "neorv32_gptmr",
+  "conceptual assets": [
+    {
+      "concept": "Timer enable configuration (ctrl bit at ctrl_en_c)",
+      "security objective": "Integrity",
+      "reasoning": "The bus_access process writes the control bit: when bus_req_i.stb='1' and bus_req_i.rw='1' and bus_req_i.addr(3 downto 2) = \"00\" the RTL executes 'ctrl(ctrl_en_c) <= bus_req_i.data(ctrl_en_c)'. timer_core tests this bit to clear counting ('if (ctrl(ctrl_en_c) = '0') then timer.count <= (others => '0')') and irq_generator gates IRQ production ('if (ctrl(ctrl_en_c) = '1') then ... else irq_pnd <= '0'); the value also leaves the entity via 'clkgen_en_o <= ctrl(ctrl_en_c)'. Corruption of this stored configuration would change counting and IRQ behaviour; Integrity is established from these RTL relations.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl",
+          "entity": "neorv32_gptmr",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "clkgen_en_o",
+          "entity": "neorv32_gptmr",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Prescaler selection (ctrl bits ctrl_prsc2_c downto ctrl_prsc0_c)",
+      "security objective": "Integrity",
+      "reasoning": "The bus_access process writes the prescaler bits into ctrl (assignments 'ctrl(ctrl_prscX_c) <= bus_req_i.data(ctrl_prscX_c)'); timer_core uses the stored bits as an index: 'timer.tick <= clkgen_i(to_integer(unsigned(ctrl(ctrl_prsc2_c downto ctrl_prsc0_c))))'. The prescaler selection therefore determines which clkgen_i bit drives timer.tick and thus controls timer.count progression and IRQ timing. Corruption of these stored bits alters counting/IRQ behavior; Integrity is established by the RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl",
+          "entity": "neorv32_gptmr",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Timer threshold value (timer.thres)",
+      "security objective": "Integrity",
+      "reasoning": "On a bus write with addr(3 downto 2) = \"01\" the bus_access process stores the written value into the threshold: 'timer.thres <= bus_req_i.data'. The RTL defines 'timer.match <= '1' when (timer.count = timer.thres) else '0'', and timer.match is used to reset the counter and to trigger irq_pnd. Therefore integrity of the stored threshold is required for correct match detection and IRQ behaviour.",
+      "related structural assets": [
+        {
+          "asset rtl": "timer.thres",
+          "entity": "neorv32_gptmr",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Timer count value (timer.count)",
+      "security objective": "Integrity",
+      "reasoning": "timer_core stores and updates the count: on reset it is cleared, otherwise on rising_edge clk_i it increments 'timer.count <= std_ulogic_vector(unsigned(timer.count) + 1)' when 'timer.tick = '1'' and is cleared when ctrl enable = '0' or when timer.match = '1'. timer.count is also returned on reads (bus_access uses 'bus_rsp_o.data <= timer.count'). The stored count determines match and IRQ timing; its corruption violates those RTL-established relations, establishing Integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "timer.count",
+          "entity": "neorv32_gptmr",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Timer match decision (timer.match)",
+      "security objective": "Integrity",
+      "reasoning": "The RTL computes the match decision explicitly: 'timer.match <= '1' when (timer.count = timer.thres) else '0''. timer.match is used by timer_core to reset the count and by irq_generator to set irq_pnd. The computed equality decision therefore directly controls count reset and IRQ generation; its integrity is security-relevant and established by the RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "timer.match",
+          "entity": "neorv32_gptmr",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Selected timer tick (timer.tick)",
+      "security objective": "Integrity",
+      "reasoning": "timer_core updates timer.tick from the external clock-vector indexed by the stored prescaler: 'timer.tick <= clkgen_i(to_integer(unsigned(ctrl(ctrl_prsc2_c downto ctrl_prsc0_c))))', and the process gates counting on that value ('if (timer.tick = '1') then timer.count <= ...'). The computed/stored tick therefore directly controls counter progression and IRQ timing; corruption of this value changes count/IRQ behaviour, so Integrity is established from the RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "timer.tick",
+          "entity": "neorv32_gptmr",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Interrupt pending state and IRQ output (irq_pnd / irq_o)",
+      "security objective": "Integrity",
+      "reasoning": "irq_pnd is the stored pending flag updated in irq_generator: on rising_edge clk_i, when ctrl enable = '1' and timer.match = '1' then 'irq_pnd <= '1''; elsif irq_clr = '1' then 'irq_pnd <= '0''; else when ctrl enable = '0' irq_pnd is forced '0'. The pending flag is exported as the external interrupt via 'irq_o <= irq_pnd' and is sampled for bus readback ('bus_rsp_o.data(ctrl_irq_c) <= irq_pnd'). Corruption of the pending flag or its output changes external IRQ signalling; Integrity is established by these RTL relations.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_pnd",
+          "entity": "neorv32_gptmr",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "irq_o",
+          "entity": "neorv32_gptmr",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Peripheral bus write decoding that governs when register updates occur",
+      "security objective": "Integrity",
+      "reasoning": "The bus_access process conditions register updates on bus_req_i.stb, bus_req_i.rw and addr bits: e.g. writes to ctrl occur only when bus_req_i.stb='1' and bus_req_i.rw='1' and bus_req_i.addr(3 downto 2) = \"00\"; writes to timer.thres occur when addr(3 downto 2) = \"01\". These RTL predicates define whether a bus write is allowed to update internal state, so the correctness of that decision is integrity-relevant. Mapping limitation: the bus request/response ports (bus_req_i, bus_rsp_o) are transport-record ports and therefore excluded from reporting as structural references; the eligible internal realization points affected by this decision are the target registers already reported above (ctrl, timer.thres).",
+      "related structural assets": []
+    }
+  ]
+}

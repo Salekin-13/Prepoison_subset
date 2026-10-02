@@ -1,0 +1,137 @@
+{
+  "module name": "neorv32_cpu_cp_muldiv",
+  "conceptual assets": [
+    {
+      "concept": "Final operation result delivered on res_o (selected multiply product or division result)",
+      "security objective": "Integrity",
+      "reasoning": "The RTL implements a final-selection flow that drives the entity output res_o from the computed product or division result: the operation_result process (sensitivity list: ctrl, ctrl_i.ir_funct3, mul.prod, div.res) assigns res_o when ctrl.out_en = '1' and selects mul.prod(31 downto 0) for op_mul_c, mul.prod(63 downto 32) for mulh variants, or div.res otherwise. mul.prod is driven/registered by the multiplier logic and div.res is computed by the divider logic. Corrupting these stored/computed values or the output gating would produce an incorrect result exposed on res_o, establishing an integrity requirement for the result and its defining registers/computations.",
+      "related structural assets": [
+        {
+          "asset rtl": "res_o",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "mul.prod",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "div.res",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "computes"
+        }
+      ]
+    },
+    {
+      "concept": "Operation completion state and output enable (S_DONE, ctrl.out_en, valid_o)",
+      "security objective": "Integrity",
+      "reasoning": "The control FSM updates ctrl.state in the control process and sets ctrl.out_en <= '1' in the S_DONE branch; valid_o is driven combinationally from ctrl.state (`valid_o <= '1' when (ctrl.state = S_DONE) else '0'`). ctrl.state and ctrl.out_en therefore determine when the unit reports completion and when results are enabled/gated to res_o; corruption of these registers or the state decision changes when valid_o asserts and when results are permitted out, establishing an integrity requirement for correct completion signalling.",
+      "related structural assets": [
+        {
+          "asset rtl": "valid_o",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "ctrl.state",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl.out_en",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Command-accept decision that starts multiply/divide (valid_cmd)",
+      "security objective": "Integrity",
+      "reasoning": "The module computes a single acceptance decision `valid_cmd` from instruction-control inputs: `valid_cmd <= '1' when (ctrl_i.alu_cp_alu = '1') and (ctrl_i.ir_opcode(5) = '1') and (ctrl_i.ir_funct12(11 downto 5) = \"0000001\") and ((ctrl_i.ir_funct3(2) = '0') or ((ctrl_i.ir_funct3(2) = '1') and DIVISION_EN)) else '0';`. mul.start and div.start are derived from valid_cmd and the funct3 bit; the control FSM uses valid_cmd to transition out of S_IDLE. Corrupting this decision would erroneously start or suppress operations, establishing an integrity requirement for the accept/decode decision.",
+      "related structural assets": [
+        {
+          "asset rtl": "valid_cmd",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Operand values consumed by the unit (rs1_i, rs2_i and their captured forms)",
+      "security objective": "Integrity",
+      "reasoning": "The RTL reads operand inputs rs1_i and rs2_i and captures them into internal storage used by the algorithms: the parallel multiplier registers mul.dsp_x/mul.dsp_y on mul.start (`mul.dsp_x <= signed((rs1_i(rs1_i'left) and ctrl.rs1_is_signed) & rs1_i)` etc.), the serial multiplier initializes mul.prod(31 downto 0) <= rs1_i and shifts during S_BUSY, and the divider initializes div.quotient and div.rs2_abs on div.start (div.quotient <= rs1_i or 0 - unsigned(rs1_i); div.rs2_abs <= rs2_i or 0 - unsigned(rs2_i)). These flows show the unit depends on correct input values and their stored captures; corruption of inputs or their captured registers produces incorrect arithmetic results, establishing integrity for those operands and their stored copies.",
+      "related structural assets": [
+        {
+          "asset rtl": "rs1_i",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "rs2_i",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "mul.dsp_x",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "mul.dsp_y",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "div.quotient",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "div.rs2_abs",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        }
+      ]
+    },
+    {
+      "concept": "Operand signedness interpretation flags (ctrl.rs1_is_signed, ctrl.rs2_is_signed)",
+      "security objective": "Integrity",
+      "reasoning": "The RTL computes signedness flags from the instruction decode (`ctrl.rs1_is_signed <= '1' when (ctrl_i.ir_funct3 = op_mulh_c) or (ctrl_i.ir_funct3 = op_mulhsu_c) or (ctrl_i.ir_funct3 = op_div_c) or (ctrl_i.ir_funct3 = op_rem_c) else '0'` and analogous for ctrl.rs2_is_signed) and uses them to sign-extend or negate operands in the multiplier (`mul.dsp_x <= signed(... & rs1_i)`) and divider initialization and sign handling (divider_core uses these flags to set div.quotient/div.rs2_abs and div.sign_mod). Changing these flags alters signed/unsigned interpretation and thus breaks the implemented arithmetic relations, establishing an integrity requirement for these flags.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.rs1_is_signed",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "ctrl.rs2_is_signed",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Operation cycle/countdown used to complete S_BUSY (ctrl.cnt)",
+      "security objective": "Integrity",
+      "reasoning": "The FSM uses the internal counter ctrl.cnt to time S_BUSY: on each rising edge in S_BUSY the control process decrements `ctrl.cnt <= std_ulogic_vector(unsigned(ctrl.cnt) - 1);` and transitions to S_DONE when `or_reduce_f(ctrl.cnt) = '0'` (or earlier if ctrl_i.cpu_trap='1'). The counter's stored value thus determines when the unit completes; corrupting ctrl.cnt can cause premature or stalled completion, establishing an integrity requirement for the countdown state.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.cnt",
+          "entity": "neorv32_cpu_cp_muldiv",
+          "realization": "stores"
+        }
+      ]
+    }
+  ]
+}

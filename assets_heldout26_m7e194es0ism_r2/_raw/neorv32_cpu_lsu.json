@@ -1,0 +1,167 @@
+{
+  "module name": "neorv32_cpu_lsu",
+  "conceptual assets": [
+    {
+      "concept": "Memory address register (MAR) used for LSU memory requests",
+      "security objective": "Integrity",
+      "reasoning": "The mem_addr_reg process captures addresses: on rising_edge(clk_i) when ctrl_i.lsu_mo_we = '1' it executes mar <= addr_i. The stored mar is driven onto the bus request (dbus_req_o.addr <= mar) and exported (mar_o <= mar). mem_di_reg uses mar(1 downto 0) to select which response byte is placed into rdata_o. Therefore the stored MAR determines the memory request address and readback selection; incorrect MAR violates those implemented relations (Integrity).",
+      "related structural assets": [
+        {
+          "asset rtl": "mar",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "mar_o",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "addr_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Misaligned-access indicator computed for each issued access",
+      "security objective": "Integrity",
+      "reasoning": "mem_addr_reg computes misaligned when ctrl_i.lsu_mo_we = '1' using ctrl_i.ir_funct3(1 downto 0) and addr_i bits (cases producing '0', addr_i(0), or addr_i(1) or addr_i(0)). The misaligned signal is used to gate request issuance (dbus_req_o.stb <= ... and (not misaligned)) and to drive err_o bits. An incorrect misaligned value breaks the LSU's strobe gating and error reporting logic (Integrity).",
+      "related structural assets": [
+        {
+          "asset rtl": "misaligned",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets"
+        },
+        {
+          "asset rtl": "addr_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Pending memory-access state (in-flight indicator)",
+      "security objective": "Integrity",
+      "reasoning": "access_arbiter registers pending: on rising_edge(clk_i) when pending = '0' it captures pending <= ctrl_i.lsu_req, and pending is cleared when dbus_rsp_i.ack = '1' or ctrl_i.cpu_trap = '1'. mem_di_reg and err_o use pending to decide whether to present rdata_o and to report errors; bus_lock clears when pending = '0'. Corruption of pending changes whether the LSU treats an access as in-flight, altering readback, error reporting and lock behavior (Integrity).",
+      "related structural assets": [
+        {
+          "asset rtl": "pending",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "PMP fault indicator recorded inside the LSU (pmp_err)",
+      "security objective": "Integrity",
+      "reasoning": "access_arbiter assigns pmp_err <= pmp_fault_i at clock edges and err_o(1)/err_o(3) include (dbus_rsp_i.err or pmp_err). The stored pmp_err imports PMP-fault information into the LSU's error reporting; incorrect pmp_err would misreport or suppress reported access errors (Integrity).",
+      "related structural assets": [
+        {
+          "asset rtl": "pmp_err",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "pmp_fault_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Encoded AMO operation (amo_cmd) used to form AMO request fields",
+      "security objective": "Integrity",
+      "reasoning": "The amo_encode process combinationally maps ctrl_i.ir_funct12(11 downto 7) to amo_cmd values (multiple case arms). mem_do_reg assigns dbus_req_o.amoop <= amo_cmd when ctrl_i.lsu_mo_we = '1'. amo_cmd defines the AMO operation encoded into outgoing requests; corruption changes AMO semantics and therefore violates the implemented operation encoding (Integrity).",
+      "related structural assets": [
+        {
+          "asset rtl": "amo_cmd",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "computes"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Read data returned to the CPU (rdata_o)",
+      "security objective": "Integrity",
+      "reasoning": "mem_di_reg (clocked) produces rdata_o: when pending = '1' it assembles rdata_o from dbus_rsp_i.data using mar(1 downto 0) or mar(1) to select bytes and applies sign/zero extension per ctrl_i.ir_funct3(2) (replicate_f). rdata_o is the LSU's load return value; incorrect rdata_o would deliver wrong load data to the CPU (Integrity).",
+      "related structural assets": [
+        {
+          "asset rtl": "rdata_o",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Error-reporting vector (err_o[3:0]) produced by the LSU",
+      "security objective": "Integrity",
+      "reasoning": "Concurrent assignments compute err_o bits from pending, ctrl_i.lsu_rw, misaligned, dbus_rsp_i.err and pmp_err (for example err_o(0) <= pending and (not ctrl_i.lsu_rw) and misaligned). These outputs are the LSU's implemented error indicators; incorrect err_o values would misreport access errors or alignment faults (Integrity).",
+      "related structural assets": [
+        {
+          "asset rtl": "err_o",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "exit port"
+        },
+        {
+          "asset rtl": "misaligned",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "pmp_err",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "stores"
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets"
+        }
+      ]
+    },
+    {
+      "concept": "Wait indicator reported to CPU (wait_o = not dbus_rsp_i.ack)",
+      "security objective": "Integrity",
+      "reasoning": "The concurrent assignment wait_o <= not dbus_rsp_i.ack directly reports bus-response acknowledgement. The LSU's wait output communicates progress to the CPU; an incorrect wait_o would misrepresent whether a response has been acknowledged (Integrity).",
+      "related structural assets": [
+        {
+          "asset rtl": "wait_o",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "exit port"
+        }
+      ]
+    },
+    {
+      "concept": "Outgoing DBUS request composition and strobe (fields: rw, priv, debug, amo, amoop, data, ben, stb, lock)",
+      "security objective": "Integrity",
+      "reasoning": "mem_do_reg assigns the request fields from internal values and inputs (e.g., dbus_req_o.rw <= ctrl_i.lsu_rw, dbus_req_o.amoop <= amo_cmd, dbus_req_o.data/dbus_req_o.ben set per ctrl_i.ir_funct3 and wdata_i). dbus_req_o.stb is driven by ctrl_i.lsu_req and gated by (not misaligned) and (not pmp_fault_i). bus_lock process drives dbus_req_o.lock for AMO sequences. These assignments collectively form the outgoing transaction and the strobe decision; corruption or suppression alters the semantics or availability of external memory requests. Mapping is omitted here because dbus_req_o is a transport-port record used to present complete bus transactions; per the structural-exclusion rules that transport ports and their fields must not be reported, no eligible internal declaration remains to list as a structural reference.",
+      "related structural assets": []
+    }
+  ]
+}

@@ -1,0 +1,273 @@
+{
+  "module name": "neorv32_cache",
+  "module purpose": "Arbitrate host memory requests (host_req_i), perform a cache tag/index lookup and either return data from the local cache or forward requests to the external bus (bus_req_o). It instantiates and drives neorv32_cache_memory (clr/inv/new, addr/we/wdata) and returns responses to the host via host_rsp_o while progressing a control FSM (ctrl).",
+  "use-case flows": [
+    {
+      "flow": "start",
+      "value": "Host request ingress and buffering: a host request (strobe/fence/addr/data) is sampled and buffered (buf_req / buf_sync / buf_dir) and the FSM advances from S_IDLE to S_LOOKUP.",
+      "lines": [
+        133,
+        136,
+        137,
+        168,
+        170,
+        171,
+        175
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "Lookup and decision: compute tag/ index/ offset from host_req_i.addr, check cache_i.sta_hit and READ_ONLY/ rw to choose direct response, write-through, or start a download/refill.",
+      "lines": [
+        178,
+        180,
+        181,
+        182,
+        186,
+        189,
+        190,
+        199,
+        202,
+        203,
+        204
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "Direct response path: when direct/bypass or on hit+read, assert bus_req_o/stb or forward bus_rsp_i to host_rsp_o and return ack; FSM transitions on bus_rsp_i.ack.",
+      "lines": [
+        186,
+        187,
+        195,
+        207,
+        209,
+        210,
+        211,
+        212
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "Download/refill sequence: issue bus read(s) (bus_req_o.addr/rw/lock/stb), assert cache_o.cmd_new, accept bus_rsp_i.data into cache_o.data with cache_o.we, increment ctrl.ofs until line is complete, then on success either leave cache line valid or on error invalidate and report.",
+      "lines": [
+        223,
+        225,
+        226,
+        227,
+        229,
+        230,
+        235,
+        236,
+        237,
+        242,
+        243,
+        244,
+        245,
+        246,
+        252,
+        254,
+        255,
+        256,
+        257,
+        258,
+        259,
+        260
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "Produce responses to the host (host_rsp_o): ack/err/data are driven from cache_i.data or forwarded bus_rsp_i fields depending on state.",
+      "lines": [
+        154,
+        155,
+        156,
+        191,
+        209,
+        256,
+        257
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "Cache memory readback: neorv32_cache_memory returns rdata_o (rdata_o assembled from data_mem_b0..b3) on clock edge and that value is presented to the top-level via the cache_i.data connection and copied to host_rsp_o.data.",
+      "lines": [
+        410,
+        414,
+        420,
+        423,
+        425,
+        426,
+        427,
+        428,
+        291,
+        156
+      ]
+    },
+    {
+      "flow": "lock",
+      "value": "Bus lock during multi-beat download: bus_req_o.lock is asserted while the controller issues the multi-beat read for a cache line.",
+      "lines": [
+        229,
+        230,
+        239,
+        240
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "Synchronous reset clears the control record and the memory valid bits: ctrl and its fields are forced to known defaults and valid_mem is cleared.",
+      "lines": [
+        114,
+        116,
+        117,
+        124,
+        125,
+        374,
+        376,
+        377,
+        381,
+        387
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Control FSM and buffered request state (the controller record that holds the current state, buffered request flags and address decomposition: state, buf_req, buf_sync, buf_err, buf_dir, tag, idx, ofs)",
+      "security objective": "Integrity",
+      "reasoning": "The controller record (ctrl) holds the FSM state and buffered request fields that the module relies on to choose every subsequent action (lookup, direct response, download, clear). The synchronous process ctrl_engine_sync resets and then captures ctrl <= ctrl_nxt on the rising clock (RTL 114-127). The combinational process builds ctrl_nxt and the case on ctrl.state selects outputs and next-state (RTL 133, 164..). Corruption of the ctrl fields would alter which bus requests are issued, whether data is read from cache or fetched from bus (S_LOOKUP decisions at RTL 178..205), and whether host_rsp_o is asserted (e.g. host_rsp_o.ack depends on ctrl.state and cache_i.sta_hit at RTL 189..196). Map evidence: the whole control record is clocked (SIGNAL \"ctrl\" has CLOCKED_BY at occurrence 10, lines [126], target \"clk_i\"); next-state is computed by selection (SIGNAL \"ctrl_nxt.state\" has a SELECTED_BY record at occurrence 10, lines [211], target \"ctrl.state\"). The host request port drives the controller decisions (PORT \"host_req_i\" used where host_req_i.stb gates ctrl_nxt.buf_req at occurrence 3, line 137), and bus responses gate state progression (PORT \"bus_rsp_i\" used where bus_rsp_i.ack gates ctrl_nxt.state at occurrence 4, line 210).",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl",
+          "entity": "neorv32_cache",
+          "realization": "stores",
+          "occurrence": 10,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl_nxt.state",
+          "entity": "neorv32_cache",
+          "realization": "computes",
+          "occurrence": 10,
+          "edge": {
+            "type": "SELECTED_BY",
+            "partner": "ctrl.state"
+          }
+        },
+        {
+          "asset rtl": "host_req_i",
+          "entity": "neorv32_cache",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATES",
+            "partner": "ctrl_nxt.buf_req"
+          }
+        },
+        {
+          "asset rtl": "bus_rsp_i",
+          "entity": "neorv32_cache",
+          "realization": "sets",
+          "occurrence": 4,
+          "edge": {
+            "type": "GATES",
+            "partner": "ctrl_nxt.state"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Cached contents (the data bytes and the address/tags that determine where a line is stored and read)",
+      "security objective": "Integrity",
+      "reasoning": "The cache stores data bytes and associated tag/index; the controller writes data into the memory instance and later reads it back to answer host requests. The download/refill flow drives cache_o.cmd_new, cache_o.addr, cache_o.data and cache_o.we to write the line into the memory (RTL 223..239, 235..238, 236..237), and the memory's data_memory process updates data_mem_b0..b3 on the selected we_i bits and presents rdata_o on the next clock edge (RTL 410..428). Corruption of the write address, write enables or write data would produce incorrect cached contents or wrong reads. Map evidence (connections to the instantiated memory): the write data path is carried by SIGNAL \"cache_o.data\" (CONNECTS at occurrence 4, line 290 to neorv32_cache_memory_inst.wdata_i); the byte-write mask is carried by SIGNAL \"cache_o.we\" (CONNECTS at occurrence 5, line 289 to neorv32_cache_memory_inst.we_i); the memory address is carried by SIGNAL \"cache_o.addr\" (CONNECTS at occurrence 5, line 288 to neorv32_cache_memory_inst.addr_i). Reads leave the sub-unit on rdata_o and are seen in the top-level on SIGNAL \"cache_i.data\" (CONNECTS at occurrence 3, line 291 from neorv32_cache_memory_inst.rdata_o) and then are copied to the host response port (PORT \"host_rsp_o\" at occurrence 4, line 156, COPIES partner \"cache_i.data\"). These records show where the stored bytes are set, produced and exited.",
+      "related structural assets": [
+        {
+          "asset rtl": "cache_o.data",
+          "entity": "neorv32_cache",
+          "realization": "sets",
+          "occurrence": 4,
+          "edge": {
+            "type": "CONNECTS",
+            "partner": "neorv32_cache_memory_inst.wdata_i"
+          }
+        },
+        {
+          "asset rtl": "cache_o.we",
+          "entity": "neorv32_cache",
+          "realization": "sets",
+          "occurrence": 5,
+          "edge": {
+            "type": "CONNECTS",
+            "partner": "neorv32_cache_memory_inst.we_i"
+          }
+        },
+        {
+          "asset rtl": "cache_o.addr",
+          "entity": "neorv32_cache",
+          "realization": "sets",
+          "occurrence": 5,
+          "edge": {
+            "type": "CONNECTS",
+            "partner": "neorv32_cache_memory_inst.addr_i"
+          }
+        },
+        {
+          "asset rtl": "cache_i.data",
+          "entity": "neorv32_cache",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "CONNECTS",
+            "partner": "neorv32_cache_memory_inst.rdata_o"
+          }
+        },
+        {
+          "asset rtl": "host_rsp_o",
+          "entity": "neorv32_cache",
+          "realization": "exit port",
+          "occurrence": 4,
+          "edge": {
+            "type": "COPIES",
+            "partner": "cache_i.data"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Cache hit indicator (the hit/miss decision produced by the tag/valid tests)",
+      "security objective": "Integrity",
+      "reasoning": "The single-bit hit decision from the memory (hit_o) selects whether the controller replies from the cache or initiates a bus transaction. The lookup and S_LOOKUP logic use cache_i.sta_hit to gate direct replies and writes (RTL 178..205, especially the branch 'if (cache_i.sta_hit = ''1'')' at RTL 189..196). If the hit signal is wrong, the controller will choose the wrong servicing path. Map evidence: the top-level signal SIGNAL \"cache_i.sta_hit\" is driven from the memory instance (connection at occurrence 3, line 286: neorv32_cache_memory_inst.hit_o) and is used as a gate in the combinational FSM (GATED_BY records at occurrence 2, line 189 etc.), establishing its role as the decision generator.",
+      "related structural assets": [
+        {
+          "asset rtl": "cache_i.sta_hit",
+          "entity": "neorv32_cache",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "CONNECTS",
+            "partner": "neorv32_cache_memory_inst.hit_o"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Bus-side requests placed by the cache controller (the bus_req_o transaction driven to the external bus: address, rw, stb, lock)",
+      "security objective": "Integrity",
+      "reasoning": "When the controller needs to fetch a cache line or forward a host request it drives bus_req_o (address/rw/stb/lock). Those outputs are selected by the FSM state (e.g. S_DOWNLOAD_REQ / S_DOWNLOAD_RSP) and by the buffered address fields (tag/idx/ofs) produced by the controller (RTL 223..231, 235..239, 159). Corrupting the address, stb or lock fields handed to the external bus would cause incorrect external accesses. Map evidence: the bus request port (PORT \"bus_req_o\") is driven under state control (the addr/rw/lock fields are SELECTED_BY ctrl.state at occurrence 9, line 227) and bus_req_o is also a direct copy of host request in the passthrough path (PORT \"bus_req_o\" has COPIES at occurrence 2, line 159 to \"host_req_i\"). Use as an exit port is therefore established by the SELECTED_BY / COPIES records.",
+      "related structural assets": [
+        {
+          "asset rtl": "bus_req_o",
+          "entity": "neorv32_cache",
+          "realization": "exit port",
+          "occurrence": 9,
+          "edge": {
+            "type": "SELECTED_BY",
+            "partner": "ctrl.state"
+          }
+        }
+      ]
+    }
+  ]
+}
