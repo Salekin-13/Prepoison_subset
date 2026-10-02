@@ -13,7 +13,8 @@ why precision stopped rising, and a plot of how the prompt converged. It runs wi
 ## What the work shows
 
 All figures below are printed by `FINAL_NOTEBOOK.ipynb`. They use strict scoring against LAsset's manual reference.
-The tuning set has 15 modules and 111 reference entries; the held-out set has 26 modules and 189 entries.
+The tuning set has 15 modules and 111 reference entries; the held-out set has 26 modules and 189 entries; the RTL of
+all 41 is listed in `data/LASSET_41_MODULES.csv`.
 **Precision** is the share of listed assets that are in the reference. **Recall** is the share of reference entries
 that were listed.
 
@@ -23,19 +24,31 @@ that were listed.
   - Typed relationship records agree with a gold sample: precision 0.988, 95% interval 0.969 to 1.0. That is 120
     occurrences and 212 records. The gold was written by an LLM and adjudicated, so it is a consistency check, not
     human ground truth.
-- **Accuracy is below LAsset's.**
-  - The final prompt on gpt-5.4 (mean of 3 runs, tuning): precision 0.407, recall 0.820.
-  - LAsset's published RTL-only list, scored the same way: 0.680 / 0.748.
-  - Held-out generation is pending: my API credits ran out.
-- **The audit trail explains the errors better than it fixes them.**
-  - Of the 399 false positives in the 3 tuning runs, 96.5% cite a true occurrence and a true record. For hits the
-    share is 99.3%. The false positives are not hallucinations.
-  - All 21 relationship classes occur on both hits and false positives.
-  - A model that predicts hit vs false positive from the relationship profile reaches an AUC of 0.776 on the modules
-    it was fitted on. On a module left out it reaches 0.644.
-  - *Reading:* what separates a listed element from an unlisted one is mostly not in the code structure. That may
-    explain why two months of prompt changes moved precision so little. The notebook names the measurement that
-    would show this reading is wrong.
+- **On the 41 modules, precision is far below LAsset's and recall is higher.** The final prompt was run on all 41
+  modules by a Claude agent (3 tuning runs, 1 held-out run); its gpt-5.4 held-out runs are pending (API credits).
+  - Final prompt, Claude executor, all 41 modules (300 entries): precision 0.343, recall 0.932.
+  - LAsset's RTL-only list (the like-for-like row; my pipeline reads only RTL): precision 0.711, recall 0.753.
+    Difference, with a 95% module-bootstrap interval: precision -0.367 [-0.449, -0.270], recall +0.179 [+0.128, +0.229].
+  - On the held-out modules alone: precision 0.329, recall 0.931, against LAsset RTL-only 0.730 / 0.757.
+  - Final prompt on gpt-5.4, tuning modules only (in-sample): precision 0.406, recall 0.820.
+- **The audit trail explains why the false positives do not go down.** Over the 41 modules (886 false positives):
+  - 93.7% of false positives cite a real occurrence with a true record (99.4% for hits). They are not hallucinations;
+    49% of them cite only a clock edge, which says no more than "this is a register".
+  - All 13 relationship classes occur on both hits and false positives; 30.5% of false positives have exactly the
+    relationship profile of some hit.
+  - The profile does separate hits from false positives on modules it has not seen (leave-one-module-out AUC 0.727).
+    Rules found on the tuning modules, applied unchanged to the held-out modules, raise precision from 0.329 to 0.478,
+    better than any of 2,000 random removals of the same size. But recall falls from 0.931 to 0.640, and both stay
+    below LAsset's RTL-only list.
+  - The model lists internal state registers at 0.165 of its list against 0.037 of the reference, with precision 0.082
+    inside that role. 54% of the false positives sit in concepts where the reference lists nothing.
+  - *Reading:* part of the gap is a role preference the structure shows (the reference rarely lists internal state);
+    the rest is a choice among elements with the same role and relationships, which the code evidence does not
+    distinguish. An earlier 15-module version of this analysis said the separating differences weaken on unseen
+    modules; on 41 modules that was too strong, and the notebook says so.
+- **The two structures also describe each module.** For all 41 modules: which registers are written from an input
+  (192), which of those software can write through bus write data (116), which internal signals guard such writes (for example
+  `ctrl.lock` in the watchdog), which registers have a reset, and which internal values reach an output.
 - **On LAsset's own list, the layer is an audit trail, not a filter.** A pre-registered test on the held-out set did
   not separate LAsset's hits from its false positives: AUC 0.639, 97.5% interval 0.495 to 0.768.
 
@@ -69,7 +82,7 @@ Decisions I would point to first:
 | path | what it holds |
 |---|---|
 | `FINAL_NOTEBOOK.ipynb` | the final pipeline, its checks and its analysis (start here) |
-| `final/` | `final_pipeline.py` (the notebook's helper), `convergence.csv` and `heldout.csv` (every scored prompt version), the occurrence profiles of the 41 modules (plus the 2 controls boot_rom and fifo), the FP diagnosis and the fault report |
+| `final/` | `final_pipeline.py` (the notebook's helper); `results41.py` (scores on the 41 modules vs LAsset), `fp_trace41.py` (why the false positives stay, with outputs in `fp_trace41/`) and `module_insights.py` (module portraits, outputs in `module_insights/`), each with a self-test; `convergence.csv` and `heldout.csv` (every scored prompt version), the occurrence profiles of the 41 modules (plus the 2 controls boot_rom and fifo), the FP diagnosis and the fault report |
 | `notebooks/` | the ablation notebooks: `finetuning_assetgen.ipynb` (v1), `finetuning_assetgen_v2.ipynb` (v2), `assetgen_meta.ipynb` (meta prompts, hand arms, traced arms, diagnosis), `lasset_step1.ipynb` (occurrence profiles and relation map on the 15 tuning modules), `lasset_evidence_layer.ipynb` (the pre-registered test of the evidence layer on LAsset's lists) |
 | `logs/` | logs and registration of the v1 and v2 prompt studies: `ABLATION_LOG.md`, `ABLATION_LOG_V2.md`, `V02_*.md` |
 | `docs/` | `TIMELINE.md` (July to October), `LAYOUT.md` (the folder layout and the 2026-10-02 move), `TUNING_GUIDE.md`, `experiment_tracker.csv` (the July plan) |

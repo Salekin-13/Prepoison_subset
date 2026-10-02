@@ -33,7 +33,8 @@ was judged, not only what was built.
 · LLR `assetgen_meta/contribution_assessment/5_lasset_layer_result.md` · LED `.../contribution_assessment/1_evidence_ledger.md`
 · SKP `.../contribution_assessment/4_skeptical_review.md` · TG `docs/TUNING_GUIDE.md`
 · ESA `assetgen_meta/error_analysis_screen1.md` · RCL `.../occurrence_prompts_v3d/RULEBOOK_CHANGELOG.md`
-· S2 `step2/RULES.md` · NB-meta `notebooks/assetgen_meta.ipynb` · NB-step1 `notebooks/lasset_step1.ipynb` · GIT `<commit>`.
+· S2 `step2/RULES.md` · NB-meta `notebooks/assetgen_meta.ipynb` · NB-step1 `notebooks/lasset_step1.ipynb`
+· NB-final `FINAL_NOTEBOOK.ipynb` · GIT `<commit>`.
 
 ---
 
@@ -450,6 +451,27 @@ tied to the occurrence where it happens.
     **"audit trail only"**. The map traces every LAsset item that exists in this RTL version to its relationships
     (99% of hits and 96% of FPs have a traced use), but this evidence does not separate LAsset's hits from its false
     positives.
+
+### Results on the 41 modules and the false-positive trace, 2026-10-02 (NB-final)
+
+- **The 41-module comparison uses the Claude-executed runs of the final prompt.** OpenAI credits were still exhausted
+  (an API check returned insufficient_quota), so gpt-5.4's held-out runs stay pending. On all 41 modules (300 entries):
+  final prompt (Claude) P 0.343 / R 0.932; LAsset RTL-only P 0.711 / R 0.753; difference P -0.367 [-0.449, -0.270],
+  R +0.179 [+0.128, +0.229] (module bootstrap, 95%). The 41 RTL files are listed in `data/LASSET_41_MODULES.csv`.
+- **Definitions corrected after an independent verifier**, beside the 2026-10-02 figures above, not inside them: the
+  "21 relationship classes" included 8 element attributes (13 relationship classes; all 13 occur on both hits and
+  FPs); "FPs in concepts with no reference element" counted only each asset's first concept (counting every concept:
+  481/886, 54%, on 41 modules).
+- **KEY DECISION (withdraw a reading when more data contradicts it).** The 15-module analysis read the drop from
+  in-sample to unseen modules as "the separating differences weaken on unseen modules". With the same Claude runs,
+  the leave-one-module-out AUC is 0.629 on 15 modules and 0.727 on 41, and tuning rules beat random removal on
+  held-out (0/2000 random draws reach their precision). The reading was too strong and was withdrawn in the notebook.
+  The replacement: the structure carries signal, but using it costs recall (held-out P 0.329 -> 0.478, R 0.931 ->
+  0.640, both still below LAsset RTL-only); the rest of the gap is the reference's role preference (it rarely lists
+  internal state, which the model lists at 0.165 of its list against 0.037) and a choice among elements of the same
+  role and relationships.
+- **Module portraits from the two structures** (`final/module_insights.py`): input-written registers (192, 116 from bus
+  write data), internal write guards such as `ctrl.lock`, reset coverage and exported state, for all 41 modules.
 
 ---
 

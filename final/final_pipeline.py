@@ -280,7 +280,7 @@ def run_dirs(split: str) -> list[Path]:
 def generation_status(ns, mods: dict) -> dict:
     out = {}
     for split in ("tuning", "heldout"):
-        out[split] = [f"{d.name}: {sum((d / '_nested' / f'{m}.json').exists() for m in mods[split])}/{len(mods[split])} modules"
+        out[split] = [f"{d.name}: {sum((d / f'{m}.json').exists() and (d / '_nested' / f'{m}.json').exists() for m in mods[split])}/{len(mods[split])} modules"
                       for d in run_dirs(split)]
     return out
 
