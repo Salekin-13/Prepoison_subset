@@ -85,3 +85,29 @@ primary list is not switched to `spec_rtl` because of these numbers: that would 
 | `parsed_tuning18` | `150ec3ff1be6` |
 | `assetgen_meta/traced_inputs_v2/tuning` | `a1ccfbfdbc33` |
 | `assetgen_meta/traced_inputs_v2/heldout` | `1dd19f332725` |
+
+<!-- layout-move -->
+## 6. Pins after the layout move (amendment, 2026-10-02, after the readings above)
+
+On 2026-10-02 the repo root was regrouped into data/, runs/, src/, notebooks/ and logs/, by the author's decision
+to amend the pins for a cleaner layout. Section 5 stays exactly as registered, and the readings were taken under it.
+The rows below are the same twelve items at their new paths. Items whose sha12 equals section 5 were moved byte for
+byte. Five were edited, in path string literals only (a data/, runs/ or src/ prefix). The git tag
+`prereg-layout-before` marks the last commit in the old layout, where all section 5 rows verify.
+`python src/verify_layout_move.py` checks every row of all three pre-registrations against that tag and allows no
+change except those prefixes. `verify_pins()` keeps the last row per path, so it reads these rows.
+
+| File | sha12 |
+|---|---|
+| `assetgen_meta/lasset_layer.py` | `2f9b2d9d4c29` |
+| `assetgen_meta/fp_diagnosis.py` | `57ae13a6b0ca` |
+| `assetgen_meta/fault_reporter.py` | `2bb7b75af0e3` |
+| `assetgen_meta/trace_check.py` | `273cda6828e7` |
+| `src/eval_assets.py` | `3f8688163ebb` |
+| `data/ground_truth/manual_gt_neorv32.json` | `e5437438157d` |
+| `data/LAsset_initial_results/asset_list_neorv32_initial.json` | `44959b53e72b` |
+| `data/ground_truth/lasset_initial.json` | `647d08cfa971` |
+| `data/ground_truth/lasset_refined.json` | `27d1be4a47df` |
+| `data/parsed_tuning18` | `150ec3ff1be6` |
+| `assetgen_meta/traced_inputs_v2/tuning` | `a1ccfbfdbc33` |
+| `assetgen_meta/traced_inputs_v2/heldout` | `1dd19f332725` |
