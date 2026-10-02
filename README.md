@@ -91,6 +91,9 @@ Decisions I would point to first:
 pip install -r requirements.txt
 ```
 
+On Windows, clone into a short folder: the longest path in the repo is 146 characters, and Windows limits a full
+path to 260 unless `git config --global core.longpaths true` is set.
+
 Open `FINAL_NOTEBOOK.ipynb` and run all cells. It needs no API key and takes a few minutes. If the tree-sitter
 VHDL grammar is missing, the first cell stops and prints the one-line command that fetches it.
 
