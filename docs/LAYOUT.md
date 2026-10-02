@@ -83,7 +83,7 @@ were compared with timings masked.
 Record notebooks and scripts expect the old layout. Run them from a worktree of the tag, next to this clone:
 
 ```bash
-git worktree add ../prepoison-old prereg-layout-before
+git worktree add ../rtl-asset-audit-trail-old prereg-layout-before
 ```
 
 These do not run in the new layout:

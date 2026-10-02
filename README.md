@@ -143,7 +143,7 @@ prefixes. [`docs/LAYOUT.md`](docs/LAYOUT.md) explains this.
   generation cells among them need an API key.
 - The other notebooks are records: their saved outputs show the results, but the run folders and caches they read
   are not published. Their numbers are in the logs. To re-run record code, use a worktree of the tag
-  (`git worktree add ../prepoison-old prereg-layout-before`), where the old layout is intact.
+  (`git worktree add ../rtl-asset-audit-trail-old prereg-layout-before`), where the old layout is intact.
 
 `.gitattributes` keeps every file byte for byte (`* -text`), because the pre-registrations pin files by a hash of
 their exact bytes.
