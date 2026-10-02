@@ -190,8 +190,12 @@ Different executors and scorer versions; read as a trajectory, not as like-for-l
     when an arm only emits less and rises when it removes false positives cleanly, so F1 became the second headline
     metric (REG header; AL2 §8 R-V2-01(b)).
 - **Measured headroom before running anything** (AL2 §6). Deleting every concept that produced no true positive, an
-  oracle, tops out at P 0.362. So about two-thirds of FPs sit inside concepts that also produced a true positive.
-  Learned: generation-stage prompting alone cannot reach 0.737; the paper gets there with its refinement stage.
+  oracle, tops out at P 0.362. So 57% of FPs (173.4 of 305.7 per run, AL2 §6 table) sit inside concepts that also
+  produced a true positive; the log's own sentence says "about two-thirds", which its table does not support.
+  Learned at the time: generation-stage prompting alone cannot reach 0.737; the paper gets there with its refinement
+  stage. **Corrected 2026-10-03:** that inference was wrong. LAsset's spec+RTL list scores P 0.737 *before*
+  refinement and 0.800 after on the tuning modules (held-out 0.734 -> 0.791), so its precision comes mostly from its
+  generation step (`assetgen_meta/ASSET_DEFINITION.md`:15, 78-82).
 - **v2 baseline** (RTL only, plus three corrections D, L, N): P 0.251, R 0.925; paired precision +0.024
   [+0.007, +0.042] (AL2 §5). The registered prediction was "about the same as before", so it was recorded as wrong.
   Correction D (the prompt no longer refers to inputs that are not sent) cut ungrounded names 187 → 106. Correction N
@@ -488,6 +492,19 @@ tied to the occurrence where it happens.
 - **Module portraits from the two structures** (`final/module_insights.py`): registers written from an input (192;
   116 from a write-data port), internal write guards such as `ctrl.lock`, reset coverage and exported state, for all
   41 modules.
+- **The adopted code levers on gpt-5.4 (2026-10-03; not pre-registered for this model).** The frozen MV+NONE+BF
+  (`assetgen_meta/post_levers.py`, unchanged) on the final gpt-5.4 runs, as a separately labelled row (FINAL_NOTEBOOK
+  section 6; `final/levers41.py`, whose self-test first reproduces the 17 recorded tuning stacks, the stored held-out
+  reading and the gpt-5.4 base rows). Held-out: P 0.394 -> 0.405, R 0.884 -> 0.847 against MV alone; precision
+  +0.011 [-0.004, +0.029], recall -0.037 [-0.063, -0.015] (module bootstrap, 10,000 resamples, seed 0). The
+  pre-registered rule R1 would not pass for this model: recall clears 0.83 (0.847), but the precision interval includes
+  zero, and a gain the size of gpt-5-mini's +0.049 lies outside it. The headline rows stay without levers. gpt-5.4
+  writes a code line out for far fewer listings (held-out 18.0% of 1,281 listings over 3 runs; gpt-5-mini 74.7% of
+  1,374), so NONE rests mostly on the map's check of each label. A hand check found a weakness of the frozen NONE rule:
+  it confirms "stores" only for map storage class "edge", so a clocked register that also has a constant assignment
+  (storage "mixed", e.g. the hard-wired x0 entry `reg_file(0)`, `data/RTL_heldout/neorv32_cpu_regfile.vhd`:117) is
+  dropped. On gpt-5.4 held-out, 51 of NONE's 97 drops are such "stores" elements, and 16 of its 56 "stores" drops are
+  reference hits. The rule stays as frozen; a changed rule would be a new, untested lever.
 
 ---
 
