@@ -1,0 +1,286 @@
+{
+  "module name": "neorv32_gpio",
+  "module purpose": "neorv32_gpio is a memory-mapped GPIO block that samples gpio_i, stores bus-written output and interrupt-control registers, drives gpio_o, detects programmable GPIO interrupt conditions, latches pending interrupts, and reports a combined cpu_irq_o.",
+  "use-case flows": [
+    {
+      "flow": "configure",
+      "value": "GPIO output register bits written from the bus and driven onto gpio_o",
+      "lines": [
+        71,
+        72,
+        73,
+        74,
+        109,
+        111,
+        112
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "GPIO input samples captured and delayed for edge detection",
+      "lines": [
+        99,
+        100,
+        101,
+        102,
+        103,
+        104
+      ]
+    },
+    {
+      "flow": "configure",
+      "value": "per-pin interrupt trigger mode and enable masks written into irq_typ, irq_pol, and irq_en",
+      "lines": [
+        71,
+        72,
+        73,
+        75,
+        76,
+        77,
+        120,
+        123,
+        124,
+        125,
+        126,
+        127,
+        128,
+        141
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "per-pin interrupt clear/retain mask loaded into irq_clrn and applied when updating pending interrupts",
+      "lines": [
+        69,
+        71,
+        72,
+        73,
+        78,
+        140,
+        141
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "per-pin interrupt trigger decision computed from sampled inputs and programmed trigger mode",
+      "lines": [
+        120,
+        123,
+        124,
+        125,
+        126,
+        127,
+        128,
+        129
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "pending GPIO interrupts reduced to the cpu_irq_o report output",
+      "lines": [
+        140,
+        141,
+        142
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "sampled inputs, output register, interrupt configuration, and pending bits returned on bus reads",
+      "lines": [
+        82,
+        83,
+        84,
+        85,
+        86,
+        87,
+        88
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "GPIO outputs, interrupt-control registers, sampled inputs, pending state, and cpu_irq_o cleared when rstn_i = '0'",
+      "lines": [
+        57,
+        59,
+        60,
+        61,
+        62,
+        63,
+        99,
+        100,
+        101,
+        137,
+        138,
+        139
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Sampled GPIO input state",
+      "security objective": "Integrity",
+      "reasoning": "The input stage captures `gpio_i(GPIO_NUM-1 downto 0)` into `port_in` at line 103, a read of `addr_in_c` returns `port_in` at line 83, and the trigger logic consumes `port_in` together with the delayed copy `port_in2` at lines 120 and 125-128. Integrity is established because corrupting the sampled input state makes both the reported input value and interrupt-trigger evaluation wrong. Availability is also established because reset initializes the sample registers at lines 99-101 and each rising edge reloads them at lines 102-104. `port_in2` is a one-cycle copy of `port_in` (`COPIES` at line 104), so `port_in` is kept as the realization point.",
+      "related structural assets": [
+        {
+          "asset rtl": "port_in",
+          "entity": "neorv32_gpio",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "gpio_i",
+          "entity": "neorv32_gpio",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "port_in"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "GPIO output register value",
+      "security objective": "Integrity",
+      "reasoning": "A write to `addr_out_c` stores bus data into `port_out` at line 74, the output stage drives `gpio_o(GPIO_NUM-1 downto 0)` from `port_out` at line 112 after clearing the unused bits at line 111, and a read of `addr_out_c` returns `port_out` at line 84. Integrity is established because the externally driven GPIO value and its readback must match the stored register contents. Availability is also established because reset clears the register at line 59 and the output stage continuously drives it at lines 109-112. The bus request and response ports are transport records, so the bus write and read endpoints are not listed as structural assets.",
+      "related structural assets": [
+        {
+          "asset rtl": "port_out",
+          "entity": "neorv32_gpio",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "gpio_o",
+          "entity": "neorv32_gpio",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "COPIES",
+            "partner": "port_out"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Per-pin interrupt trigger mode selection",
+      "security objective": "Integrity",
+      "reasoning": "Writes to `addr_tt_c` and `addr_tp_c` store `irq_typ` and `irq_pol` at lines 75 and 76. The trigger generator then forms `sel_v := irq_typ(i) & irq_pol(i)` at line 123, and the `case` at lines 124-129 chooses which sampled-input condition drives `irq_trig(i)`. Integrity is established because corrupting either stored mode bit changes which condition becomes a trigger. Availability is also established because both registers are held between writes and are reset at lines 60-61. The map does not record the `sel_v` variable/case dependence from lines 123-124, so those RTL lines provide the local-use evidence.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_typ",
+          "entity": "neorv32_gpio",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "irq_pol",
+          "entity": "neorv32_gpio",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Per-pin interrupt enable mask",
+      "security objective": "Integrity",
+      "reasoning": "A write to `addr_ie_c` stores `irq_en` at line 77, and the pending-state update uses it in `irq_pend <= irq_en and ((irq_pend and irq_clrn) or irq_trig);` at line 141; a read of `addr_ie_c` returns it at line 87. Integrity is established because wrong enable bits incorrectly suppress or admit pending interrupts. Availability is also established because the mask is held until rewritten or reset, with reset at line 62. The bus interface is transport and is not listed as the setting or readout reference.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_en",
+          "entity": "neorv32_gpio",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Per-pin interrupt clear/retain mask for pending bits",
+      "security objective": "Integrity",
+      "reasoning": "`irq_clrn` is forced to all ones each cycle at line 69 and can be overwritten by a write to `addr_ip_c` at line 78; line 141 uses `irq_pend and irq_clrn` when computing the next pending state. Integrity is established because corrupting this mask clears or preserves the wrong pending bits. Availability is also established because the mask is registered and consumed by the pending-state update while reset is inactive; reset initializes it at line 63. The bus write endpoint is inside a transport record and is therefore not reported.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_clrn",
+          "entity": "neorv32_gpio",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Per-pin interrupt trigger decision",
+      "security objective": "Integrity",
+      "reasoning": "For each pin, `irq_trig(i)` is computed from sampled inputs and the programmed mode: lines 125-128 assign it from level or edge expressions chosen by `sel_v` from line 123 and the `case` at line 124, and line 141 ORs `irq_trig` into `irq_pend`. Integrity is established because a wrong trigger decision directly creates or misses a pending interrupt. Availability is also established under the RTL-visible input and mode conditions listed at lines 125-128. The map captures the dependence on `port_in` and `port_in2` but misses the selection dependence created by `sel_v`/`case` at lines 123-124.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_trig",
+          "entity": "neorv32_gpio",
+          "realization": "computes",
+          "occurrence": 4,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "port_in"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Pending GPIO interrupt state",
+      "security objective": "Integrity",
+      "reasoning": "`irq_pend` is reset to zero at line 138 and updated self-referentially at line 141 from `irq_en`, `irq_clrn`, the previous `irq_pend`, and `irq_trig`; a read of `addr_ip_c` returns it at line 88 and `cpu_irq_o` is derived from it at line 142. Integrity is established because wrong pending bits make both the reported pending status and the aggregated interrupt output incorrect. Availability is also established because line 141 preserves pending bits until they are cleared by the implemented update relation or reset.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_pend",
+          "entity": "neorv32_gpio",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Aggregated CPU interrupt request",
+      "security objective": "Integrity",
+      "reasoning": "`cpu_irq_o` is cleared on reset at line 139 and updated at line 142 from `or_reduce_f(irq_pend)`. Integrity is established because the module's interrupt report to the CPU must match the registered reduction of `irq_pend` defined at line 142. Availability is also established because the report is registered on each rising edge when reset is inactive.",
+      "related structural assets": [
+        {
+          "asset rtl": "cpu_irq_o",
+          "entity": "neorv32_gpio",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "irq_pend"
+          }
+        }
+      ]
+    }
+  ]
+}

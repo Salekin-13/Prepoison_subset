@@ -64,8 +64,10 @@ were edited in path strings only: `src/eval_assets.py`, `assetgen_meta/meta_tool
 Each notebook ran in a fresh clone of the new layout and in a fresh clone of the tag, with no API key. Cell outputs
 were compared with timings masked.
 
-- `FINAL_NOTEBOOK.ipynb`: 26 of 26 code cells give the same text output in both layouts and as committed, and both
-  figures are identical. The run changes no tracked file.
+- `FINAL_NOTEBOOK.ipynb` as it was at the layout move (commit c696c76): 26 of 26 code cells gave the same text output
+  in both layouts and as committed, and both figures were identical; the run changed no tracked file. Later versions
+  add sections that use modules the tag does not have, so they are checked by re-running in a fresh clone of the new
+  layout only.
 - `notebooks/lasset_evidence_layer.ipynb` (kernel started in `notebooks/`): 5 of 5 code cells give the same output in
   both layouts and as committed. The pin check inside it passes.
 - `notebooks/assetgen_meta.ipynb` cells 1, 64, 65, 66 and 68: the same in both layouts, except one label in cell 68,

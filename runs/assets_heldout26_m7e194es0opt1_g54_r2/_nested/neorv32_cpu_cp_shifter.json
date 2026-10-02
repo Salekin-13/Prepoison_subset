@@ -1,0 +1,241 @@
+{
+  "module name": "neorv32_cpu_cp_shifter",
+  "module purpose": "This module recognizes a supported shift operation from ctrl_i, shifts rs1_i by shamt_i either iteratively or with a barrel network depending on FAST_SHIFT_EN, and drives the shifted word on res_o with a validity indication on valid_o.",
+  "use-case flows": [
+    {
+      "flow": "start",
+      "value": "recognized shift-operation request that starts or qualifies the shifter datapath",
+      "lines": [
+        65,
+        66,
+        67,
+        68,
+        87,
+        88,
+        93,
+        94,
+        95,
+        122,
+        144
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "serial shift state update: load operand and count, then decrement the count and shift the data register until completion",
+      "lines": [
+        86,
+        93,
+        94,
+        95,
+        96,
+        97,
+        98,
+        99,
+        101,
+        108,
+        109
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "barrel-shift computation: form the initial word, derive sign fill, apply shamt_i-selected stages, and buffer the result",
+      "lines": [
+        122,
+        123,
+        128,
+        129,
+        138,
+        143
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "result word and result-valid indication driven from serial completion or from valid_cmd in the fast build",
+      "lines": [
+        110,
+        111,
+        143,
+        144
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "serial shifter state and barrel result buffer cleared to zero when rstn_i is low",
+      "lines": [
+        79,
+        80,
+        81,
+        82,
+        83,
+        135,
+        136
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Shift execution state -- recognized operation, remaining serial work, and result-valid status",
+      "security objective": "Integrity",
+      "reasoning": "The start and report flows depend on a specific execution-status state machine. valid_cmd is computed from ctrl_i fields at lines 65-68; in the serial build, valid_cmd starts shifter.busy and loads state at lines 87-95, shifter.cnt drives shifter.run and shifter.done at lines 108-109, shifter.done_ff captures completion at line 86, and valid_o reports `shifter.busy and shifter.done` at line 110. In the fast build, valid_o copies valid_cmd at line 144. Integrity is established because corrupting this state can start unsupported work, stop it early or late, or misreport validity to the consumer of valid_o. Availability is also established under the RTL-visible conditions: once a recognized command is present, the serial countdown or the fast direct-valid path produces the reporting state defined by these lines. The flow graph's `not reached` entries for valid_cmd and valid_o conflict with the element records; the records at lines 65 and 144 show the implemented path.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_cp_shifter",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATES",
+            "partner": "valid_cmd"
+          }
+        },
+        {
+          "asset rtl": "shamt_i",
+          "entity": "neorv32_cpu_cp_shifter",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "shifter.cnt"
+          }
+        },
+        {
+          "asset rtl": "valid_cmd",
+          "entity": "neorv32_cpu_cp_shifter",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "ctrl_i.alu_cp_alu"
+          }
+        },
+        {
+          "asset rtl": "shifter.busy",
+          "entity": "neorv32_cpu_cp_shifter",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "shifter.cnt",
+          "entity": "neorv32_cpu_cp_shifter",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "shifter.run",
+          "entity": "neorv32_cpu_cp_shifter",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "shifter.cnt"
+          }
+        },
+        {
+          "asset rtl": "shifter.done",
+          "entity": "neorv32_cpu_cp_shifter",
+          "realization": "computes",
+          "occurrence": 4,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "shifter.cnt"
+          }
+        },
+        {
+          "asset rtl": "shifter.done_ff",
+          "entity": "neorv32_cpu_cp_shifter",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "valid_o",
+          "entity": "neorv32_cpu_cp_shifter",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "shifter.busy"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Shifted result word -- the transformed data value driven on res_o",
+      "security objective": "Integrity",
+      "reasoning": "The operate and report flows define a specific shifted data word. In the serial build, shifter.sreg loads rs1_i at line 95 and is updated by left shift or right/arithmetic shift at lines 98-101; res_o is then released from shifter.sreg when shifter.done_ff is high at line 111. In the fast build, bs_level(0) is formed from rs1_i or bit_rev_f(rs1_i) at line 122, bs_sign is derived from rs1_i(XLEN-1), ctrl_i.ir_funct12(10), and valid_cmd at line 123, shamt_i selects the barrel stages at lines 128-129, bs_result buffers the final barrel level at line 138, and res_o drives bit_rev_f(bs_result) or bs_result at line 143. Integrity is established because these RTL relations define the word delivered through res_o; corrupting the operand, amount, mode, or stored result state makes that output incorrect. Availability is established only under the RTL-visible reporting conditions: the serial build releases the word when shifter.done_ff = '1' (line 111), while the fast build continuously drives res_o from the buffered barrel result (line 143).",
+      "related structural assets": [
+        {
+          "asset rtl": "rs1_i",
+          "entity": "neorv32_cpu_cp_shifter",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "shifter.sreg"
+          }
+        },
+        {
+          "asset rtl": "shamt_i",
+          "entity": "neorv32_cpu_cp_shifter",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATES",
+            "partner": "bs_level"
+          }
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_cp_shifter",
+          "realization": "sets",
+          "occurrence": 14,
+          "edge": {
+            "type": "GATES",
+            "partner": "res_o"
+          }
+        },
+        {
+          "asset rtl": "shifter.sreg",
+          "entity": "neorv32_cpu_cp_shifter",
+          "realization": "stores",
+          "occurrence": 7,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "bs_result",
+          "entity": "neorv32_cpu_cp_shifter",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "res_o",
+          "entity": "neorv32_cpu_cp_shifter",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "bs_result"
+          }
+        }
+      ]
+    }
+  ]
+}

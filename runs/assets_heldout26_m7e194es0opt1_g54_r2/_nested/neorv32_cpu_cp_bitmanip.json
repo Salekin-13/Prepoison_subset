@@ -1,0 +1,417 @@
+{
+  "module name": "neorv32_cpu_cp_bitmanip",
+  "module purpose": "This module decodes selected ctrl_i instruction fields and alu_cp_alu to recognize enabled bit-manipulation operations, captures rs1_i, rs2_i, shamt_i and cmp_i, executes the requested function with direct combinational logic or multi-cycle shifter/clmul state, and registers the result on res_o with a matching valid_o completion flag.",
+  "use-case flows": [
+    {
+      "flow": "start",
+      "value": "decode and accept an enabled bit-manipulation command, then launch the serial shifter, launch carry-less multiply, or complete immediately",
+      "lines": [
+        132,
+        142,
+        146,
+        150,
+        156,
+        161,
+        164,
+        199,
+        200,
+        201,
+        202,
+        203,
+        204,
+        205,
+        207,
+        208
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "capture operand, shift-amount and comparison context for the current operation",
+      "lines": [
+        187,
+        188,
+        189,
+        190,
+        191
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "update shifter/clmul working state and compute per-operation result candidates",
+      "lines": [
+        243,
+        245,
+        247,
+        253,
+        255,
+        257,
+        259,
+        266,
+        274,
+        281,
+        298,
+        301,
+        304,
+        305,
+        307,
+        310,
+        313,
+        314,
+        334,
+        343,
+        359,
+        360,
+        362,
+        364,
+        366,
+        368,
+        389,
+        394,
+        398,
+        402,
+        405,
+        410,
+        414,
+        426,
+        429,
+        431,
+        436,
+        447,
+        452,
+        456,
+        461,
+        480
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "register the selected result and report completion",
+      "lines": [
+        207,
+        219,
+        491,
+        492,
+        493,
+        494,
+        495,
+        496,
+        502
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "clear controller state, captured context, shifter/clmul state, and result output when rstn_i is low",
+      "lines": [
+        171,
+        172,
+        173,
+        174,
+        175,
+        176,
+        177,
+        178,
+        179,
+        235,
+        236,
+        237,
+        238,
+        239,
+        354,
+        355,
+        356,
+        487,
+        488
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Bit-manipulation command decode and unit-start decision",
+      "security objective": "Integrity",
+      "reasoning": "The start flow computes one-hot cmd bits from ctrl_i.ir_opcode, ctrl_i.ir_funct12 and ctrl_i.ir_funct3 under the EN_Z* build options at lines 132-161, then qualifies the decode with ctrl_i.alu_cp_alu in valid_cmd at line 164. In S_IDLE the controller uses that decision to pulse shifter.start for serialized cz/cpop/rot at lines 200-202, pulse clmul.start at lines 203-205, or complete immediately at lines 206-208. Integrity is established because corrupting this decision changes which function runs or whether a multi-cycle unit is launched; availability is also established because a matching enabled command causes one of those start or immediate-complete actions. Although the flow graph lists cmd and valid_cmd as not reached, their own GATED_BY records and these RTL lines establish the decode and acceptance logic.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATES",
+            "partner": "cmd"
+          }
+        },
+        {
+          "asset rtl": "cmd",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "ctrl_i.ir_funct3"
+          }
+        },
+        {
+          "asset rtl": "valid_cmd",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "ctrl_i.alu_cp_alu"
+          }
+        },
+        {
+          "asset rtl": "shifter.start",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "clmul.start",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Latched execution context and iterative working state for the current operation",
+      "security objective": "Integrity",
+      "reasoning": "When ctrl_i.alu_cp_alu is high, the controller captures cmp_i, rs1_i, rs2_i and shamt_i at lines 187-191. Later cycles use the held context and working state: rs1_reg, sha_reg and less_reg feed result logic at lines 301, 310, 313 and 402; shifter.sreg, shifter.cnt, shifter.bcnt and shifter.cnt_max are initialized and updated for shift/count operations at lines 243-259 and 281, or computed in the EN_FAST_SHIFT build at lines 298-314; clmul.cnt and clmul.res are initialized and updated for carry-less multiply at lines 359-368 when EN_ZBKC. Integrity is established because later result formation reads these held values at lines 394-414 and 456; availability is established because serialized operations depend on them remaining available until completion. The internal rs2_reg latch is not listed because its records show only forwarding into internal computation stages, so rs2_i remains the setting reference.",
+      "related structural assets": [
+        {
+          "asset rtl": "cmp_i",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "less_reg"
+          }
+        },
+        {
+          "asset rtl": "rs1_i",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "rs1_reg"
+          }
+        },
+        {
+          "asset rtl": "rs2_i",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "rs2_reg"
+          }
+        },
+        {
+          "asset rtl": "shamt_i",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "sha_reg"
+          }
+        },
+        {
+          "asset rtl": "rs1_reg",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "sha_reg",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "less_reg",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "shifter.sreg",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "shifter.cnt",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "shifter.bcnt",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "shifter.cnt_max",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores",
+          "occurrence": 5,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "clmul.cnt",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "clmul.res",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Computed bit-manipulation result value",
+      "security objective": "Integrity",
+      "reasoning": "The XLEN-wide candidate results are computed in res_int at lines 389-456 from the captured execution context and working state. Only the decoded enabled operation is passed into res_out at lines 461-480, and output_gate registers the ORed selected value into res_o when valid is high at lines 491-496. Integrity is established because the consumer at res_o must receive exactly the value defined by these equations; availability is established for the completion cycle guarded by valid. res_out is not listed because it only gates and forwards already-computed candidates from res_int.",
+      "related structural assets": [
+        {
+          "asset rtl": "res_int",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "computes",
+          "occurrence": 9,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "rs1_reg"
+          }
+        },
+        {
+          "asset rtl": "res_o",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "exit port",
+          "occurrence": 4,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "res_out"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Operation-completion indication",
+      "security objective": "Integrity",
+      "reasoning": "The report flow raises valid immediately for single-cycle commands at line 207 or, for multi-cycle execution, when the busy-state exit condition holds at lines 218-220; valid_o exports that decision at line 502. ctrl_state stores S_IDLE, S_START and S_BUSY and selects the sequencing branches at lines 195, 202, 205, 214 and 220. shifter.run supplies the serialized shift/count busy decision from the stop conditions at lines 274-285 when not EN_FAST_SHIFT, while clmul.run is derived from clmul.cnt at line 374 when EN_ZBKC; ctrl_i.cpu_trap can force immediate completion at line 218. Integrity is established because downstream logic must only observe completion under these RTL-visible conditions; availability is established because the module raises valid in the immediate-complete or done/trap cases implemented here.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "sets",
+          "occurrence": 66,
+          "edge": {
+            "type": "GATES",
+            "partner": "valid"
+          }
+        },
+        {
+          "asset rtl": "ctrl_state",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores",
+          "occurrence": 8,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "shifter.run",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "computes",
+          "occurrence": 6,
+          "edge": {
+            "type": "CONSTRAINED_BY",
+            "partner": "shifter.cnt"
+          }
+        },
+        {
+          "asset rtl": "clmul.run",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "computes",
+          "occurrence": 4,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "clmul.cnt"
+          }
+        },
+        {
+          "asset rtl": "valid",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores",
+          "occurrence": 5,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "valid_o",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "valid"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,282 @@
+{
+  "module name": "neorv32_xbus",
+  "module purpose": "This module bridges a buffered request/response record interface to discrete xbus signals. It tracks pending and locked transaction state, optionally times out a stalled transfer, drives the xbus request outputs, and forms the returned response data, acknowledge, and error signals.",
+  "use-case flows": [
+    {
+      "flow": "start",
+      "value": "capture a new buffered request as pending and latch whether it is locked",
+      "lines": [
+        87,
+        88,
+        89
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "drive xbus request address, data, control, and tag outputs from the buffered request",
+      "lines": [
+        141,
+        142,
+        143,
+        144,
+        145,
+        149,
+        150,
+        151
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "keep the xbus cycle active while a transaction remains pending",
+      "lines": [
+        89,
+        92,
+        93,
+        96,
+        97,
+        146
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "count down the timeout for a pending transaction and assert timeout when the count expires",
+      "lines": [
+        108,
+        115,
+        116,
+        117,
+        119,
+        120,
+        122,
+        129,
+        131,
+        132
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "return xbus input data and completion/error status into the response path",
+      "lines": [
+        73,
+        75,
+        154,
+        155,
+        156
+      ]
+    },
+    {
+      "flow": "lock",
+      "value": "hold a pending transaction under the locked-release rule until timeout or lock deassertion",
+      "lines": [
+        88,
+        91,
+        95,
+        96,
+        97
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "clear locked state, pending state, timeout counter, and timeout flag when rstn_i is low",
+      "lines": [
+        83,
+        84,
+        85,
+        111,
+        112,
+        113
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Outgoing xbus command fields \u2014 the address, data, and control values presented for the current external request",
+      "security objective": "Integrity",
+      "reasoning": "Lines 141-145 drive xbus_adr_o, xbus_dat_o, xbus_we_o, xbus_sel_o, and xbus_stb_o from the buffered request signal bus_req. The operate flow depends on the external bus consumer receiving exactly the values defined on those lines, so Integrity is established; Availability is the conditional delivery of those values while bus_req is driven from reg_stage_inst at line 74. The request records bus_req_i and bus_req are transport/carrying structures, so the scalar/vector xbus outputs are the eligible structural exits.",
+      "related structural assets": [
+        {
+          "asset rtl": "xbus_adr_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "bus_req.addr"
+          }
+        },
+        {
+          "asset rtl": "xbus_dat_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "bus_req.data"
+          }
+        },
+        {
+          "asset rtl": "xbus_we_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "bus_req.rw"
+          }
+        },
+        {
+          "asset rtl": "xbus_sel_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "bus_req.ben"
+          }
+        },
+        {
+          "asset rtl": "xbus_stb_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "bus_req.stb"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Outgoing xbus request tag \u2014 the tag bits derived from source and privilege/debug state",
+      "security objective": "Integrity",
+      "reasoning": "The tag output is formed explicitly in lines 149-151: xbus_tag_o(2) copies bus_req.src, xbus_tag_o(1) is tied to '0', and xbus_tag_o(0) is computed as bus_req.priv or bus_req.debug. The external bus consumer therefore depends on receiving exactly the tag bits defined by these assignments, establishing Integrity; Availability is continuous while bus_req is present.",
+      "related structural assets": [
+        {
+          "asset rtl": "xbus_tag_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port",
+          "occurrence": 4,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "bus_req.priv"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Outstanding transaction state \u2014 whether an xbus transaction is still pending and the cycle must remain active",
+      "security objective": "Integrity",
+      "reasoning": "pending is set from bus_req.stb at line 89 when no transaction is active, and it is only cleared under the completion/timeout rules in lines 92-97. That stored state drives `xbus_cyc_o <= bus_req.stb or pending` at line 146 and gates response data and status generation at lines 154-156. The operate and report flows therefore depend on pending being correct, so Integrity is established; Availability is the requirement that once set, pending is preserved until one of the implemented clear conditions occurs.",
+      "related structural assets": [
+        {
+          "asset rtl": "pending",
+          "entity": "neorv32_xbus",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "xbus_cyc_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "pending"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Locked-transaction retention state \u2014 whether the current pending transfer follows the locked release rule",
+      "security objective": "Integrity",
+      "reasoning": "When `pending = '0'`, line 88 captures `bus_req.stb and bus_req.lock` into locked. Line 91 then selects whether pending follows the non-locked clear rule of lines 92-93 or the locked clear rule of lines 96-97. Corrupting locked changes the implemented release behavior of the current transaction, establishing Integrity; Availability is the need to preserve this latched decision until the release path uses it.",
+      "related structural assets": [
+        {
+          "asset rtl": "locked",
+          "entity": "neorv32_xbus",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Timeout state \u2014 the countdown and expiry decision that terminates a stalled pending transaction",
+      "security objective": "Integrity",
+      "reasoning": "With `TIMEOUT_VAL /= 0` (lines 108-126), timecnt reloads from timeout_c at line 116 when `pending = '0'`, decrements at line 120 while pending remains high, and timeout is asserted at line 122 when `or_reduce_f(timecnt)` is false. timeout then contributes to pending release in lines 92 and 96 and to response status in lines 155 and 156. With `TIMEOUT_VAL = 0`, lines 129-132 tie timecnt and timeout to zero, so this concept is disabled in that build. Integrity is established for enabled builds, and Availability is the conditional production of timeout when a pending transaction outlasts the configured count.",
+      "related structural assets": [
+        {
+          "asset rtl": "timecnt",
+          "entity": "neorv32_xbus",
+          "realization": "stores",
+          "occurrence": 5,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "timeout",
+          "entity": "neorv32_xbus",
+          "realization": "stores",
+          "occurrence": 6,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Response data value accepted from xbus for the upstream response path",
+      "security objective": "Integrity",
+      "reasoning": "Line 154 assigns `bus_rsp.data <= xbus_dat_i when (pending = '1') else (others => '0')`. That internal response record is then connected into reg_stage_inst at line 75 and forwarded toward bus_rsp_o at line 73. Under the boundary-integrity assumption, the response path depends on receiving exactly the input value defined by line 154 when the condition holds, so Integrity is established; Availability is conditional on `pending = '1'`. Because bus_rsp and bus_rsp_o are transport records, the plain input port xbus_dat_i is the eligible structural reference.",
+      "related structural assets": [
+        {
+          "asset rtl": "xbus_dat_i",
+          "entity": "neorv32_xbus",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "bus_rsp.data"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Response completion/error status accepted from xbus for the upstream response path",
+      "security objective": "Integrity",
+      "reasoning": "Line 155 sets `bus_rsp.ack` from `pending and (timeout or xbus_err_i or xbus_ack_i)`, and line 156 sets `bus_rsp.err` from `pending and (timeout or xbus_err_i)`. That response record then enters reg_stage_inst at line 75 and is forwarded toward bus_rsp_o at line 73. The report flow depends on these status results matching the stated conditions, so Integrity is established; Availability is conditional on `pending = '1'`. Because bus_rsp and bus_rsp_o are transport records, the plain status inputs xbus_ack_i and xbus_err_i are the eligible structural references; timeout's contributing decision is reported separately as the timeout-state concept.",
+      "related structural assets": [
+        {
+          "asset rtl": "xbus_ack_i",
+          "entity": "neorv32_xbus",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "bus_rsp.ack"
+          }
+        },
+        {
+          "asset rtl": "xbus_err_i",
+          "entity": "neorv32_xbus",
+          "realization": "sets",
+          "occurrence": 4,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "bus_rsp.err"
+          }
+        }
+      ]
+    }
+  ]
+}

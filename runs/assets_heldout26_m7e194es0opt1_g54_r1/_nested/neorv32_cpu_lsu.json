@@ -1,0 +1,379 @@
+{
+  "module name": "neorv32_cpu_lsu",
+  "module purpose": "neorv32_cpu_lsu captures an access address and request controls from ctrl_i, addr_i and wdata_i, formats an external data-bus request, tracks pending and lock-related state, and aligns returned bus data into rdata_o. It also exports the held address on mar_o and reports wait and error status on wait_o and err_o.",
+  "use-case flows": [
+    {
+      "flow": "start",
+      "value": "outstanding access state capture and qualified request strobe generation",
+      "lines": [
+        189,
+        191,
+        192,
+        193,
+        194,
+        209
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "held access address and alignment decision derived from addr_i and ctrl_i.ir_funct3",
+      "lines": [
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        67,
+        68
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "request write payload, byte-enable mask, request control bits, and decoded operation code for the external data-bus request",
+      "lines": [
+        84,
+        86,
+        87,
+        88,
+        89,
+        90,
+        92,
+        94,
+        95,
+        96,
+        97,
+        98,
+        100,
+        101,
+        103,
+        104,
+        114,
+        117,
+        119,
+        120,
+        121,
+        122,
+        123,
+        124,
+        125,
+        126,
+        127,
+        128,
+        129,
+        130
+      ]
+    },
+    {
+      "flow": "lock",
+      "value": "held lock indication set for the selected request condition and cleared when no access remains pending",
+      "lines": [
+        141,
+        142,
+        143,
+        144,
+        145
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "aligned and optionally sign-extended response data returned on rdata_o while an access is pending",
+      "lines": [
+        157,
+        158,
+        159,
+        160,
+        162,
+        163,
+        164,
+        165,
+        166,
+        168,
+        169,
+        170,
+        172,
+        175
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "wait indication and four-bit access error status",
+      "lines": [
+        200,
+        203,
+        204,
+        205,
+        206
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "held address, alignment state, request fields, lock, read-data register, pending state and latched fault state cleared",
+      "lines": [
+        51,
+        52,
+        53,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        82,
+        139,
+        140,
+        155,
+        156,
+        186,
+        187,
+        188
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Held access address",
+      "security objective": "Integrity",
+      "reasoning": "The operate flow stores the incoming address with `mar <= addr_i;` when `ctrl_i.lsu_mo_we = '1'` (line 56), then drives it to `dbus_req_o.addr` and `mar_o` (lines 67-68). The same held address is later used to choose which response byte or halfword is returned on `rdata_o` (lines 162-172). Integrity is established because corrupting this value changes both the exported address and the response-data slice selection; availability is established because the value is held between capture and later use.",
+      "related structural assets": [
+        {
+          "asset rtl": "addr_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "mar"
+          }
+        },
+        {
+          "asset rtl": "mar",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "mar_o",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "mar"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Alignment-check result for the held access",
+      "security objective": "Integrity",
+      "reasoning": "The operate flow computes and stores `misaligned` from `ctrl_i.ir_funct3(1 downto 0)` and low address bits at lines 57-60. This decision suppresses request strobing at line 209 and raises misalignment error outputs at lines 203 and 205. Integrity is established because both request issue behavior and misalignment reporting depend on this stored decision; availability is established because the value is retained until those uses.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "SELECTS",
+            "partner": "misaligned"
+          }
+        },
+        {
+          "asset rtl": "addr_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets",
+          "occurrence": 4,
+          "edge": {
+            "type": "GATES",
+            "partner": "misaligned"
+          }
+        },
+        {
+          "asset rtl": "misaligned",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "stores",
+          "occurrence": 5,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Outstanding-request state",
+      "security objective": "Integrity",
+      "reasoning": "The start flow captures an outstanding access by copying `ctrl_i.lsu_req` into `pending` when `pending = '0'` (line 192), and clears it on `dbus_rsp_i.ack = '1'` or `ctrl_i.cpu_trap = '1'` (lines 193-194). This state gates read-data capture (line 159), error reporting (lines 203-206), and lock release (line 144). Integrity is established because these flows depend on whether an access is still outstanding; availability is established because the state is held until the RTL-visible clear conditions occur.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets",
+          "occurrence": 23,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "pending"
+          }
+        },
+        {
+          "asset rtl": "pending",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "stores",
+          "occurrence": 6,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Decoded 4-bit operation code carried on dbus_req_o.amoop",
+      "security objective": "Integrity",
+      "reasoning": "The operate flow decodes `ctrl_i.ir_funct12(11 downto 7)` by case arms at lines 119-130 into `amo_cmd`, then captures that value into `dbus_req_o.amoop` at line 90. Integrity is established because the external consumer receives exactly the decoded 4-bit code defined by those case arms. `dbus_req_o.amoop` is a field of a transport record and is excluded, so the surviving structural references are the consumed input and the internal decode signal.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets",
+          "occurrence": 12,
+          "edge": {
+            "type": "SELECTS",
+            "partner": "amo_cmd"
+          }
+        },
+        {
+          "asset rtl": "amo_cmd",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "SELECTED_BY",
+            "partner": "ctrl_i.ir_funct12"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Held lock indication carried on dbus_req_o.lock",
+      "security objective": "Integrity",
+      "reasoning": "The lock flow sets the held lock indication to `'1'` when `(ctrl_i.lsu_mo_we = '1') and (ctrl_i.lsu_amo = '1') and (ctrl_i.ir_funct12(8) = '0')` (lines 142-143), and clears it when `pending = '0'` (lines 144-145). Integrity is established because the value delivered on `dbus_req_o.lock` must follow exactly these conditions. The stored lock bit itself is a field of the transport record `dbus_req_o` and is excluded, so only the consumed setting input survives here; the release condition through `pending` is covered by the separate outstanding-request-state concept.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets",
+          "occurrence": 13,
+          "edge": {
+            "type": "GATES",
+            "partner": "dbus_req_o.lock"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Prepared write-data payload with its byte-enable mask",
+      "security objective": "Integrity",
+      "reasoning": "The operate flow formats request data and lane enables from `wdata_i`, `addr_i`, and `ctrl_i.ir_funct3` at lines 92-105: byte accesses replicate `wdata_i(7 downto 0)` and select one lane (lines 94-98), halfword accesses replicate `wdata_i(15 downto 0)` and select upper or lower lanes (lines 100-101), and the remaining case forwards the full word with all lanes enabled (lines 103-104). Integrity is established because the external consumer must receive exactly the payload and byte-enable pattern defined by these rules. The transport outputs `dbus_req_o.data` and `dbus_req_o.ben` are excluded, so the surviving structural references are the setting inputs only.",
+      "related structural assets": [
+        {
+          "asset rtl": "wdata_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "dbus_req_o.data"
+          }
+        },
+        {
+          "asset rtl": "addr_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets",
+          "occurrence": 6,
+          "edge": {
+            "type": "GATES",
+            "partner": "dbus_req_o.ben"
+          }
+        },
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets",
+          "occurrence": 9,
+          "edge": {
+            "type": "SELECTS",
+            "partner": "dbus_req_o.data"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Aligned and optionally sign-extended response data",
+      "security objective": "Integrity",
+      "reasoning": "The read-out flow writes `rdata_o` from `dbus_rsp_i.data` while `pending = '1'` (line 159), selecting byte, halfword, or full-word return format with `ctrl_i.ir_funct3` (lines 160-176) and using `mar` to choose the returned byte or halfword position (lines 162-172). Integrity is established because the consumer of `rdata_o` receives exactly the aligned/sign-extended value defined by these case arms; availability is established under the RTL-visible condition `pending = '1'`. `dbus_rsp_i` is a transport record input and is excluded as a structural reference.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "sets",
+          "occurrence": 16,
+          "edge": {
+            "type": "SELECTS",
+            "partner": "rdata_o"
+          }
+        },
+        {
+          "asset rtl": "rdata_o",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "exit port",
+          "occurrence": 4,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "dbus_rsp_i.data"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Four-bit access error classification report",
+      "security objective": "Integrity",
+      "reasoning": "The report flow drives `err_o(0..3)` from the Boolean relations at lines 203-206: misalignment for read/write is reported at bits 0 and 2, and bus-or-latched-fault reporting for read/write is reported at bits 1 and 3. Integrity is established because the output classification is explicitly defined by these equations and leaves the entity on `err_o`; availability is established while `pending` is high. `dbus_rsp_i` is a transport input record and is excluded as a structural reference.",
+      "related structural assets": [
+        {
+          "asset rtl": "err_o",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "pmp_err"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Wait indication derived from response acknowledge",
+      "security objective": "Integrity",
+      "reasoning": "The report flow assigns `wait_o <= not dbus_rsp_i.ack;` at line 200. Integrity is established because the external consumer receives exactly this completion/wait indication, and availability is continuous from the combinational assignment. `dbus_rsp_i` is a transport input record and is excluded as a structural reference.",
+      "related structural assets": [
+        {
+          "asset rtl": "wait_o",
+          "entity": "neorv32_cpu_lsu",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "dbus_rsp_i.ack"
+          }
+        }
+      ]
+    }
+  ]
+}

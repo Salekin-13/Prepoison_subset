@@ -1,0 +1,170 @@
+{
+  "module name": "neorv32_cpu_regfile",
+  "module purpose": "This module implements an XLEN-wide CPU register file, with 16 or 32 entries selected by RVE_EN. It writes rd_i into a selected entry under ctrl_i control, returns selected stored entries on rs1_o and rs2_o and optionally rs3_o, and in RST_EN builds resets stored state and the first two read outputs to zero.",
+  "use-case flows": [
+    {
+      "flow": "operate",
+      "value": "derive the single-port write qualification and shared access address from ctrl_i in the not-RST_EN implementation",
+      "lines": [
+        76,
+        77,
+        78,
+        79,
+        80,
+        85,
+        86,
+        88
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "write rd_i into the selected register-file entry",
+      "lines": [
+        85,
+        86,
+        109,
+        110
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "selected register-file contents returned on rs1_o and rs2_o",
+      "lines": [
+        88,
+        89,
+        126,
+        127
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "selected register-file content returned on rs3_o when RS3_EN",
+      "lines": [
+        141,
+        144
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "when RST_EN and rstn_i = '0', reg_file and rs1_o/rs2_o are forced to zero, with reg_file(0) tied to zero",
+      "lines": [
+        106,
+        107,
+        117,
+        122,
+        123,
+        124
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Register-file data values stored from rd_i and supplied on the read ports",
+      "security objective": "Integrity",
+      "reasoning": "The module stores rd_i into reg_file on a qualified clock edge (`reg_file(...) <= rd_i;` at lines 86 and 110) and later returns stored entries on rs1_o and rs2_o (lines 88-89 and 126-127) and on rs3_o when RS3_EN (line 141). Integrity is established because the writeback and operand-read flows depend on reg_file preserving the written XLEN-wide value and delivering the selected stored entry exactly. Availability is independently established because the outputs are updated on rising edges, and in RST_EN builds reset clears reg_file and rs1_o/rs2_o to zero (lines 106-107, 117, 122-124).",
+      "related structural assets": [
+        {
+          "asset rtl": "rd_i",
+          "entity": "neorv32_cpu_regfile",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "reg_file"
+          }
+        },
+        {
+          "asset rtl": "reg_file",
+          "entity": "neorv32_cpu_regfile",
+          "realization": "stores",
+          "occurrence": 6,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "rs1_o",
+          "entity": "neorv32_cpu_regfile",
+          "realization": "exit port",
+          "occurrence": 4,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "reg_file"
+          }
+        },
+        {
+          "asset rtl": "rs2_o",
+          "entity": "neorv32_cpu_regfile",
+          "realization": "exit port",
+          "occurrence": 4,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "reg_file"
+          }
+        },
+        {
+          "asset rtl": "rs3_o",
+          "entity": "neorv32_cpu_regfile",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "reg_file"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Register-file write qualification decision",
+      "security objective": "Integrity",
+      "reasoning": "The write flow depends on the implemented decision of whether a clock edge updates reg_file. In the not-RST_EN branch this decision is materialized as `rf_we <= (ctrl_i.rf_wb_en and (not rd_zero)) or ctrl_i.rf_zero_we;` (line 77) and directly gates the write at lines 85-86. In the RST_EN branch the equivalent qualification is the inline condition at line 109. Integrity is established because updating reg_file on the wrong cycle changes stored register state; availability is established because when the implemented predicate is true, the assignment to reg_file executes on the next rising edge. The reportable declared decision signal is rf_we in the not-RST_EN implementation.",
+      "related structural assets": [
+        {
+          "asset rtl": "rf_we",
+          "entity": "neorv32_cpu_regfile",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "ctrl_i.rf_zero_we"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Shared port-A register index decision in the not-RST_EN implementation",
+      "security objective": "Integrity",
+      "reasoning": "When not RST_EN, `opa_addr <= \"00000\" when (ctrl_i.rf_zero_we = '1') else ctrl_i.rf_rd when (ctrl_i.rf_wb_en = '1') else ctrl_i.rf_rs1;` (lines 78-80). That decision is then used to select the reg_file entry written at line 86 and the reg_file entry read into rs1_o at line 88. Integrity is established because both the write target and the rs1_o read value depend on this exact index choice. Availability is established under the same build condition because the decision is produced combinationally and consumed at the next rising edge.",
+      "related structural assets": [
+        {
+          "asset rtl": "opa_addr",
+          "entity": "neorv32_cpu_regfile",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "ctrl_i.rf_rd"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Third read-port register index decision when RS3_EN",
+      "security objective": "Integrity",
+      "reasoning": "When RS3_EN, `rs3_addr <= ctrl_i.ir_funct12(11 downto 7);` (line 144) and `rs3_o <= reg_file(to_integer(unsigned(rs3_addr(addr_bits_c-1 downto 0))));` (line 141). Integrity is established because the optional third operand read flow depends on selecting the register indexed by those bits. Availability is established because this decision is consumed on each rising edge while RS3_EN is enabled; when RS3_EN is false, rs3_o is forced to zero instead (line 149).",
+      "related structural assets": [
+        {
+          "asset rtl": "rs3_addr",
+          "entity": "neorv32_cpu_regfile",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "ctrl_i.ir_funct12"
+          }
+        }
+      ]
+    }
+  ]
+}

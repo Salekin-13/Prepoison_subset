@@ -57,6 +57,8 @@ Different executors and scorer versions; read as a trajectory, not as like-for-l
 | 2026-10-02 | loop v1, Claude executor, mean of 3 runs | tuning | 0.371 | 0.934 | OPT |
 | 2026-10-02 | loop v1, Claude executor, 1 run | **held-out** | 0.329 | 0.931 | OPT |
 | 2026-10-02 | loop v1 on gpt-5.4, 3 runs | tuning | 0.407 | 0.820 | OPT |
+| 2026-10-02 | final prompt on gpt-5.4, 3 runs (pooled) | **held-out** | 0.388 | 0.877 | NB-final |
+| 2026-10-02 | final prompt on gpt-5.4, 3 runs (pooled) | all 41 | 0.394 | 0.856 | NB-final |
 | reference | LAsset initial, spec + RTL | tuning / held-out | 0.737 / 0.734 | 0.910 / 0.862 | DEF §4 |
 | reference | LAsset initial, RTL only (like-for-like row) | tuning / held-out | 0.680 / 0.730 | 0.748 / 0.757 | DEF §6 |
 
@@ -454,24 +456,38 @@ tied to the occurrence where it happens.
 
 ### Results on the 41 modules and the false-positive trace, 2026-10-02 (NB-final)
 
-- **The 41-module comparison uses the Claude-executed runs of the final prompt.** OpenAI credits were still exhausted
-  (an API check returned insufficient_quota), so gpt-5.4's held-out runs stay pending. On all 41 modules (300 entries):
-  final prompt (Claude) P 0.343 / R 0.932; LAsset RTL-only P 0.711 / R 0.753; difference P -0.367 [-0.449, -0.270],
-  R +0.179 [+0.128, +0.229] (module bootstrap, 95%). The 41 RTL files are listed in `data/LASSET_41_MODULES.csv`.
+- **Held-out generation on gpt-5.4, run once credits were topped up**: 26 modules x 3 runs, 78 module calls, 0
+  validation issues (`runs/assets_heldout26_m7e194es0opt1_g54_r*/_validation.json`), about 75 min (file times);
+  6,776,616 input and 1,938,111 output tokens (`runs/assets_heldout26_m7e194es0opt1_g54_r*/_usage.json`); at most
+  $46.01 at the gpt-5.4 list price of $2.50 / $15.00 per 1M input / output tokens on 2026-10-02 *(derived)*; cached
+  input bills less.
+- **The final prompt on all 41 modules** (300 entries; NB-final): P 0.394 / R 0.856 against LAsset RTL-only
+  0.711 / 0.753; difference P -0.316 [-0.392, -0.232], R +0.102 [+0.037, +0.167] (module bootstrap, 95%). Held-out
+  alone: P 0.388 / R 0.877. Precision is close to tuning (0.406 pooled; run mean 0.407); recall is higher (0.820). The
+  41 RTL files are listed in `data/LASSET_41_MODULES.csv`. The Claude-executed runs of the same prompt (0.343 / 0.932)
+  are kept as a check.
 - **Definitions corrected after an independent verifier**, beside the 2026-10-02 figures above, not inside them: the
   "21 relationship classes" included 8 element attributes (13 relationship classes; all 13 occur on both hits and
-  FPs); "FPs in concepts with no reference element" counted only each asset's first concept (counting every concept:
-  481/886, 54%, on 41 modules).
-- **KEY DECISION (withdraw a reading when more data contradicts it).** The 15-module analysis read the drop from
-  in-sample to unseen modules as "the separating differences weaken on unseen modules". With the same Claude runs,
-  the leave-one-module-out AUC is 0.629 on 15 modules and 0.727 on 41, and tuning rules beat random removal on
-  held-out (0/2000 random draws reach their precision). The reading was too strong and was withdrawn in the notebook.
-  The replacement: the structure carries signal, but using it costs recall (held-out P 0.329 -> 0.478, R 0.931 ->
-  0.640, both still below LAsset RTL-only); the rest of the gap is the reference's role preference (it rarely lists
-  internal state, which the model lists at 0.165 of its list against 0.037) and a choice among elements of the same
-  role and relationships.
-- **Module portraits from the two structures** (`final/module_insights.py`): input-written registers (192, 116 from bus
-  write data), internal write guards such as `ctrl.lock`, reset coverage and exported state, for all 41 modules.
+  FPs); "FPs in concepts with no reference element" counted every asset, hits included, under its first concept
+  only (fp_diagnosis D5: 237/399, 59%; OPT). Counting every concept: 218/399 (55%) on the 15 tuning modules and
+  gpt-5.4 runs; 525/1183 (44%) on all 41.
+- **KEY DECISION (test a reading on more data, and keep it when it survives).** On all 41 modules the unseen-module AUC
+  is higher than on 15 (gpt-5.4: leave-one-module-out 0.805 over 41, against 0.644 on the 15 tuning modules alone). A
+  first draft of the notebook read this as showing that the separating differences do not weaken on unseen modules,
+  and withdrew the earlier reading. An independent claim audit split the figure by module set: on the tuning modules
+  the AUC still falls from in-sample to unseen even with all 40 other modules to learn from (0.776 -> 0.678); the
+  held-out modules separate better and lose less (0.911 -> 0.875). The withdrawal was reverted the same day.
+- **The test named in advance** (rules that raise held-out precision substantially without a large recall loss) was
+  then run on gpt-5.4's own held-out runs. Tuning rules raise held-out precision 0.388 -> 0.545 (0/2000 random removals
+  reach it), but recall falls 0.877 -> 0.598, and both stay below LAsset RTL-only. The test is not met, so the reading
+  that rules built from the structure cannot close the gap without losing recall stands.
+- *Reading:* on the held-out modules, part of the gap is the reference's role preference: it lists internal state at
+  0.011 of its entries (0.082 on the tuning modules), while the model lists it at 0.159 of its list; leaving the role
+  out (in-sample) gives held-out P 0.459 at R 0.866. The rest is a choice among elements that the relationship
+  profiles separate only partly.
+- **Module portraits from the two structures** (`final/module_insights.py`): registers written from an input (192;
+  116 from a write-data port), internal write guards such as `ctrl.lock`, reset coverage and exported state, for all
+  41 modules.
 
 ---
 

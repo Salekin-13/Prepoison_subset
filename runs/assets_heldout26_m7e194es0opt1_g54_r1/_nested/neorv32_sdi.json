@@ -1,0 +1,293 @@
+{
+  "module name": "neorv32_sdi",
+  "module purpose": "neorv32_sdi is a bus-controlled serial data interface. It stores enable and interrupt-control bits from the bus, accepts transmit bytes for a TX FIFO, synchronizes external chip-select/clock/data inputs, shifts bytes out on sdi_dat_o while capturing bytes from sdi_dat_i into an RX FIFO path, returns control/status or RX data on bus_rsp_o, and raises irq_o.",
+  "use-case flows": [
+    {
+      "flow": "configure",
+      "value": "enable state and interrupt-condition enable bits written into the control register, with disable clearing both FIFOs",
+      "lines": [
+        130,
+        131,
+        132,
+        133,
+        135,
+        136,
+        137,
+        138,
+        139,
+        200,
+        239
+      ]
+    },
+    {
+      "flow": "start",
+      "value": "transfer-start pulse that dequeues the next TX byte when enabled and chip select becomes active",
+      "lines": [
+        205,
+        296,
+        307,
+        308,
+        309
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "load a TX byte, shift it out on sdi_dat_o, sample sdi_dat_i, assemble the received byte, and write it into the RX FIFO path",
+      "lines": [
+        235,
+        236,
+        301,
+        302,
+        303,
+        305,
+        314,
+        317,
+        318,
+        319,
+        324,
+        326,
+        327,
+        328,
+        329,
+        330,
+        332,
+        345
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "registered interrupt request derived from enabled RX/TX FIFO status conditions",
+      "lines": [
+        249,
+        250,
+        251,
+        252,
+        253,
+        254
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "control bits, FIFO size/status, chip-select-active status, or the next RX byte on bus_rsp_o.data",
+      "lines": [
+        142,
+        143,
+        145,
+        147,
+        148,
+        149,
+        150,
+        151,
+        153,
+        154,
+        155,
+        156,
+        157,
+        158,
+        160,
+        162
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "bus response, control bits, irq_o, synchronizer flops, and serial-engine state cleared when rstn_i is low",
+      "lines": [
+        115,
+        116,
+        117,
+        118,
+        119,
+        120,
+        121,
+        122,
+        246,
+        247,
+        263,
+        264,
+        265,
+        266,
+        283,
+        284,
+        285,
+        286,
+        287,
+        288,
+        289
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "SDI enable state",
+      "security objective": "Integrity",
+      "reasoning": "The configure flow stores ctrl.enable from bus write data at line 133 under the bus qualifiers at lines 130-132. That stored bit is read back at line 143, clears both FIFOs when deasserted at lines 200 and 239, gates irq_o at line 249, and is copied into the serial engine state at line 296. Integrity matters because a wrong enable state incorrectly activates the interface or clears/preserves buffered data. Availability is also established because ctrl.enable is held until rewrite or reset (CLOCKED_BY at line 133, RESET_BY at line 117). The bus ports are transport records, so the internal stored bit is the eligible reference.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.enable",
+          "entity": "neorv32_sdi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Interrupt-condition enable configuration",
+      "security objective": "Integrity",
+      "reasoning": "Lines 135-139 store five control bits that qualify interrupt generation, lines 147-151 report those stored bits, and irq_generator uses them with FIFO status at lines 249-254. Integrity requires irq_o to reflect only the configured RX/TX conditions; availability is established because these bits are retained until rewrite or reset and are read every cycle by the interrupt logic. The bus ports are transport records, so the stored ctrl fields are the eligible references.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.irq_rx_avail",
+          "entity": "neorv32_sdi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl.irq_rx_half",
+          "entity": "neorv32_sdi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl.irq_rx_full",
+          "entity": "neorv32_sdi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl.irq_tx_empty",
+          "entity": "neorv32_sdi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl.irq_tx_nhalf",
+          "entity": "neorv32_sdi",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Serial transfer sequencing state",
+      "security objective": "Integrity",
+      "reasoning": "The serial engine uses registered phase and bit-progress state: line 296 loads the enable phase bit into serial.state, line 297 selects behavior by serial.state, lines 309, 316, 319, 325, 330, 332 and 338 update the phase, line 301 clears serial.cnt, line 318 increments it, and line 328 tests cnt(3) to end a byte. Integrity of this state is required for correct dequeue, shifting, completion, and abort behavior. Availability is also established because transfer progress depends on these registered updates when sync.csn and sync.sck permit them.",
+      "related structural assets": [
+        {
+          "asset rtl": "serial.state",
+          "entity": "neorv32_sdi",
+          "realization": "stores",
+          "occurrence": 5,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "serial.cnt",
+          "entity": "neorv32_sdi",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Outgoing serial transfer byte",
+      "security objective": "Integrity",
+      "reasoning": "When the engine enters the load phase, serial.sreg gets zeros or tx_fifo.rdata at lines 302-305; line 327 shifts the register on accepted serial clocks; and sdi_dat_o derives from the current MSB at line 345. Integrity requires the transmitted bitstream to match the loaded byte and later shifts. Availability is established for an enabled selected transfer because the clocked engine holds and advances serial.sreg until bits are emitted. tx_fifo.rdata is a sub-unit output used only as data at line 305, so the visible store and exit points are serial.sreg and sdi_dat_o.",
+      "related structural assets": [
+        {
+          "asset rtl": "serial.sreg",
+          "entity": "neorv32_sdi",
+          "realization": "stores",
+          "occurrence": 5,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "sdi_dat_o",
+          "entity": "neorv32_sdi",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "serial.sreg"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Incoming serial byte being assembled for RX buffering",
+      "security objective": "Integrity",
+      "reasoning": "sdi_dat_i enters the synchronizer at line 270, sync.sdi is captured into serial.sdi_ff at line 314, and line 327 shifts serial.sdi_ff into serial.sreg; when the counter completes, serial.done at line 329 causes rx_fifo.we at line 236 while rx_fifo.wdata copies serial.sreg at line 235. Integrity requires the byte presented to the RX FIFO write path to match the sampled serial input bits. Availability is established when chip select stays active and serial clocks arrive for eight bits. The FIFO interface fields are sub-unit carriers, so the eligible references are the input port sdi_dat_i and the local shift register serial.sreg.",
+      "related structural assets": [
+        {
+          "asset rtl": "sdi_dat_i",
+          "entity": "neorv32_sdi",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "sync.sdi_ff"
+          }
+        },
+        {
+          "asset rtl": "serial.sreg",
+          "entity": "neorv32_sdi",
+          "realization": "stores",
+          "occurrence": 6,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Interrupt request decision",
+      "security objective": "Integrity",
+      "reasoning": "irq_o is registered from ctrl.enable and the configured FIFO-status conditions at lines 249-254, with reset to 0 at lines 246-247. Integrity requires downstream logic to receive exactly this enabled-status decision. Availability is also established because whenever ctrl.enable is 1 and any configured condition is true, irq_o is produced on the next clk_i edge.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_o",
+          "entity": "neorv32_sdi",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "ctrl.enable"
+          }
+        }
+      ]
+    }
+  ]
+}

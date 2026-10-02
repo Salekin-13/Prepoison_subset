@@ -1,0 +1,546 @@
+{
+  "module name": "neorv32_debug_dm",
+  "module purpose": "neorv32_debug_dm accepts DMI requests and an internal debug-bus interface, optionally authenticates DMI access, stores debug control/command/program/data state, and returns status or data on the DMI and bus response ports. It generates halt and non-debug-reset requests for selected harts and sequences abstract-command handling by preparing bus-visible instruction/data buffers and tracking command and hart status.",
+  "use-case flows": [
+    {
+      "flow": "lock",
+      "value": "authorization decision that enables authenticated DMI accesses and externally visible debug controls",
+      "lines": [
+        212,
+        213,
+        500,
+        505,
+        530,
+        555,
+        573,
+        584,
+        596,
+        604,
+        614,
+        743,
+        745,
+        747,
+        748,
+        754
+      ]
+    },
+    {
+      "flow": "configure",
+      "value": "dmcontrol settings: halt request, resume request, reset acknowledge, selected hart, non-debug reset, and debug-module active",
+      "lines": [
+        424,
+        425,
+        426,
+        427,
+        428,
+        429,
+        430,
+        432,
+        433
+      ]
+    },
+    {
+      "flow": "configure",
+      "value": "abstract command, auto-execute configuration, and program-buffer words written from DMI",
+      "lines": [
+        438,
+        439,
+        443,
+        444,
+        445,
+        446,
+        464,
+        465,
+        469,
+        470
+      ]
+    },
+    {
+      "flow": "start",
+      "value": "abstract-command start request from a command write or an autoexec-triggered access",
+      "lines": [
+        249,
+        250,
+        251,
+        252,
+        255,
+        256,
+        450,
+        451,
+        452,
+        453,
+        454,
+        635,
+        636,
+        637,
+        638,
+        639,
+        298,
+        299,
+        300
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "command validation, load/store instruction preparation, optional program-buffer enable, and execution trigger sequencing",
+      "lines": [
+        261,
+        262,
+        263,
+        264,
+        265,
+        266,
+        267,
+        269,
+        270,
+        273,
+        274,
+        279,
+        280,
+        281,
+        282,
+        283,
+        284,
+        286,
+        287,
+        288,
+        291,
+        293,
+        294,
+        298,
+        299,
+        300,
+        305,
+        306,
+        508,
+        509,
+        510,
+        511
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "debug data register transfer between DMI writes and debug-bus reads or writes",
+      "lines": [
+        495,
+        605,
+        665,
+        666,
+        667,
+        668,
+        696
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "DMI status and data readback for dmstatus, dmcontrol, hartinfo, abstractcs, abstractauto, data0, authdata, and haltsum0",
+      "lines": [
+        524,
+        526,
+        529,
+        534,
+        536,
+        540,
+        542,
+        544,
+        549,
+        550,
+        554,
+        562,
+        567,
+        569,
+        583,
+        587,
+        589,
+        595,
+        597,
+        598,
+        599,
+        603,
+        605,
+        609,
+        610,
+        613,
+        615
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "debug-bus readback of ROM words, prepared program-buffer words, data register contents, and request bits",
+      "lines": [
+        688,
+        689,
+        690,
+        692,
+        694,
+        696,
+        699,
+        700
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "controller, hart-status, DMI-visible, and bus-visible state forced to reset values by rstn_i, with dmactive='0' forcing controller idle and ndmreset forcing hart-status changes",
+      "lines": [
+        220,
+        221,
+        222,
+        223,
+        224,
+        225,
+        226,
+        227,
+        229,
+        230,
+        231,
+        232,
+        233,
+        234,
+        235,
+        236,
+        346,
+        347,
+        348,
+        349,
+        350,
+        355,
+        356,
+        364,
+        365,
+        373,
+        374,
+        382,
+        383,
+        397,
+        398,
+        399,
+        401,
+        402,
+        404,
+        405,
+        407,
+        408,
+        409,
+        410,
+        411,
+        412,
+        413,
+        518,
+        519,
+        520,
+        521,
+        522,
+        652,
+        653,
+        654,
+        655,
+        656,
+        657,
+        658
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Debug access authorization decision",
+      "security objective": "Integrity",
+      "reasoning": "The module uses auth.valid as the decision that unlocks debug control and readback: authenticated write/read strobes are derived only when auth.valid permits them (lines 212-213), halt_req_o and ndmrstn_o are gated by the same condition (lines 500 and 505), and DMI status/data fields are conditionally returned under it (lines 530, 555, 573, 584, 596, 604 and 614). When AUTHENTICATOR is enabled the decision is produced by the authenticator sub-unit (line 745); when it is disabled the RTL forces the decision open at line 754. Corrupting this decision would incorrectly permit or block protected debug operations.",
+      "related structural assets": [
+        {
+          "asset rtl": "auth.valid",
+          "entity": "neorv32_debug_dm",
+          "realization": "computes",
+          "occurrence": 14,
+          "edge": {
+            "type": "CONNECTS",
+            "partner": "neorv32_debug_auth_inst.valid_o"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Debug-module active state",
+      "security objective": "Integrity",
+      "reasoning": "dmcontrol bit 0 is stored into dm_reg.dmcontrol_dmactive on a dmcontrol write (lines 432-433). When this state is '0', the controller is forced back to CMD_IDLE and its command-side state is cleared (lines 229-236); when active, it contributes to halt_req_o and ndmrstn_o generation (lines 500 and 505) and is passed into the authenticator as enable_i (line 743). The correctness of command handling and externally driven control outputs therefore depends on this stored state.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_reg.dmcontrol_dmactive",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Non-debug-module reset control",
+      "security objective": "Integrity",
+      "reasoning": "dmcontrol bit 1 is stored into dm_reg.dmcontrol_ndmreset on an authenticated dmcontrol write (line 430). The stored value drives the external ndmrstn_o control when dmactive and authorization permit it (line 505), and it also forces hart-status changes internally by clearing hart_halted and resume state and setting hart_reset (lines 355-385). The same value is reported back in dmstatus and dmcontrol (lines 540-541 and 567), so both control and reporting depend on its integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_reg.dmcontrol_ndmreset",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores",
+          "occurrence": 7,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ndmrstn_o",
+          "entity": "neorv32_debug_dm",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "dm_reg.dmcontrol_ndmreset"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Selected hart target for debug actions",
+      "security objective": "Integrity",
+      "reasoning": "The selected hart index is stored from dmcontrol bits 18:16 (line 429), and line 487 decodes that stored value into the one-hot dm_reg.hartsel_dec target set. This target selection qualifies abstract-command admission and progress (lines 266, 298-299 and 305), resume and reset handling (lines 366, 377 and 384), halt request delivery (line 500), and selected-hart status reductions reported on DMI (lines 534-545 and 562). Corrupting the selection would direct operations or status to the wrong hart.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_reg.hartsel",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "dm_reg.hartsel_dec",
+          "entity": "neorv32_debug_dm",
+          "realization": "computes",
+          "occurrence": 9,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "dm_reg.hartsel"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Halt request for selected hart(s)",
+      "security objective": "Integrity",
+      "reasoning": "An authenticated dmcontrol write stores the halt-request bit into dm_reg.halt_req (line 426). The module then drives halt_req_o from that stored bit together with the selected-hart decode and dmactive, and it suppresses the output when authorization is not valid (line 500). The external consumer must receive exactly the requested halt indication for the selected hart set.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_reg.halt_req",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "halt_req_o",
+          "entity": "neorv32_debug_dm",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "dm_reg.halt_req"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Resume request trigger for selected hart(s)",
+      "security objective": "Integrity",
+      "reasoning": "An authenticated dmcontrol write stores the resume-request trigger in dm_reg.req_res (line 427). The hart_status process uses that stored trigger together with the selected-hart decode to assert per-hart resume requests and to clear resume acknowledgements (lines 366-378). Corrupting this trigger changes whether the selected hart set is told to resume.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_reg.req_res",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores",
+          "occurrence": 6,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Abstract command value to execute",
+      "security objective": "Integrity",
+      "reasoning": "When addr_command is written under authenticated, not-busy, no-error conditions, the module stores the 32-bit command in dm_reg.command (lines 438-439). CMD_CHECK validates the stored fields (lines 261-265), CMD_PREPARE derives the load/store helper instruction and program-buffer enable from those bits (lines 279-293), and CMD_TRIGGER issues execution for the selected hart (lines 298-300). The correctness of the abstract operation therefore depends directly on the stored command value.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_reg.command",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores",
+          "occurrence": 14,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Auto-execute-on-access configuration",
+      "security objective": "Integrity",
+      "reasoning": "The abstractauto settings are stored from an authenticated write at lines 444-446. Later, accesses to data0 or the two progbuf words test these stored bits to raise autoexec_wr or autoexec_rd (lines 450-455 and 635-639), and CMD_IDLE starts command checking when either autoexec flag is seen (lines 255-256). These stored configuration bits therefore decide whether ordinary accesses automatically start commands.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_reg.abstractauto_autoexecdata",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "dm_reg.abstractauto_autoexecprogbuf",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Bus-visible abstract-command instruction image",
+      "security objective": "Integrity",
+      "reasoning": "Authenticated writes store the two user program-buffer words in dm_reg.progbuf (lines 464-470). During CMD_PREPARE, the controller stores a generated load/store-or-nop helper instruction in dm_ctrl.ldsw_progbuf (lines 281-291) and stores whether the user program buffer is enabled in dm_ctrl.pbuf_en (line 293); lines 508-511 then assemble cpu_progbuf from the helper instruction, the optional stored program words, and a fixed ebreak, and line 694 returns that image on bus reads. The value delivered on that bus-visible instruction image must match these stored and computed sources exactly.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_reg.progbuf",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "dm_ctrl.ldsw_progbuf",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "dm_ctrl.pbuf_en",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "cpu_progbuf",
+          "entity": "neorv32_debug_dm",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "dm_ctrl.pbuf_en"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Debug data register contents",
+      "security objective": "Integrity",
+      "reasoning": "The module stores debug data in dci.data_reg: a DMI data0 write enables the register through dci.data_reg_we and writes dmi_req_i.data (lines 495, 665 and 666), and a bus write to the debug-data address range writes bus_req_i.data (lines 667-668). The same stored value is returned on DMI reads of data0 (line 605) and bus reads of the data page (line 696). Because the prepared helper instruction uses the fixed debug-data address fields at lines 282, 284 and 287, the correctness of debug-data transfer depends on this register's integrity.",
+      "related structural assets": [
+        {
+          "asset rtl": "dci.data_reg",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Abstract command engine busy and phase state",
+      "security objective": "Integrity",
+      "reasoning": "The controller stores dm_ctrl.state and advances it through IDLE, CHECK, PREPARE, TRIGGER, BUSY and ERROR at lines 245-317; line 339 computes dm_ctrl.busy from whether the stored state is CMD_IDLE. This busy/phase state gates command, abstractauto, progbuf and data0 writes (lines 438, 443, 464, 469 and 495) and is reported in abstractcs (line 587). Corrupting it changes sequencing and admission of abstract-command operations.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_ctrl.state",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores",
+          "occurrence": 5,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "dm_ctrl.busy",
+          "entity": "neorv32_debug_dm",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "dm_ctrl.state"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Abstract command error code",
+      "security objective": "Integrity",
+      "reasoning": "The module stores the abstract-command error code in dm_ctrl.cmderr and updates it from illegal_state, exception acknowledge, illegal_cmd, or read/write access errors at lines 320-331. New command writes are accepted only while this code is \"000\" (line 438), and abstractcs reports the stored code at line 589. Both command admission and reported failure cause therefore depend on the integrity of this stored error state.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_ctrl.cmderr",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores",
+          "occurrence": 6,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Selected hart halted state",
+      "security objective": "Integrity",
+      "reasoning": "The hart_status process stores per-hart halt state in dm_ctrl.hart_halted, clearing it on ndmreset, setting it on halt acknowledgement, and clearing it on resume acknowledgement (lines 355-360). CMD_CHECK permits abstract-command preparation only when a selected hart is halted (lines 266-270), and dmstatus/haltsum report the halted state at lines 542-545 and 615. Corrupting this state changes both command admission and reported halt status.",
+      "related structural assets": [
+        {
+          "asset rtl": "dm_ctrl.hart_halted",
+          "entity": "neorv32_debug_dm",
+          "realization": "stores",
+          "occurrence": 5,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    }
+  ]
+}

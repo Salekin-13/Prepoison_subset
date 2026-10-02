@@ -1,0 +1,484 @@
+{
+  "module name": "neorv32_cpu_cp_bitmanip",
+  "module purpose": "This module decodes control fields into supported bit-manipulation operations, latches operand, shift and comparison inputs, runs either direct combinational logic or multi-cycle shift/clmul helpers, and registers the selected result on res_o together with valid_o.",
+  "use-case flows": [
+    {
+      "flow": "start",
+      "value": "decode and accept a supported bit-manipulation request, then choose immediate completion, shifter start, or carry-less-multiply start",
+      "lines": [
+        132,
+        133,
+        134,
+        135,
+        136,
+        137,
+        138,
+        139,
+        140,
+        141,
+        142,
+        143,
+        146,
+        147,
+        150,
+        151,
+        152,
+        153,
+        156,
+        157,
+        158,
+        161,
+        164,
+        199,
+        200,
+        201,
+        203,
+        204,
+        207,
+        208
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "capture operand, shift-amount and comparison inputs for the active operation",
+      "lines": [
+        187,
+        188,
+        189,
+        190,
+        191
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "shift/count/rotate processing, either serial or fast, producing shifter values used for cz/cpop/rot results",
+      "lines": [
+        241,
+        242,
+        243,
+        244,
+        245,
+        247,
+        249,
+        250,
+        251,
+        253,
+        255,
+        257,
+        258,
+        259,
+        266,
+        267,
+        268,
+        274,
+        275,
+        276,
+        278,
+        281,
+        282,
+        284,
+        298,
+        301,
+        304,
+        305,
+        307,
+        310,
+        313,
+        314,
+        317,
+        394,
+        395,
+        398,
+        399,
+        414
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "carry-less multiply processing and selection of upper or lower result half",
+      "lines": [
+        358,
+        359,
+        360,
+        361,
+        362,
+        363,
+        364,
+        366,
+        368,
+        374,
+        456
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "combinational bit-manipulation result generation and command-qualified result selection",
+      "lines": [
+        326,
+        329,
+        330,
+        331,
+        332,
+        334,
+        342,
+        343,
+        389,
+        390,
+        391,
+        402,
+        405,
+        406,
+        407,
+        410,
+        411,
+        419,
+        423,
+        426,
+        429,
+        430,
+        431,
+        432,
+        433,
+        436,
+        437,
+        442,
+        443,
+        444,
+        445,
+        447,
+        452,
+        461,
+        462,
+        463,
+        464,
+        465,
+        466,
+        467,
+        468,
+        469,
+        470,
+        471,
+        472,
+        473,
+        474,
+        475,
+        476,
+        477,
+        478,
+        479,
+        480
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "assert completion and drive the registered result to the output interface",
+      "lines": [
+        207,
+        219,
+        491,
+        492,
+        493,
+        494,
+        495,
+        496,
+        502
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "clear controller state, captured inputs, helper state, completion flag and output result",
+      "lines": [
+        171,
+        172,
+        173,
+        174,
+        175,
+        176,
+        177,
+        178,
+        179,
+        235,
+        236,
+        237,
+        238,
+        239,
+        354,
+        355,
+        356,
+        487,
+        488
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Decoded and accepted bit-manipulation operation request",
+      "security objective": "Integrity",
+      "reasoning": "Lines 132-161 derive cmd bits from ctrl_i.ir_opcode, ctrl_i.ir_funct12 and ctrl_i.ir_funct3, under the build-time enables EN_ZBA, EN_ZBB, EN_ZBKB, EN_ZBKC and EN_ZBS. Line 164 raises valid_cmd only when ctrl_i.alu_cp_alu='1' and some cmd bit is set. Lines 199-205 use this decision to start shifter.start, start clmul.start, or complete immediately, and lines 461-480 use cmd again to admit only the matching result term into res_out. Integrity is established because corrupting this decoded/accepted request changes both the selected computation and the result path; availability is established for requests that satisfy these predicates while the controller is idle.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl_i",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "sets",
+          "occurrence": 64,
+          "edge": {
+            "type": "GATES",
+            "partner": "valid_cmd"
+          }
+        },
+        {
+          "asset rtl": "cmd",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "computes",
+          "occurrence": 21,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "ctrl_i.ir_opcode"
+          }
+        },
+        {
+          "asset rtl": "valid_cmd",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "cmd"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Latched operand and auxiliary input context for the active operation",
+      "security objective": "Integrity",
+      "reasoning": "When ctrl_i.alu_cp_alu='1', lines 188-191 capture cmp_i, rs1_i, rs2_i and shamt_i into less_reg, rs1_reg, rs2_reg and sha_reg. Later logic reads these stored values to initialize or compute results at lines 243, 298, 313-314, 326-334, 360 and 389-456. Integrity is established because wrong captured values make the selected bit-manipulation result wrong, and availability is established because multi-cycle flows rely on these values being preserved until completion.",
+      "related structural assets": [
+        {
+          "asset rtl": "cmp_i",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "less_reg"
+          }
+        },
+        {
+          "asset rtl": "rs1_i",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "rs1_reg"
+          }
+        },
+        {
+          "asset rtl": "rs2_i",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "rs2_reg"
+          }
+        },
+        {
+          "asset rtl": "shamt_i",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "sha_reg"
+          }
+        },
+        {
+          "asset rtl": "less_reg",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "rs1_reg",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "rs2_reg",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "sha_reg",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Operation sequencing state",
+      "security objective": "Integrity",
+      "reasoning": "The controller stores S_IDLE, S_START and S_BUSY in ctrl_state (lines 172, 202, 205, 208, 214, 220). Lines 195-220 branch on ctrl_state to decide whether a new request starts helper engines, whether execution is busy, and when completion returns to idle after shifter/clmul finish or cpu_trap. Integrity is established because corrupting this state changes start, busy and finish sequencing; availability is established because the implemented progress through idle, start and busy depends on these transitions.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl_state",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Shift/count/rotate working state and sub-result",
+      "security objective": "Integrity",
+      "reasoning": "With not EN_FAST_SHIFT, lines 241-259 initialize and update shifter.sreg, shifter.cnt, shifter.cnt_max and shifter.bcnt, while lines 266-287 derive the next shift bit and run/stop condition. With EN_FAST_SHIFT, lines 307, 310 and 313-319 compute the same shifter values directly. Lines 395, 399 and 414 move these values into res_int for count-zero, population-count and rotate results, and line 218 waits for shifter.run before reporting completion. Integrity is established because these values define the shift/count result; availability is established because the serial path must preserve and advance this state until completion.",
+      "related structural assets": [
+        {
+          "asset rtl": "shifter.sreg",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "shifter.cnt",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "shifter.bcnt",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "shifter.cnt_max",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Carry-less multiply working state and partial result",
+      "security objective": "Integrity",
+      "reasoning": "When EN_ZBKC is enabled, lines 358-368 initialize and update clmul.cnt and clmul.res, line 374 derives clmul.run from the counter, and line 456 selects the upper or lower XLEN half of clmul.res into res_int(op_clmul_c). Line 218 waits for clmul.run to drop before completion is reported. Integrity is established because the carry-less-multiply result depends on this counter and partial-product state; availability is established because completion requires the counter to progress to zero. When EN_ZBKC is false, lines 380-382 tie these elements inactive.",
+      "related structural assets": [
+        {
+          "asset rtl": "clmul.res",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "clmul.cnt",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Result completion indication",
+      "security objective": "Integrity",
+      "reasoning": "valid is cleared on reset and by default each cycle (lines 179 and 184), set in the immediate-completion path (line 207) or after helper completion or trap (line 219), gates the result update at line 491, and is copied to valid_o at line 502. Integrity is established because wrong assertion or suppression changes when downstream logic may trust res_o; availability is established under the RTL-visible completion conditions that set valid.",
+      "related structural assets": [
+        {
+          "asset rtl": "valid",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "valid_o",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "valid"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Bit-manipulation result value",
+      "security objective": "Integrity",
+      "reasoning": "Lines 389-456 compute candidate result terms from the captured inputs and helper state. Lines 461-480 qualify those terms with cmd and the build-time enables into res_out. Lines 491-496 then register the OR-combined selected result onto res_o only when valid='1'. Integrity is established because the consumer of this module must receive exactly the result defined by these equations and command qualifiers; availability is established only under the RTL condition that valid is asserted for that operation.",
+      "related structural assets": [
+        {
+          "asset rtl": "res_out",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "cmd"
+          }
+        },
+        {
+          "asset rtl": "res_o",
+          "entity": "neorv32_cpu_cp_bitmanip",
+          "realization": "exit port",
+          "occurrence": 4,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "res_out"
+          }
+        }
+      ]
+    }
+  ]
+}

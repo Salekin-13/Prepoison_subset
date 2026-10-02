@@ -1,0 +1,345 @@
+{
+  "module name": "neorv32_xbus",
+  "module purpose": "neorv32_xbus sits between a staged request/response record interface and scalar xbus signals. It takes the internal request record from reg_stage_inst, drives the xbus request outputs from it, tracks pending and locked transfers with an optional timeout counter, and forms response data/ack/error from xbus inputs into an internal response record returned through reg_stage_inst.",
+  "use-case flows": [
+    {
+      "flow": "start",
+      "value": "a new transfer request is captured as pending, and an optional lock state is captured, when no transfer is active",
+      "lines": [
+        87,
+        88,
+        89
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "request address, write data, command bits and tag bits are driven from the staged request record to the external xbus outputs",
+      "lines": [
+        74,
+        141,
+        142,
+        143,
+        144,
+        145,
+        149,
+        151
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "the cycle-active state is held until acknowledge, error, timeout, or locked-transfer release",
+      "lines": [
+        91,
+        92,
+        93,
+        95,
+        96,
+        97,
+        146
+      ]
+    },
+    {
+      "flow": "lock",
+      "value": "the locked-transfer state changes which condition is allowed to clear a pending transfer",
+      "lines": [
+        88,
+        91,
+        95,
+        96,
+        97
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "when TIMEOUT_VAL /= 0, the timeout counter is reloaded, decremented, and converted into a timeout indication; when TIMEOUT_VAL = 0, timeout logic is tied low",
+      "lines": [
+        108,
+        109,
+        111,
+        112,
+        113,
+        115,
+        116,
+        117,
+        119,
+        120,
+        122,
+        129,
+        130,
+        131,
+        132
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "response data and completion/error status are returned from xbus inputs while a transfer is pending",
+      "lines": [
+        75,
+        154,
+        155,
+        156
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "locked, pending, timecnt and timeout are cleared when rstn_i = '0'",
+      "lines": [
+        83,
+        84,
+        85,
+        111,
+        112,
+        113
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Outbound XBUS request address",
+      "security objective": "Integrity",
+      "reasoning": "reg_stage_inst provides the internal request record on line 74, and line 141 drives `xbus_adr_o <= bus_req.addr`. The operate flow therefore depends on the external bus side receiving exactly the current request address on this output port. Availability is conditional on a request being present, but the established property here is integrity of the delivered address value.",
+      "related structural assets": [
+        {
+          "asset rtl": "xbus_adr_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "bus_req.addr"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Outbound XBUS request write data",
+      "security objective": "Integrity",
+      "reasoning": "reg_stage_inst provides the internal request record on line 74, and line 142 drives `xbus_dat_o <= bus_req.data`. The external consumer therefore depends on this port carrying exactly the current request data value defined by the flow.",
+      "related structural assets": [
+        {
+          "asset rtl": "xbus_dat_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "bus_req.data"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Outbound XBUS request control values (write/read, byte enable, and request strobe)",
+      "security objective": "Integrity",
+      "reasoning": "Lines 143-145 drive `xbus_we_o <= bus_req.rw`, `xbus_sel_o <= bus_req.ben`, and `xbus_stb_o <= bus_req.stb`. The start and operate flows depend on these external control values being delivered exactly as defined, because they qualify the type of access, active byte lanes, and request-valid signal seen outside this entity.",
+      "related structural assets": [
+        {
+          "asset rtl": "xbus_we_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "bus_req.rw"
+          }
+        },
+        {
+          "asset rtl": "xbus_sel_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "bus_req.ben"
+          }
+        },
+        {
+          "asset rtl": "xbus_stb_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "bus_req.stb"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Outbound request tag bit 2",
+      "security objective": "Integrity",
+      "reasoning": "Line 149 drives `xbus_tag_o(2) <= bus_req.src`. This bit leaves the entity on an output port and its exact delivered value is established by that assignment.",
+      "related structural assets": [
+        {
+          "asset rtl": "xbus_tag_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "bus_req.src"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Outbound request tag bit 0 derived from request attributes",
+      "security objective": "Integrity",
+      "reasoning": "Line 151 drives `xbus_tag_o(0) <= bus_req.priv or bus_req.debug`. This is a locally computed request-attribute bit sent to the external bus side, so the operate flow depends on the exact low tag bit defined by this expression. Bit 1 is constant on line 150 and is not a distinct asset here.",
+      "related structural assets": [
+        {
+          "asset rtl": "xbus_tag_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port",
+          "occurrence": 4,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "bus_req.priv"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Outstanding-transfer state that keeps an external cycle active until termination",
+      "security objective": "Integrity",
+      "reasoning": "`pending` is set from `bus_req.stb` when idle (lines 87-89), cleared on the implemented completion conditions (lines 91-97), and then used to keep `xbus_cyc_o` asserted by `xbus_cyc_o <= bus_req.stb or pending` (line 146). The same state also gates returned data and status on lines 154-156. Integrity is established because wrong pending state makes cycle lifetime and response qualification incorrect; availability is established because the state is held between clock edges until one of the RTL termination conditions occurs.",
+      "related structural assets": [
+        {
+          "asset rtl": "pending",
+          "entity": "neorv32_xbus",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "xbus_cyc_o",
+          "entity": "neorv32_xbus",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "pending"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Locked-transfer state",
+      "security objective": "Integrity",
+      "reasoning": "When no transfer is pending, line 88 captures `locked <= bus_req.stb and bus_req.lock`. Later, lines 91-97 choose different pending-clear behavior depending on whether `locked = '0'`. Integrity is established because corrupting this stored lock state changes when a pending transfer may be released; availability is established because the state is retained between edges until reset or a later capture.",
+      "related structural assets": [
+        {
+          "asset rtl": "locked",
+          "entity": "neorv32_xbus",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Remaining timeout count for a pending transfer",
+      "security objective": "Integrity",
+      "reasoning": "When `TIMEOUT_VAL /= 0`, lines 115-120 reload `timecnt` from `timeout_c` when no transfer is pending and decrement it while a transfer is pending; line 119 tests it to decide whether timeout has been reached. When `TIMEOUT_VAL = 0`, line 131 ties it to zero. Integrity is established because timeout timing follows this exact count state, so corrupting the count changes when the later timeout decision will occur.",
+      "related structural assets": [
+        {
+          "asset rtl": "timecnt",
+          "entity": "neorv32_xbus",
+          "realization": "stores",
+          "occurrence": 5,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Timeout expiration decision",
+      "security objective": "Integrity",
+      "reasoning": "When `TIMEOUT_VAL /= 0`, `timeout` is cleared on reset and idle (lines 113 and 117) and asserted at line 122 once the counter no longer reduces after line 119. That decision is then used to clear `pending` (lines 92 and 96) and to assert response status (lines 155-156). When `TIMEOUT_VAL = 0`, line 132 ties `timeout` low. Integrity is established because termination and error-report behavior depend on this computed timeout result.",
+      "related structural assets": [
+        {
+          "asset rtl": "timeout",
+          "entity": "neorv32_xbus",
+          "realization": "computes",
+          "occurrence": 6,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "timecnt"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Response data returned from the external xbus side",
+      "security objective": "Integrity",
+      "reasoning": "Line 154 defines `bus_rsp.data <= xbus_dat_i when (pending = '1') else (others => '0')`, and line 75 feeds `bus_rsp` into `reg_stage_inst` as `device_rsp_i`. Under the boundary/sub-unit delivery rule, the consumer behind that sub-unit depends on receiving exactly the xbus input data for pending transfers. Availability is conditional on `pending = '1'` as shown on line 154.",
+      "related structural assets": [
+        {
+          "asset rtl": "xbus_dat_i",
+          "entity": "neorv32_xbus",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "bus_rsp.data"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Transfer termination status (completion and error)",
+      "security objective": "Integrity",
+      "reasoning": "Line 155 defines `bus_rsp.ack <= pending and (timeout or xbus_err_i or xbus_ack_i)`, and line 156 defines `bus_rsp.err <= pending and (timeout or xbus_err_i)`. The arbiter uses the same termination conditions to clear `pending` on lines 92-97. Integrity is therefore established because both the reported status and the release of the outstanding-transfer state depend on these exact status results.",
+      "related structural assets": [
+        {
+          "asset rtl": "xbus_ack_i",
+          "entity": "neorv32_xbus",
+          "realization": "sets",
+          "occurrence": 3,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "bus_rsp.ack"
+          }
+        },
+        {
+          "asset rtl": "xbus_err_i",
+          "entity": "neorv32_xbus",
+          "realization": "sets",
+          "occurrence": 4,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "bus_rsp.err"
+          }
+        },
+        {
+          "asset rtl": "timeout",
+          "entity": "neorv32_xbus",
+          "realization": "computes",
+          "occurrence": 6,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "timecnt"
+          }
+        },
+        {
+          "asset rtl": "pending",
+          "entity": "neorv32_xbus",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    }
+  ]
+}

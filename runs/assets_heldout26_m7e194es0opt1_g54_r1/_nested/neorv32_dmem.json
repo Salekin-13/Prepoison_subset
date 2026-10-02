@@ -1,0 +1,158 @@
+{
+  "module name": "neorv32_dmem",
+  "module purpose": "neorv32_dmem implements an internal synchronous data memory behind a request/response bus record. It writes selected byte lanes of bus_req_i.data into four byte arrays at the addressed word, reads the addressed word into rdata for bus_rsp_o.data on read requests, acknowledges each request, and ties the error response low.",
+  "use-case flows": [
+    {
+      "flow": "operate",
+      "value": "selected byte lanes of bus_req_i.data written into the addressed memory word when stb and rw are high and the matching ben bit is set",
+      "lines": [
+        61,
+        62,
+        63,
+        65,
+        66,
+        68,
+        69,
+        71,
+        72,
+        113
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "addressed 32-bit memory word loaded into rdata and returned on read requests",
+      "lines": [
+        75,
+        76,
+        77,
+        78,
+        113,
+        124,
+        129
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "registered acknowledge response that follows the sampled request strobe",
+      "lines": [
+        122,
+        125
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "rden and the acknowledge response cleared while rstn_i is low",
+      "lines": [
+        120,
+        121,
+        122
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Stored data memory contents",
+      "security objective": "Integrity",
+      "reasoning": "Lines 61-72 update mem_ram_b0..mem_ram_b3 with the selected byte lanes of bus_req_i.data at to_integer(addr) when bus_req_i.stb='1', bus_req_i.rw='1', and the corresponding bus_req_i.ben bit is '1'. Lines 75-78 then read those arrays into rdata, and line 129 returns that word on reads. Integrity is established because corrupting any array changes the stored memory state and the later read result; availability is also established because these edge-storage arrays retain data between writes and feed addressed reads. The map shows each array CLOCKED_BY clk_i on its write occurrence and SOURCES rdata on readback.",
+      "related structural assets": [
+        {
+          "asset rtl": "mem_ram_b0",
+          "entity": "neorv32_dmem",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "mem_ram_b1",
+          "entity": "neorv32_dmem",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "mem_ram_b2",
+          "entity": "neorv32_dmem",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "mem_ram_b3",
+          "entity": "neorv32_dmem",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Word address index selecting which memory entry is written or read",
+      "security objective": "Integrity",
+      "reasoning": "Line 113 computes addr from bus_req_i.addr(addr_hi_c downto 2). That value selects the written word at lines 63, 66, 69 and 72 and the read word at lines 75-78. Integrity is established because both the write flow and the read-out flow depend on selecting the intended memory location. alt_style_c is fixed false at line 36, so the active generate branch is lines 57-82: addr is the active selector, while addr_ff is forced to zero at line 81 and the alternative branch at lines 85-110 is unreachable.",
+      "related structural assets": [
+        {
+          "asset rtl": "addr",
+          "entity": "neorv32_dmem",
+          "realization": "computes",
+          "occurrence": 15,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "bus_req_i.addr"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Read data word assembled from the addressed memory entry",
+      "security objective": "Integrity",
+      "reasoning": "With alt_style_c fixed false at line 36, the active branch registers rdata from mem_ram_b0..mem_ram_b3 in the clocked process at lines 75-78, and line 129 derives bus_rsp_o.data from rdata when rden='1'. Integrity is established because this 32-bit word is the module's read result; corrupting rdata misreports stored memory contents. Availability is also established under the RTL-visible condition that rden was set by a read request at line 124. The map marks rdata mixed only because it also sees the unreachable alternative branch.",
+      "related structural assets": [
+        {
+          "asset rtl": "rdata",
+          "entity": "neorv32_dmem",
+          "realization": "stores",
+          "occurrence": 2,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Latched decision that the current response carries read data",
+      "security objective": "Integrity",
+      "reasoning": "Line 124 sets rden <= bus_req_i.stb and (not bus_req_i.rw), line 129 gates bus_rsp_o.data on rden, and line 121 resets rden to '0'. This is the module's own decision whether the current response returns memory data. Integrity is established because wrong rden suppresses a valid read result or qualifies data when no read was requested; availability of read delivery is also conditioned on rden.",
+      "related structural assets": [
+        {
+          "asset rtl": "rden",
+          "entity": "neorv32_dmem",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Acknowledge event reported for each sampled request strobe",
+      "security objective": "Integrity",
+      "reasoning": "Line 125 registers bus_rsp_o.ack <= bus_req_i.stb, and line 122 clears it on reset. Integrity is established because the report flow depends on acknowledging exactly the sampled request strobe; availability is also established when reset is inactive and a strobe is sampled. No eligible structural asset survives the exclusions: the only declaration realizing this event is the transport output field bus_rsp_o.ack, but fields of ports are outside the candidate set and transport records are never reported.",
+      "related structural assets": []
+    }
+  ]
+}

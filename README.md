@@ -2,13 +2,14 @@
 
 Research work from July to October 2026 by Sumaiya Salekin. It replicates part of LAsset (arXiv:2601.02624,
 DATE 2026), which uses an LLM to name the security assets of RTL modules, on the NEORV32 RISC-V processor. It then
-adds an evidence layer that is built by code: every listed asset can be traced back to the exact line and
-relationship in the VHDL that the model cited.
+adds an evidence layer that is built by code: every listed asset can be traced back to the line it cites and, when
+it cites one, to the relationship record; code checks whether each citation is true.
 
 **Start here: [`FINAL_NOTEBOOK.ipynb`](FINAL_NOTEBOOK.ipynb).** It runs the final pipeline on the 41 NEORV32 modules
 that have a manual reference. The steps are occurrence profiles, the relationship map, correctness checks,
-generation with the final prompt, and an audit trail of every listed asset. It ends with what that trail says about
-why precision stopped rising, and a plot of how the prompt converged. It runs without an API key.
+generation with the final prompt, and an audit trail of every listed asset. It then compares the final prompt with
+LAsset on all 41 modules and shows how the prompt converged. It ends with what the audit trail says about why the
+false positives do not go down, and with what the two structures show about each module. It runs without an API key.
 
 ## What the work shows
 
@@ -24,30 +25,40 @@ that were listed.
   - Typed relationship records agree with a gold sample: precision 0.988, 95% interval 0.969 to 1.0. That is 120
     occurrences and 212 records. The gold was written by an LLM and adjudicated, so it is a consistency check, not
     human ground truth.
-- **On the 41 modules, precision is far below LAsset's and recall is higher.** The final prompt was run on all 41
-  modules by a Claude agent (3 tuning runs, 1 held-out run); its gpt-5.4 held-out runs are pending (API credits).
-  - Final prompt, Claude executor, all 41 modules (300 entries): precision 0.343, recall 0.932.
+- **On the 41 modules, precision is far below LAsset's; recall is higher than LAsset's RTL-only list.** The final
+  prompt on gpt-5.4, 3 runs on every module:
+  - All 41 modules (300 entries): precision 0.394, recall 0.856.
   - LAsset's RTL-only list (the like-for-like row; my pipeline reads only RTL): precision 0.711, recall 0.753.
-    Difference, with a 95% module-bootstrap interval: precision -0.367 [-0.449, -0.270], recall +0.179 [+0.128, +0.229].
-  - On the held-out modules alone: precision 0.329, recall 0.931, against LAsset RTL-only 0.730 / 0.757.
-  - Final prompt on gpt-5.4, tuning modules only (in-sample): precision 0.406, recall 0.820.
-- **The audit trail explains why the false positives do not go down.** Over the 41 modules (886 false positives):
-  - 93.7% of false positives cite a real occurrence with a true record (99.4% for hits). They are not hallucinations;
-    49% of them cite only a clock edge, which says no more than "this is a register".
-  - All 13 relationship classes occur on both hits and false positives; 30.5% of false positives have exactly the
-    relationship profile of some hit.
-  - The profile does separate hits from false positives on modules it has not seen (leave-one-module-out AUC 0.727).
-    Rules found on the tuning modules, applied unchanged to the held-out modules, raise precision from 0.329 to 0.478,
-    better than any of 2,000 random removals of the same size. But recall falls from 0.931 to 0.640, and both stay
-    below LAsset's RTL-only list.
-  - The model lists internal state registers at 0.165 of its list against 0.037 of the reference, with precision 0.082
-    inside that role. 54% of the false positives sit in concepts where the reference lists nothing.
-  - *Reading:* part of the gap is a role preference the structure shows (the reference rarely lists internal state);
-    the rest is a choice among elements with the same role and relationships, which the code evidence does not
-    distinguish. An earlier 15-module version of this analysis said the separating differences weaken on unseen
-    modules; on 41 modules that was too strong, and the notebook says so.
+    Difference, with a 95% module-bootstrap interval: precision -0.316 [-0.392, -0.232], recall +0.102 [+0.037, +0.167].
+  - Against LAsset's spec+RTL list (0.735 / 0.880): precision -0.341 [-0.395, -0.274]; recall -0.024 [-0.080, +0.030],
+    not distinguishable.
+  - Held-out modules alone: precision 0.388, recall 0.877 (LAsset RTL-only 0.730 / 0.757). Tuning modules
+    (in-sample): 0.406 / 0.820 (pooled over runs; the per-run mean precision is 0.407). *Reading:* held-out precision
+    is close to tuning precision, so the gap to LAsset is not an artefact of tuning.
+  - The same prompt run by a Claude agent, as a check: 0.343 / 0.932 on all 41 modules.
+- **The audit trail explains why the false positives do not go down.** Over the 41 modules (1,183 false-positive
+  listings from three runs per module; 500 distinct module/entity/element triples):
+  - Most of them (97.1%) cite a real occurrence with a true record (99.5% for hits): they are not misreadings of the RTL
+    as the map records it. 59.6% cite only a clock edge, which says no more than "this element is stored".
+  - All 13 relationship classes occur on both hits and false positives; 23.8% of false-positive listings have exactly
+    the relationship profile of some hit.
+  - The profile separates hits from false positives on unseen modules unevenly: on the tuning modules the AUC falls
+    from 0.776 in-sample to 0.678 even when the model learns from all 40 other modules; the held-out modules separate
+    better and lose less when unseen (0.911 in-sample, 0.875 unseen).
+  - Rules found on the tuning modules, applied unchanged to the held-out modules, raise precision from 0.388 to 0.545,
+    better than any of 2,000 random removals of the same size. But recall falls from 0.877 to 0.598, and both stay below
+    LAsset's RTL-only list.
+  - The model lists internal state registers at 0.159 of its list over all 41 modules. The reference lists them at
+    0.082 on the tuning modules and 0.011 on the held-out modules. Leaving that role out (an in-sample check: the role
+    was picked after seeing these shares) gives 0.459 / 0.866 on the held-out modules but 0.432 / 0.742 on the tuning
+    modules, still far below LAsset's precision.
+  - 44.4% of the false-positive listings sit in concepts where the reference lists nothing.
+  - *Reading:* on the held-out modules, part of the gap is a role preference the structure shows (the reference there
+    almost never lists internal state); the rest is a choice among elements that the relationship profiles separate
+    only partly. The earlier reading, that the separating differences weaken on unseen modules, holds for the tuning
+    modules.
 - **The two structures also describe each module.** For all 41 modules: which registers are written from an input
-  (192), which of those software can write through bus write data (116), which internal signals guard such writes (for example
+  (192) and which of those from a write-data port (116), which internal signals guard such writes (for example
   `ctrl.lock` in the watchdog), which registers have a reset, and which internal values reach an output.
 - **On LAsset's own list, the layer is an audit trail, not a filter.** A pre-registered test on the held-out set did
   not separate LAsset's hits from its false positives: AUC 0.639, 97.5% interval 0.495 to 0.768.
@@ -82,12 +93,12 @@ Decisions I would point to first:
 | path | what it holds |
 |---|---|
 | `FINAL_NOTEBOOK.ipynb` | the final pipeline, its checks and its analysis (start here) |
-| `final/` | `final_pipeline.py` (the notebook's helper); `results41.py` (scores on the 41 modules vs LAsset), `fp_trace41.py` (why the false positives stay, with outputs in `fp_trace41/`) and `module_insights.py` (module portraits, outputs in `module_insights/`), each with a self-test; `convergence.csv` and `heldout.csv` (every scored prompt version), the occurrence profiles of the 41 modules (plus the 2 controls boot_rom and fifo), the FP diagnosis and the fault report |
+| `final/` | `final_pipeline.py` (the notebook's helper); `results41.py` (scores on the 41 modules vs LAsset), `fp_trace41.py` (why the false positives stay, with outputs in `fp_trace41/`) and `module_insights.py` (module portraits, outputs in `module_insights/`), each with a self-test; `convergence.csv` and `heldout.csv` (every scored prompt version), the occurrence profiles of the 41 modules (plus the 2 control modules boot_rom and fifo), the FP diagnosis and the fault report |
 | `notebooks/` | the ablation notebooks: `finetuning_assetgen.ipynb` (v1), `finetuning_assetgen_v2.ipynb` (v2), `assetgen_meta.ipynb` (meta prompts, hand arms, traced arms, diagnosis), `lasset_step1.ipynb` (occurrence profiles and relation map on the 15 tuning modules), `lasset_evidence_layer.ipynb` (the pre-registered test of the evidence layer on LAsset's lists) |
 | `logs/` | logs and registration of the v1 and v2 prompt studies: `ABLATION_LOG.md`, `ABLATION_LOG_V2.md`, `V02_*.md` |
 | `docs/` | `TIMELINE.md` (July to October), `LAYOUT.md` (the folder layout and the 2026-10-02 move), `TUNING_GUIDE.md`, `experiment_tracker.csv` (the July plan) |
 | `src/` | the study code from July and August: parser, prompts, ICL examples, the scorer (`eval_assets.py`), and `verify_layout_move.py` |
-| `data/` | `RTL_data/` and `RTL_heldout/` (NEORV32 VHDL: 18 tuning files, 15 with reference entries plus 3 controls, and 26 held-out files), `ground_truth/` and `LAsset_initial_results/` (LAsset's manual reference and published lists; see the notices), `parsed_*/` (closed sets: the ports and signals of each module, extracted by regex) |
+| `data/` | `RTL_data/` and `RTL_heldout/` (NEORV32 VHDL: 18 tuning files: 15 with reference entries, 2 control modules (boot_rom, fifo) and the shared package; and 26 held-out files), `ground_truth/` and `LAsset_initial_results/` (LAsset's manual reference and published lists; see the notices), `parsed_*/` (closed sets: the ports and signals of each module, extracted by regex) |
 | `runs/` | the run folders needed to re-score the final prompt, its baselines and the held-out checks |
 | `assetgen_meta/` | meta prompts, hand arms, traced inputs, `trace_check.py` (the citation checker), the optimization loop (`prompt_opt/`), `fp_diagnosis.py`, `fault_reporter.py`, `lasset_layer.py`, pre-registrations |
 | `step1/` | occurrence profiles and relationship maps: `structure_stage.py` (tree-sitter Context and Path), `code_site_tags.py`, `code_pairs_v2.py`, `build_heldout_code_map.py`, the stored maps, the relation log, and the gold set (`bakeoff/`) |
@@ -111,8 +122,9 @@ path to 260 unless `git config --global core.longpaths true` is set.
 Open `FINAL_NOTEBOOK.ipynb` and run all cells. It needs no API key and takes a few minutes. If the tree-sitter
 VHDL grammar is missing, the first cell stops and prints the one-line command that fetches it.
 
-To run the held-out generation, put `OPENAI_API_KEY=...` in a file named `API.env` in the repo root and set
-`RUN_API = True`. That file is ignored by git.
+The gpt-5.4 runs are already in `runs/`. To generate runs that are missing, put `OPENAI_API_KEY=...` in a file
+named `API.env` in the repo root and set `RUN_API = True`; modules already on disk are skipped. That file is ignored
+by git.
 
 To check the files pinned by the three pre-registrations (it prints one line per pin and ends with the failure
 count):
@@ -138,7 +150,7 @@ their exact bytes.
 
 ## Limits
 
-- Held-out generation with the final prompt has not run yet.
+- Three gpt-5.4 runs per module; the Claude check has one run on the held-out modules.
 - Every precision figure measures agreement with one manual list. An element the reference does not list is
   counted as a false positive, which is not proof that it is not an asset.
 - The LAsset rows are LAsset's published lists, scored with my scorer. They are not reruns of LAsset.

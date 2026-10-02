@@ -1,0 +1,274 @@
+{
+  "module name": "neorv32_cpu_icc",
+  "module purpose": "neorv32_cpu_icc translates selected CSR reads and writes into an ICC-side handshake and an instantiated FIFO sub-unit interface: it returns incoming status/data and a sub-unit status bit on csr_rdata_o, asserts icc_tx_o.ack on matching CSR reads, writes csr_wdata_i into the FIFO on matching CSR writes, and exposes the FIFO outputs on icc_tx_o.",
+  "use-case flows": [
+    {
+      "flow": "read out",
+      "value": "status-register readback of the incoming-data availability bit and the FIFO-sub-unit status bit on csr_rdata_o(0..1)",
+      "lines": [
+        43,
+        45,
+        46,
+        47,
+        48,
+        49,
+        55
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "data-register readback of the incoming data word on csr_rdata_o when the data register is addressed and icc_rx_i.rdy='1'",
+      "lines": [
+        43,
+        45,
+        46,
+        47,
+        50,
+        51,
+        52,
+        55
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "read-acknowledge event on icc_tx_o.ack for a CSR read of csr_mxiccdata_c",
+      "lines": [
+        59
+      ]
+    },
+    {
+      "flow": "start",
+      "value": "write-enable decision tx_fifo_we for a CSR write of csr_mxiccdata_c",
+      "lines": [
+        60,
+        82
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "CSR write word delivered to the FIFO-sub-unit input",
+      "lines": [
+        81,
+        82
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "FIFO-sub-unit exchange at this entity boundary: status on tx_fifo_free, dequeue control from icc_rx_i.ack, and outputs on icc_tx_o.dat and icc_tx_o.rdy",
+      "lines": [
+        83,
+        85,
+        86,
+        87
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Incoming-data availability decision returned to CSR software",
+      "security objective": "Integrity",
+      "reasoning": "The read-out flow copies icc_rx_i.rdy into csr_rdata_o(0) on status-register reads (line 48), and the data-register path is enabled only when icc_rx_i.rdy = '1' (lines 51-52). Integrity is established because these read paths depend on the decision being correct: otherwise the reported availability bit or the qualification of the data word is wrong. Availability is also established for addressed status reads through lines 46-49.",
+      "related structural assets": [
+        {
+          "asset rtl": "icc_rx_i",
+          "entity": "neorv32_cpu_icc",
+          "realization": "sets",
+          "occurrence": 4,
+          "edge": {
+            "type": "GATES",
+            "partner": "csr_rdata_o"
+          }
+        },
+        {
+          "asset rtl": "csr_rdata_o",
+          "entity": "neorv32_cpu_icc",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "COPIES",
+            "partner": "icc_rx_i.rdy"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Incoming data word returned on CSR data reads",
+      "security objective": "Integrity",
+      "reasoning": "When the data register is selected and icc_rx_i.rdy = '1', csr_rdata_o is driven from icc_rx_i.dat (lines 51-52). Integrity is established because the data-read flow depends on csr_rdata_o carrying exactly that word under the implemented condition; otherwise the read result is incorrect. Availability is established conditionally by the same lines.",
+      "related structural assets": [
+        {
+          "asset rtl": "icc_rx_i",
+          "entity": "neorv32_cpu_icc",
+          "realization": "sets",
+          "occurrence": 5,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "csr_rdata_o"
+          }
+        },
+        {
+          "asset rtl": "csr_rdata_o",
+          "entity": "neorv32_cpu_icc",
+          "realization": "exit port",
+          "occurrence": 5,
+          "edge": {
+            "type": "COPIES",
+            "partner": "icc_rx_i.dat"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "FIFO-sub-unit status value reported in csr_rdata_o(1)",
+      "security objective": "Integrity",
+      "reasoning": "The instantiated sub-unit drives tx_fifo_free through free_o at line 83, and status-register reads copy tx_fifo_free into csr_rdata_o(1) at line 49. Integrity is established because the status read-out flow depends on csr_rdata_o(1) matching the sub-unit output value. Availability is established for addressed status reads at lines 46-49.",
+      "related structural assets": [
+        {
+          "asset rtl": "tx_fifo_free",
+          "entity": "neorv32_cpu_icc",
+          "realization": "computes",
+          "occurrence": 4,
+          "edge": {
+            "type": "CONNECTS",
+            "partner": "tx_queue_inst.free_o"
+          }
+        },
+        {
+          "asset rtl": "csr_rdata_o",
+          "entity": "neorv32_cpu_icc",
+          "realization": "exit port",
+          "occurrence": 4,
+          "edge": {
+            "type": "COPIES",
+            "partner": "tx_fifo_free"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Read-acknowledge event emitted on icc_tx_o when the data CSR is read",
+      "security objective": "Integrity",
+      "reasoning": "The module computes icc_tx_o.ack directly from the CSR read condition: `icc_tx_o.ack <= '1' when (csr_re_i = '1') and (csr_addr_i = csr_mxiccdata_c) else '0';` (line 59). Integrity is established because the handshake event leaving this entity must occur exactly under that predicate; otherwise the external consumer receives an incorrect acknowledge. Availability is established under the same predicate.",
+      "related structural assets": [
+        {
+          "asset rtl": "csr_re_i",
+          "entity": "neorv32_cpu_icc",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATES",
+            "partner": "icc_tx_o.ack"
+          }
+        },
+        {
+          "asset rtl": "csr_addr_i",
+          "entity": "neorv32_cpu_icc",
+          "realization": "sets",
+          "occurrence": 5,
+          "edge": {
+            "type": "GATES",
+            "partner": "icc_tx_o.ack"
+          }
+        },
+        {
+          "asset rtl": "icc_tx_o",
+          "entity": "neorv32_cpu_icc",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "csr_re_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Transmit-write request decision for the FIFO sub-unit",
+      "security objective": "Integrity",
+      "reasoning": "The write-start flow computes `tx_fifo_we <= '1' when (csr_we_i = '1') and (csr_addr_i = csr_mxiccdata_c) else '0';` (line 60) and delivers that decision to the sub-unit write-enable input at line 82. Integrity is established because a FIFO write should be requested only for the addressed CSR write; otherwise writes are spuriously created or suppressed. Availability is established under the implemented predicate.",
+      "related structural assets": [
+        {
+          "asset rtl": "csr_we_i",
+          "entity": "neorv32_cpu_icc",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATES",
+            "partner": "tx_fifo_we"
+          }
+        },
+        {
+          "asset rtl": "csr_addr_i",
+          "entity": "neorv32_cpu_icc",
+          "realization": "sets",
+          "occurrence": 6,
+          "edge": {
+            "type": "GATES",
+            "partner": "tx_fifo_we"
+          }
+        },
+        {
+          "asset rtl": "tx_fifo_we",
+          "entity": "neorv32_cpu_icc",
+          "realization": "computes",
+          "occurrence": 2,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "csr_we_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "CSR-supplied write word delivered to the FIFO-sub-unit input",
+      "security objective": "Integrity",
+      "reasoning": "The module passes csr_wdata_i into the instantiated sub-unit on `wdata_i => csr_wdata_i` (line 81), with the write flow qualified separately by tx_fifo_we at line 82. Integrity is established by the boundary-delivery rule: the sub-unit consumer must receive exactly the supplied word for the write flow this RTL implements. This entity has no declared internal element that stores or recomputes that word before it reaches the sub-unit.",
+      "related structural assets": [
+        {
+          "asset rtl": "csr_wdata_i",
+          "entity": "neorv32_cpu_icc",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "CONNECTS",
+            "partner": "tx_queue_inst.wdata_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "FIFO-sub-unit output word delivered on icc_tx_o",
+      "security objective": "Integrity",
+      "reasoning": "The module delivers the sub-unit output word directly to the ICC output port on `rdata_o => icc_tx_o.dat` (line 86). Integrity is established by the module-boundary rule: the consumer outside this entity must receive exactly the word this entity exposes on that output. Availability is conditional on the paired output indication at line 87 and the sub-unit state; no stronger guarantee is visible in this RTL.",
+      "related structural assets": [
+        {
+          "asset rtl": "icc_tx_o",
+          "entity": "neorv32_cpu_icc",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "CONNECTS",
+            "partner": "tx_queue_inst.rdata_o"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "FIFO-sub-unit output availability indication delivered on icc_tx_o",
+      "security objective": "Integrity",
+      "reasoning": "The module delivers the sub-unit availability output directly to the ICC output port on `avail_o => icc_tx_o.rdy` (line 87). Integrity is established because the external consumer depends on receiving exactly the indication this entity exposes on that boundary. Availability is whatever the sub-unit drives; this entity forwards it continuously at the port.",
+      "related structural assets": [
+        {
+          "asset rtl": "icc_tx_o",
+          "entity": "neorv32_cpu_icc",
+          "realization": "exit port",
+          "occurrence": 4,
+          "edge": {
+            "type": "CONNECTS",
+            "partner": "tx_queue_inst.avail_o"
+          }
+        }
+      ]
+    }
+  ]
+}

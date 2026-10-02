@@ -1,0 +1,439 @@
+{
+  "module name": "neorv32_neoled",
+  "module purpose": "neorv32_neoled stores bus-written control settings, accepts bus-written transmit entries into an internal FIFO, and serializes queued entries onto neoled_o using a selected clock and programmable pulse timings. It also reports control/status on the bus, drives clkgen_en_o from the enable setting, and raises irq_o from FIFO state.",
+  "use-case flows": [
+    {
+      "flow": "configure",
+      "value": "write control settings for enable, transfer format, clock selection, IRQ mode, and pulse timings",
+      "lines": [
+        127,
+        128,
+        129,
+        130,
+        131,
+        132,
+        133,
+        134,
+        135,
+        136,
+        137
+      ]
+    },
+    {
+      "flow": "start",
+      "value": "qualify a data-area bus write as a FIFO enqueue request and pack strobe, mode, and payload into the transmit entry",
+      "lines": [
+        181,
+        182,
+        191,
+        192,
+        193
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "dequeue a transmit entry, derive transfer mode and timing, and drive the serialized waveform on neoled_o",
+      "lines": [
+        190,
+        225,
+        231,
+        236,
+        239,
+        240,
+        241,
+        242,
+        244,
+        245,
+        247,
+        248,
+        249,
+        251,
+        257,
+        258,
+        260,
+        261,
+        263,
+        265,
+        266,
+        267,
+        268,
+        270,
+        271,
+        278,
+        279,
+        281,
+        282,
+        285,
+        286,
+        293,
+        295,
+        296,
+        297,
+        299,
+        303,
+        304,
+        305,
+        310,
+        311,
+        318,
+        321
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "generate an interrupt request from enable, IRQ configuration, and FIFO status",
+      "lines": [
+        201,
+        202,
+        203
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "return control registers and transmitter status bits on bus reads",
+      "lines": [
+        139,
+        140,
+        141,
+        142,
+        143,
+        144,
+        145,
+        146,
+        147,
+        148,
+        150,
+        151,
+        152,
+        153
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "force control registers, irq_o, serial-engine state, and neoled_o low or zero when rstn_i is low",
+      "lines": [
+        111,
+        112,
+        113,
+        114,
+        115,
+        116,
+        117,
+        118,
+        119,
+        120,
+        198,
+        199,
+        212,
+        213,
+        214,
+        215,
+        216,
+        217,
+        218,
+        219,
+        220,
+        221,
+        222
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Transmitter enable setting",
+      "security objective": "Integrity",
+      "reasoning": "The configure flow stores the enable bit in ctrl.enable at line 130, resets it at line 112, exports it on clkgen_en_o at line 160, clears the FIFO when it is deasserted at line 193, gates irq_o at line 201, and copies it into serial.state(2) at line 231. Integrity is established because these implemented effects all depend on the stored enable value being correct. Availability is also established because the setting is held between writes and leaves the entity on clkgen_en_o. The bus request/response records carry the write and read transactions, but those transport ports are excluded, so the stored field and non-transport output are the structural refs.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.enable",
+          "entity": "neorv32_neoled",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "clkgen_en_o",
+          "entity": "neorv32_neoled",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "ctrl.enable"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Default transfer-format settings for queued entries",
+      "security objective": "Integrity",
+      "reasoning": "The configure flow stores ctrl.mode and ctrl.strobe at lines 131-132, resets them at lines 113-114, and the enqueue path packs them into each FIFO entry with `tx_fifo.wdata <= ctrl.strobe & ctrl.mode & bus_req_i.data;` at line 192. When an entry is later consumed, those bits determine 24-bit versus 32-bit handling and normal versus strobe behavior at lines 240-251. Integrity is established because corrupting these stored settings changes how future transmit entries are encoded and then interpreted. Availability is also established because the settings persist between writes and are read by the enqueue computation.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.mode",
+          "entity": "neorv32_neoled",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl.strobe",
+          "entity": "neorv32_neoled",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Serial timing configuration",
+      "security objective": "Integrity",
+      "reasoning": "The configure flow stores ctrl.clk_prsc, ctrl.t_total, ctrl.t0_high, and ctrl.t1_high at lines 133 and 135-137, with reset values at lines 115 and 117-119. The serial engine then uses ctrl.clk_prsc to select `clkgen_i(...)` into serial.pulse_clk at line 225, chooses ctrl.t0_high or ctrl.t1_high into serial.t_high at lines 261-263, and compares serial.pulse_cnt against serial.t_high and ctrl.t_total at lines 281, 285, and 295. Integrity is established because the implemented pulse cadence, high time, and transfer/strobe length on neoled_o are defined by these settings. Availability is also established because the values are stored between writes and consumed whenever transmission runs.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.clk_prsc",
+          "entity": "neorv32_neoled",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl.t_total",
+          "entity": "neorv32_neoled",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl.t0_high",
+          "entity": "neorv32_neoled",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl.t1_high",
+          "entity": "neorv32_neoled",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Interrupt-condition setting",
+      "security objective": "Integrity",
+      "reasoning": "The configure flow stores ctrl.irq_conf at line 134 and resets it at line 116. The report flow uses it in irq generation at lines 201-203 to choose whether irq_o depends on `not tx_fifo.avail` or on `not tx_fifo.half`. Integrity is established because this stored setting changes the implemented condition under which the module requests interrupt service. Availability is also established because the setting is retained between writes and consumed by the irq computation.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.irq_conf",
+          "entity": "neorv32_neoled",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "FIFO enqueue decision for transmit entries",
+      "security objective": "Integrity",
+      "reasoning": "The start flow computes `tx_fifo.we <= '1' when (bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(2) = '1') else '0';` at line 191 and delivers it to the FIFO sub-block on we_i at line 182. Integrity is established because only data-area write transactions are supposed to enqueue transmit entries; a wrong decision would admit or suppress writes contrary to the RTL predicate. Availability is also established under the implemented condition that when the predicate is true, the sub-block receives the write-enable value defined at line 191.",
+      "related structural assets": [
+        {
+          "asset rtl": "tx_fifo.we",
+          "entity": "neorv32_neoled",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "bus_req_i.stb"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Queued transfer entry and its in-flight serialization",
+      "security objective": "Integrity",
+      "reasoning": "The start flow forms each entry at line 192. The operate flow later receives the entry from the FIFO sub-block at line 186, loads the payload into serial.sreg at line 239, decodes the entry's format bits into serial.mode and serial.bit_cnt at lines 240-245, uses the strobe flag to choose the next serial.state at lines 247-251, shifts serial.sreg and decrements serial.bit_cnt at lines 257-258, derives serial.next_bit at line 318, chooses serial.t_high from that bit at lines 260-264, advances pulse and strobe counters at lines 278-305, and drives neoled_o at lines 266, 270, 282, and 310. Integrity is established because the emitted serial waveform must reflect the queued entry's payload and metadata exactly through these defined state updates and decisions. Availability is also established for the RTL-visible condition that ctrl.enable is asserted, an entry is available, and pulse-clock events occur; under those conditions the entry is loaded and progressed toward neoled_o. tx_fifo.rdata is a sub-unit output field, but it is locally tested in the if-statements at lines 240 and 248, so it is eligible here.",
+      "related structural assets": [
+        {
+          "asset rtl": "tx_fifo.wdata",
+          "entity": "neorv32_neoled",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "bus_req_i.data"
+          }
+        },
+        {
+          "asset rtl": "tx_fifo.rdata",
+          "entity": "neorv32_neoled",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "CONNECTS",
+            "partner": "data_buffer.rdata_o"
+          }
+        },
+        {
+          "asset rtl": "serial.sreg",
+          "entity": "neorv32_neoled",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "serial.mode",
+          "entity": "neorv32_neoled",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "serial.state",
+          "entity": "neorv32_neoled",
+          "realization": "stores",
+          "occurrence": 6,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "serial.bit_cnt",
+          "entity": "neorv32_neoled",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "serial.pulse_clk",
+          "entity": "neorv32_neoled",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "serial.pulse_cnt",
+          "entity": "neorv32_neoled",
+          "realization": "stores",
+          "occurrence": 5,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "serial.t_high",
+          "entity": "neorv32_neoled",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "serial.strobe_cnt",
+          "entity": "neorv32_neoled",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "serial.next_bit",
+          "entity": "neorv32_neoled",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "serial.sreg"
+          }
+        },
+        {
+          "asset rtl": "neoled_o",
+          "entity": "neorv32_neoled",
+          "realization": "exit port",
+          "occurrence": 6,
+          "edge": {
+            "type": "CONSTRAINED_BY",
+            "partner": "serial.pulse_cnt"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Transmitter busy status",
+      "security objective": "Integrity",
+      "reasoning": "The module computes `serial.busy <= '0' when (serial.state(1 downto 0) = \"00\") else '1';` at line 321 and reports that status on bus readout at line 153. Integrity is established because the read-out flow depends on this computed summary matching the actual serial.state encoding. Availability is also established because the status is recomputed from the current state whenever that state changes.",
+      "related structural assets": [
+        {
+          "asset rtl": "serial.busy",
+          "entity": "neorv32_neoled",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "serial.state"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Interrupt request decision",
+      "security objective": "Integrity",
+      "reasoning": "The report flow assigns `irq_o <= ctrl.enable and (((not ctrl.irq_conf) and (not tx_fifo.avail)) or ((ctrl.irq_conf) and (not tx_fifo.half)));` at lines 201-203, with reset low at line 199. Integrity is established because the externally visible interrupt request must follow this exact boolean relation between enable, interrupt mode, and FIFO status. Availability is also established under the implemented condition that the clocked process evaluates with ctrl.enable asserted; then the request is produced on irq_o according to lines 201-203.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_o",
+          "entity": "neorv32_neoled",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "ctrl.enable"
+          }
+        }
+      ]
+    }
+  ]
+}

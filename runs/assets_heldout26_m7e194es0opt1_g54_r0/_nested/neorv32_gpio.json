@@ -1,0 +1,290 @@
+{
+  "module name": "neorv32_gpio",
+  "module purpose": "neorv32_gpio stores a GPIO output register and interrupt-control registers written through the bus request port, samples external GPIO inputs into internal registers, drives gpio_o from the stored output state, returns sampled and stored GPIO state on the bus response port, and raises cpu_irq_o from buffered GPIO interrupt conditions.",
+  "use-case flows": [
+    {
+      "flow": "configure",
+      "value": "GPIO output state written into port_out and driven on gpio_o",
+      "lines": [
+        74,
+        84,
+        111,
+        112
+      ]
+    },
+    {
+      "flow": "configure",
+      "value": "per-pin interrupt trigger-condition and enable configuration written into irq_typ, irq_pol, and irq_en",
+      "lines": [
+        75,
+        76,
+        77,
+        123,
+        124,
+        125,
+        126,
+        127,
+        128,
+        129,
+        141
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "external GPIO inputs sampled into current and previous-stage registers",
+      "lines": [
+        100,
+        101,
+        103,
+        104
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "selected pending interrupt bits retained or cleared by irq_clrn during pending-state update",
+      "lines": [
+        69,
+        78,
+        141
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "per-pin interrupt trigger events computed from sampled inputs and configuration, then merged into pending flags",
+      "lines": [
+        123,
+        124,
+        125,
+        126,
+        127,
+        128,
+        129,
+        141
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "aggregated interrupt request driven on cpu_irq_o from the stored pending flags",
+      "lines": [
+        139,
+        142
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "sampled inputs, output state, interrupt configuration, and pending flags returned on bus_rsp_o.data",
+      "lines": [
+        83,
+        84,
+        85,
+        86,
+        87,
+        88
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "response, GPIO state, sampled-input state, interrupt configuration, pending flags, and cpu_irq_o cleared when rstn_i = '0'",
+      "lines": [
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63,
+        99,
+        100,
+        101,
+        137,
+        138,
+        139
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "GPIO output state driven on the module's external output pins",
+      "security objective": "Integrity",
+      "reasoning": "The configure flow stores bus-written output bits in `port_out` at line 74 and the output stage drives the same stored value on `gpio_o` at line 112; line 84 returns the stored value on readback. Integrity is established because the boundary output and the returned state must match the stored register value. Availability is also established because `port_out` is held between writes and `gpio_o` is continuously driven. `bus_req_i` and `bus_rsp_o` are transport records, so the reported structural references are the internal store and the non-transport exit.",
+      "related structural assets": [
+        {
+          "asset rtl": "port_out",
+          "entity": "neorv32_gpio",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "gpio_o",
+          "entity": "neorv32_gpio",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "COPIES",
+            "partner": "port_out"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Current sampled GPIO input state",
+      "security objective": "Integrity",
+      "reasoning": "The input stage captures `gpio_i(GPIO_NUM-1 downto 0)` into `port_in` at line 103 and clears it on reset at line 100. The sampled value is returned on readback at line 83 and is also used in the trigger equations at lines 125-128. Integrity is established because both the reported input state and interrupt detection depend on the captured sample being correct. Availability is also established because the module samples on each clock edge and stores the value until the next sample.",
+      "related structural assets": [
+        {
+          "asset rtl": "gpio_i",
+          "entity": "neorv32_gpio",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "SOURCES",
+            "partner": "port_in"
+          }
+        },
+        {
+          "asset rtl": "port_in",
+          "entity": "neorv32_gpio",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Previous sampled GPIO input state used for edge detection",
+      "security objective": "Integrity",
+      "reasoning": "The input stage copies `port_in` into `port_in2` at line 104 and clears it on reset at line 101. Lines 127-128 compare `port_in2` with `port_in` to detect transitions. Integrity is established because falling-edge and rising-edge trigger decisions depend on preserving the previous sampled state correctly. Availability is also established because the prior sample is stored until the next update.",
+      "related structural assets": [
+        {
+          "asset rtl": "port_in2",
+          "entity": "neorv32_gpio",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Per-pin interrupt trigger-condition configuration",
+      "security objective": "Integrity",
+      "reasoning": "Lines 75-76 write the two configuration vectors `irq_typ` and `irq_pol`; lines 85-86 return them on readback. In the trigger generator, `sel_v := irq_typ(i) & irq_pol(i)` at line 123 and the case at lines 124-129 choose which input condition drives `irq_trig(i)`. Integrity is established because changing either stored configuration changes which input condition raises an interrupt trigger. Availability is also established because both settings are stored until rewritten. The map does not record the variable-based selection from `irq_typ`/`irq_pol` into `irq_trig`, so lines 123-129 are direct RTL evidence for that use.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_typ",
+          "entity": "neorv32_gpio",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "irq_pol",
+          "entity": "neorv32_gpio",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Per-pin interrupt enable mask",
+      "security objective": "Integrity",
+      "reasoning": "Line 77 writes `irq_en`, line 87 returns it on readback, and line 141 masks the pending-state update with `irq_en and ((irq_pend and irq_clrn) or irq_trig)`. Integrity is established because both the stored pending flags and the reported CPU interrupt depend on exactly which bits are enabled. Availability is also established because the enable mask is held until rewritten and used on each pending-state update.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_en",
+          "entity": "neorv32_gpio",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Per-pin interrupt clear mask for pending-state update",
+      "security objective": "Integrity",
+      "reasoning": "`irq_clrn` is forced to all '1' at line 69 each cycle, can be overwritten by bus-written data at line 78, and is then used in line 141 as `(irq_pend and irq_clrn)` to preserve or clear existing pending bits. Integrity is established because zero bits clear selected pending flags while one bits keep them, so corruption changes the pending-state update rule itself. Availability is established for the implemented clear action when a write stores the mask and a later pending-state update consumes it.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_clrn",
+          "entity": "neorv32_gpio",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Per-pin interrupt trigger event",
+      "security objective": "Integrity",
+      "reasoning": "Lines 123-129 compute `irq_trig(i)` from the sampled inputs under the configured trigger condition, and line 141 merges `irq_trig` into `irq_pend`. Integrity is established because correct pending-flag updates depend on correct trigger detection. Availability is also established because when the configured condition is present in the sampled inputs, the trigger value is available to be captured into the pending buffer. The map captures the data dependence on `port_in` and `port_in2` at lines 127-128 but omits the case selection through `sel_v`, so the RTL lines are part of the evidence.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_trig",
+          "entity": "neorv32_gpio",
+          "realization": "computes",
+          "occurrence": 4,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "port_in2"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Pending GPIO interrupt flags",
+      "security objective": "Integrity",
+      "reasoning": "`irq_pend` is cleared on reset at line 138 and updated at line 141 from `irq_en` and `((irq_pend and irq_clrn) or irq_trig)`, so it is the self-updating state that holds pending interrupt conditions. Line 88 returns it on readback and line 142 uses it to generate the module's interrupt output. Integrity is established because correct set, hold, and clear behavior depends on this stored state. Availability is also established because the register preserves pending bits until the implemented clear condition removes them. `bus_rsp_o` is a transport record, so the structural reference is the internal register rather than the bus readback port.",
+      "related structural assets": [
+        {
+          "asset rtl": "irq_pend",
+          "entity": "neorv32_gpio",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "CPU interrupt request reported at the module boundary",
+      "security objective": "Integrity",
+      "reasoning": "The report flow clears `cpu_irq_o` on reset at line 139 and updates it at line 142 with `or_reduce_f(irq_pend)`. Integrity is established because the boundary interrupt report must exactly reflect whether the stored pending vector contains any asserted bit. Availability is also established because the output is updated on each `irq_buffer` clock edge from the stored pending state.",
+      "related structural assets": [
+        {
+          "asset rtl": "cpu_irq_o",
+          "entity": "neorv32_gpio",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "irq_pend"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,494 @@
+{
+  "module name": "neorv32_slink",
+  "module purpose": "neorv32_slink bridges a bus-visible control/data interface to streaming RX and TX FIFOs. Bus writes configure enable, clear, interrupt, and destination-route state and enqueue TX words; incoming slink words fill the RX FIFO; bus reads return status or dequeue RX data; the module also drives link-side ready/valid/data outputs and RX/TX interrupt outputs.",
+  "use-case flows": [
+    {
+      "flow": "configure",
+      "value": "module enable, FIFO clear command, and interrupt-threshold bits written from the bus control word",
+      "lines": [
+        143,
+        145,
+        147,
+        148,
+        149,
+        150,
+        152,
+        153,
+        154,
+        155,
+        156,
+        157
+      ]
+    },
+    {
+      "flow": "configure",
+      "value": "transmit destination route written from the bus route word",
+      "lines": [
+        160,
+        161
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "incoming slink word accepted into the RX FIFO and backpressured by free space",
+      "lines": [
+        229,
+        230,
+        231,
+        232,
+        233
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "stored control, FIFO status, and route state returned on bus reads",
+      "lines": [
+        165,
+        167,
+        169,
+        171,
+        172,
+        173,
+        174,
+        175,
+        176,
+        178,
+        179,
+        180,
+        181,
+        182,
+        183,
+        185,
+        186,
+        188,
+        189
+      ]
+    },
+    {
+      "flow": "read out",
+      "value": "bus-qualified RX FIFO dequeue, with payload returned and source/last metadata latched for readback",
+      "lines": [
+        191,
+        227,
+        242,
+        243,
+        244,
+        245,
+        247,
+        248
+      ]
+    },
+    {
+      "flow": "operate",
+      "value": "bus write assembles a transmit slink word, queues it in the TX FIFO, and drives queued words to the slink outputs",
+      "lines": [
+        295,
+        296,
+        298,
+        299,
+        300,
+        301,
+        302
+      ]
+    },
+    {
+      "flow": "report",
+      "value": "RX and TX interrupt outputs generated from enable, programmed thresholds, and FIFO status",
+      "lines": [
+        259,
+        260,
+        261,
+        262,
+        310,
+        311,
+        312,
+        313
+      ]
+    },
+    {
+      "flow": "reset",
+      "value": "reset clears control state, route registers, receive metadata, and interrupt outputs; disable or clear commands force FIFO clear",
+      "lines": [
+        121,
+        122,
+        123,
+        124,
+        125,
+        126,
+        127,
+        128,
+        129,
+        130,
+        131,
+        132,
+        226,
+        238,
+        239,
+        240,
+        242,
+        243,
+        256,
+        257,
+        294,
+        307,
+        308
+      ]
+    }
+  ],
+  "conceptual assets": [
+    {
+      "concept": "Module enable state",
+      "security objective": "Integrity",
+      "reasoning": "`ctrl.enable` is written from the bus control word at line 148 under bus write qualification (lines 143, 145, 147), reset to '0' at line 123, read back at line 167, and consumed in the RX/TX clear equations (lines 226, 294) and both interrupt equations (lines 259, 310). Integrity matters because a wrong enable state changes whether the FIFOs are held clear and whether interrupts can assert; availability of normal operation when enabled is also established by the same lines.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.enable",
+          "entity": "neorv32_slink",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "RX/TX FIFO clear commands and clear decisions",
+      "security objective": "Integrity",
+      "reasoning": "The clear-command bits are written at lines 149-150, forced low by default each cycle at lines 140-141, and contribute to the actual FIFO clear decisions `rx_fifo.clear <= (not ctrl.enable) or ctrl.rx_clr;` (line 226) and `tx_fifo.clear <= (not ctrl.enable) or ctrl.tx_clr;` (line 294). Integrity matters because a wrong command or clear decision clears, or fails to clear, buffered RX/TX contents; line 243 also forces `rx_last` low when the RX FIFO is cleared.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.rx_clr",
+          "entity": "neorv32_slink",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "rx_fifo.clear",
+          "entity": "neorv32_slink",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "ctrl.rx_clr"
+          }
+        },
+        {
+          "asset rtl": "ctrl.tx_clr",
+          "entity": "neorv32_slink",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "tx_fifo.clear",
+          "entity": "neorv32_slink",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "ctrl.tx_clr"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Interrupt qualification settings",
+      "security objective": "Integrity",
+      "reasoning": "The six interrupt-threshold bits are written at lines 152-157, reset low at lines 126-131, read back at lines 178-183, and used in the RX/TX interrupt equations at lines 259-262 and 310-313. Integrity matters because wrong settings change the implemented conditions under which `rx_irq_o` and `tx_irq_o` assert; availability of programmed interrupts under matching FIFO states is also established.",
+      "related structural assets": [
+        {
+          "asset rtl": "ctrl.irq_rx_nempty",
+          "entity": "neorv32_slink",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl.irq_rx_half",
+          "entity": "neorv32_slink",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl.irq_rx_full",
+          "entity": "neorv32_slink",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl.irq_tx_empty",
+          "entity": "neorv32_slink",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl.irq_tx_nhalf",
+          "entity": "neorv32_slink",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "ctrl.irq_tx_nfull",
+          "entity": "neorv32_slink",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Transmit destination route setting",
+      "security objective": "Integrity",
+      "reasoning": "`route_dst` is written from the route register word at line 161 under bus write qualification (lines 143, 145, 160), reset at line 132, read back at line 188, and inserted into transmitted FIFO words at line 296. Integrity matters because a wrong stored route changes the destination nibble attached to outgoing words and the value returned on readback; availability is established because the setting is held between writes.",
+      "related structural assets": [
+        {
+          "asset rtl": "route_dst",
+          "entity": "neorv32_slink",
+          "realization": "stores",
+          "occurrence": 3,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Received link word fields",
+      "security objective": "Integrity",
+      "reasoning": "Incoming payload, source, and last fields are copied into the RX FIFO write path at lines 230-232, with writes enabled by line 229. On a qualified dequeue (`rx_fifo.re`, line 227), the payload is returned on the bus data path at line 191, `route_src` latches `rx_fifo.rdata(35 downto 32)` at line 248 and is later read back at line 189, and `rx_last` latches `rx_fifo.rdata(36)` at line 245 and is later read back at line 169. Integrity matters because the read-out flow depends on software observing the same word fields that were accepted; the payload's bus exit lies on the excluded transport port `bus_rsp_o`, and FIFO storage is inside the instantiated sub-unit.",
+      "related structural assets": [
+        {
+          "asset rtl": "slink_rx_data_i",
+          "entity": "neorv32_slink",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "rx_fifo.wdata"
+          }
+        },
+        {
+          "asset rtl": "slink_rx_src_i",
+          "entity": "neorv32_slink",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "rx_fifo.wdata"
+          }
+        },
+        {
+          "asset rtl": "slink_rx_last_i",
+          "entity": "neorv32_slink",
+          "realization": "sets",
+          "occurrence": 2,
+          "edge": {
+            "type": "CARRIES",
+            "partner": "rx_fifo.wdata"
+          }
+        },
+        {
+          "asset rtl": "route_src",
+          "entity": "neorv32_slink",
+          "realization": "stores",
+          "occurrence": 4,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        },
+        {
+          "asset rtl": "rx_last",
+          "entity": "neorv32_slink",
+          "realization": "stores",
+          "occurrence": 5,
+          "edge": {
+            "type": "CLOCKED_BY",
+            "partner": "clk_i"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Receive FIFO dequeue decision",
+      "security objective": "Integrity",
+      "reasoning": "`rx_fifo.re` is asserted only when `(bus_req_i.stb = '1') and (bus_req_i.rw = '0') and (bus_req_i.addr(3) = '1')` at line 227. That same decision causes the RX FIFO word to be consumed for read-out (line 191) and triggers metadata capture at lines 244-248. Integrity matters because a wrong dequeue decision pops the FIFO under the wrong bus condition or suppresses an intended read; availability of RX read-out is conditional on this qualified read.",
+      "related structural assets": [
+        {
+          "asset rtl": "rx_fifo.re",
+          "entity": "neorv32_slink",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "bus_req_i.rw"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Transmit link word",
+      "security objective": "Integrity",
+      "reasoning": "The transmit FIFO input word is assembled as `bus_req_i.addr(2) & route_dst & bus_req_i.data` at line 296 and written when `tx_fifo.we` qualifies the bus write at line 295. A queued word later leaves the entity through `slink_tx_data_o`, `slink_tx_dst_o`, and `slink_tx_last_o` at lines 299-301. Integrity matters because the external link consumer must receive exactly the payload, destination, and last flag defined by this assembly; availability of a queued word is reported separately by `slink_tx_valid_o` at line 302.",
+      "related structural assets": [
+        {
+          "asset rtl": "tx_fifo.wdata",
+          "entity": "neorv32_slink",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "route_dst"
+          }
+        },
+        {
+          "asset rtl": "slink_tx_data_o",
+          "entity": "neorv32_slink",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "tx_fifo.rdata"
+          }
+        },
+        {
+          "asset rtl": "slink_tx_dst_o",
+          "entity": "neorv32_slink",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "tx_fifo.rdata"
+          }
+        },
+        {
+          "asset rtl": "slink_tx_last_o",
+          "entity": "neorv32_slink",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "DERIVES_FROM",
+            "partner": "tx_fifo.rdata"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Transmit FIFO enqueue decision",
+      "security objective": "Integrity",
+      "reasoning": "`tx_fifo.we` is asserted only when `(bus_req_i.stb = '1') and (bus_req_i.rw = '1') and (bus_req_i.addr(3) = '1')` at line 295, which determines whether the assembled word at line 296 enters the transmit FIFO. Integrity matters because a wrong enqueue decision inserts or suppresses outgoing words, and availability of transmission depends on successful qualified writes.",
+      "related structural assets": [
+        {
+          "asset rtl": "tx_fifo.we",
+          "entity": "neorv32_slink",
+          "realization": "computes",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "bus_req_i.rw"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Receive interrupt request event",
+      "security objective": "Integrity",
+      "reasoning": "`rx_irq_o` is reset low at line 257 and recomputed at lines 259-262 from `ctrl.enable`, the programmed RX interrupt bits, and RX FIFO status. Integrity matters because the reported event must match those implemented conditions; availability of the interrupt when the configured FIFO condition occurs is also established.",
+      "related structural assets": [
+        {
+          "asset rtl": "rx_irq_o",
+          "entity": "neorv32_slink",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "ctrl.enable"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Transmit interrupt request event",
+      "security objective": "Integrity",
+      "reasoning": "`tx_irq_o` is reset low at line 308 and recomputed at lines 310-313 from `ctrl.enable`, the programmed TX interrupt bits, and TX FIFO status. Integrity matters because the reported event must match those implemented conditions; availability of the interrupt when the configured FIFO condition occurs is also established.",
+      "related structural assets": [
+        {
+          "asset rtl": "tx_irq_o",
+          "entity": "neorv32_slink",
+          "realization": "exit port",
+          "occurrence": 3,
+          "edge": {
+            "type": "GATED_BY",
+            "partner": "ctrl.enable"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Receive-ready decision",
+      "security objective": "Integrity",
+      "reasoning": "`slink_rx_ready_o <= rx_fifo.free;` at line 233 exports whether the RX FIFO can accept another incoming word. Integrity matters because the external sender relies on the exact ready indication; availability of receive acceptance when space is free is established by this exit.",
+      "related structural assets": [
+        {
+          "asset rtl": "slink_rx_ready_o",
+          "entity": "neorv32_slink",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "rx_fifo.free"
+          }
+        }
+      ]
+    },
+    {
+      "concept": "Transmit-valid decision",
+      "security objective": "Integrity",
+      "reasoning": "`slink_tx_valid_o <= tx_fifo.avail;` at line 302 exports whether a transmit word is available. Integrity matters because the external receiver relies on the exact valid indication; availability of outgoing transfer when data is queued is established by this exit.",
+      "related structural assets": [
+        {
+          "asset rtl": "slink_tx_valid_o",
+          "entity": "neorv32_slink",
+          "realization": "exit port",
+          "occurrence": 2,
+          "edge": {
+            "type": "COPIES",
+            "partner": "tx_fifo.avail"
+          }
+        }
+      ]
+    }
+  ]
+}
