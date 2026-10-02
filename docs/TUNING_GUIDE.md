@@ -24,7 +24,7 @@ Repeat from 2. Return to 1 only when a stage's measured contribution changes.
 For each stage, replace it with an oracle and re-measure. What you cannot do exactly,
 bound: remove the stage entirely and see how far the metric falls.
 
-**Result so far** (`stage_ceilings.py`, run against the manual GT on 15 modules):
+**Result so far** (`src/stage_ceilings.py`, run against the manual GT on 15 modules):
 
 | stage | ceiling | headroom | how it was measured |
 |---|---|---|---|

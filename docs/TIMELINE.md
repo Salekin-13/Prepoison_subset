@@ -8,8 +8,8 @@ was judged, not only what was built.
 
 - **Precision (P):** of the elements a method lists, the share that are in the reference.
   **Recall (R):** of the reference entries, the share the method lists. Both are named every time.
-- **Reference:** the LAsset authors' manual "True Assets" list for NEORV32 (`ground_truth/manual_gt_neorv32.json`).
-  **Tuning set:** 15 modules, 111 entries (`RTL_data/`). **Held-out set:** 26 modules, 189 entries (`RTL_heldout/`),
+- **Reference:** the LAsset authors' manual "True Assets" list for NEORV32 (`data/ground_truth/manual_gt_neorv32.json`).
+  **Tuning set:** 15 modules, 111 entries (`data/RTL_data/`). **Held-out set:** 26 modules, 189 entries (`data/RTL_heldout/`),
   not looked at while tuning.
 - **Arm:** one variant (a prompt, an input or a filter) run against a fixed baseline, usually 3 runs.
   **Pre-registered:** the expected result and the decision rule were written down before the run.
@@ -24,7 +24,7 @@ was judged, not only what was built.
 - Git: the last study commit is 9dc383d on 2026-08-18. September and October work was committed only on 2026-10-02,
   in one commit that prepared this repository, so those dates come from dated log entries and file modification times.
 
-**Source keys.** AL1 `ABLATION_LOG.md` · AL2 `ABLATION_LOG_V2.md` · HO `V02_HANDOFF.md` · REG `V02_REGISTRATION_DRAFT.md`
+**Source keys.** AL1 `logs/ABLATION_LOG.md` · AL2 `logs/ABLATION_LOG_V2.md` · HO `logs/V02_HANDOFF.md` · REG `logs/V02_REGISTRATION_DRAFT.md`
 · VER `bahavioral_patterns_of_assets/VERIFIER_ABLATION_LOG.md` · PAR `bahavioral_patterns_of_assets/PARSER_ABLATION_LOG.md`
 · REL `step1/lasset_step1/RELATION_EXPERIMENTS_LOG.md` · OPT `assetgen_meta/prompt_opt/OPTIMIZATION_LOG.md`
 · DEF `assetgen_meta/ASSET_DEFINITION.md` · HPR `assetgen_meta/HELDOUT_PREREG.md`
@@ -32,7 +32,7 @@ was judged, not only what was built.
 · LLR `assetgen_meta/contribution_assessment/5_lasset_layer_result.md` · LED `.../contribution_assessment/1_evidence_ledger.md`
 · SKP `.../contribution_assessment/4_skeptical_review.md` · TG `docs/TUNING_GUIDE.md`
 · ESA `assetgen_meta/error_analysis_screen1.md` · RCL `.../occurrence_prompts_v3d/RULEBOOK_CHANGELOG.md`
-· S2 `step2/RULES.md` · NB-meta `assetgen_meta.ipynb` · NB-step1 `lasset_step1.ipynb` · GIT `<commit>`.
+· S2 `step2/RULES.md` · NB-meta `notebooks/assetgen_meta.ipynb` · NB-step1 `notebooks/lasset_step1.ipynb` · GIT `<commit>`.
 
 ---
 
@@ -65,7 +65,7 @@ Different executors and scorer versions; read as a trajectory, not as like-for-l
 ### Replication of LAsset (Algorithm 1, lines 3-5)
 
 - **Chose an 18-file NEORV32 subset to tune on.** Why: to save tokens while tuning
-  (`finetuning_assetgen.ipynb` markdown cell 2). 15 of the 18 have reference entries. `boot_rom`, `fifo` and
+  (`notebooks/finetuning_assetgen.ipynb` markdown cell 2). 15 of the 18 have reference entries. `boot_rom`, `fifo` and
   `package`, which the paper pruned, were kept as the only negative controls: "a prompt that cannot say 'no assets
   here' will invent them" (AL1 C-01). RTL files are dated 2026-07-12; first commit 694384a on 2026-07-20.
 - **Built the paper's stages as written where the paper is specific, and declared our own choices where it is not.**
@@ -116,7 +116,7 @@ Different executors and scorer versions; read as a trajectory, not as like-for-l
   about 0.30 of recall loss sits in the generation stage, a 33x difference (GIT 74fd849; TG §1). Re-audited
   2026-08-07: two reference entries cannot exist in our RTL version (`inval_i` is `inv_i` here; `cache_o.cmd_dir`
   has no such field), so the ceiling is 0.982 (AL1 C-03).
-- **2026-08-03, `ABLATION_LOG.md` opened.** Every arm gets an `Expect:` and a decision rule before it runs, and the
+- **2026-08-03, `logs/ABLATION_LOG.md` opened.** Every arm gets an `Expect:` and a decision rule before it runs, and the
   `Got:` is pasted from code, never retyped (AL1 header; R-03 records a retyping error that motivated this).
 - **2026-08-03, metric M-2.** Two same-name elements in different entities had been collapsed into one; this was
   the whole reason the reference totalled 301 instead of 302. Fixed by re-scoring, not re-running: A-00 recall
@@ -229,7 +229,7 @@ Different executors and scorer versions; read as a trajectory, not as like-for-l
 - **Parser generations 1-3** (2026-08-17; AL2 C1). Writing edge names bare fixed 233 malformed types; constraining
   targets to declared names cut unresolved targets 589 → 8. A sweep for governing sites moved coverage only
   218 → 215: read as a model limit, so no third revision. A gen3 rule backfired (prose claiming governance 245 → 288
-  while governing edges fell 215 → 201) and was reverted. `parse_audit.py` was written to be blind to the reference
+  while governing edges fell 215 → 201) and was reverted. `src/parse_audit.py` was written to be blind to the reference
   "by design".
 - **2026-08-18, element dossier and a blind triage** (`back_test.md`, `ASSET_ELEMENT_DOSSIER.md`). A label-stripped
   copy was triaged for C/I/A/U by local agents (Section A 110 headings; Section B 1,095 of 1,531 entries;
@@ -334,7 +334,7 @@ tied to the occurrence where it happens.
     "winner"** (AL2 §10; NB-meta cell 21 output);
   - plus worked removals (`ismp`): P 0.336, R 0.844, below the winner *(re-derived)*.
   - Learned: examples buy recall; three rounds found no prompt-side fix for precision.
-- **2026-09-21, held-out RTL obtained.** 26 reference modules with no tuning use, in `RTL_heldout/` (file dates
+- **2026-09-21, held-out RTL obtained.** 26 reference modules with no tuning use, in `data/RTL_heldout/` (file dates
   2026-09-21), with closed sets built by `step2/build_heldout_parse.py`. This closes AL2's open threat "No held-out
   set exists" (AL2 §9, §10).
 - **2026-09-30, relation map in the prompt** (NB-meta cells 21, 25): LLM-written map (`ismr`) P 0.353, R 0.778;

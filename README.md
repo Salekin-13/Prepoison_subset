@@ -46,13 +46,13 @@ marked. In short:
 
 | when | what | where |
 |---|---|---|
-| July | LAsset replication: specification retrieval, closed set by code, a first run and a root-cause pass over its 163 false positives; the RTL parser fixed | `finetuning_assetgen.ipynb`, `docs/TUNING_GUIDE.md`, `gt_extract.py`, `rtl_parse.py` |
-| 2-8 Aug | v1 recall study: one change per arm, each pre-registered with a decision rule | `ABLATION_LOG.md` |
-| 8-18 Aug | v2 precision study with a recall guard; leak checks enforced in code | `ABLATION_LOG_V2.md`, `V02_REGISTRATION_DRAFT.md`, `finetuning_assetgen_v2.ipynb` |
+| July | LAsset replication: specification retrieval, closed set by code, a first run and a root-cause pass over its 163 false positives; the RTL parser fixed | `notebooks/finetuning_assetgen.ipynb`, `docs/TUNING_GUIDE.md`, `src/gt_extract.py`, `src/rtl_parse.py` |
+| 2-8 Aug | v1 recall study: one change per arm, each pre-registered with a decision rule | `logs/ABLATION_LOG.md` |
+| 8-18 Aug | v2 precision study with a recall guard; leak checks enforced in code | `logs/ABLATION_LOG_V2.md`, `logs/V02_REGISTRATION_DRAFT.md`, `notebooks/finetuning_assetgen_v2.ipynb` |
 | 17 Aug - 6 Sep | parser and verifier work; edge definitions for relationships | `bahavioral_patterns_of_assets/PARSER_ABLATION_LOG.md`, `VERIFIER_ABLATION_LOG.md` |
 | 9-29 Sep | occurrence profiles: LLM versions measured, then the structure moved into code | `bahavioral_patterns_of_assets/notebooks/occurrence_profiles_v2/v3/v3b.ipynb`, `step1/` |
-| 19-30 Sep | meta prompts and hand arms; the relationship map | `assetgen_meta.ipynb`, `step1/lasset_step1/RELATION_EXPERIMENTS_LOG.md`, `lasset_step1.ipynb` |
-| 1-2 Oct | held-out pre-registrations, traced arms with cited occurrence IDs, the prompt-optimization loop, gpt-5.4, the false-positive diagnosis, and the evidence layer on LAsset's lists | `assetgen_meta/HELDOUT_PREREG.md`, `assetgen_meta/prompt_opt/OPTIMIZATION_LOG.md`, `lasset_evidence_layer.ipynb`, `FINAL_NOTEBOOK.ipynb` |
+| 19-30 Sep | meta prompts and hand arms; the relationship map | `notebooks/assetgen_meta.ipynb`, `step1/lasset_step1/RELATION_EXPERIMENTS_LOG.md`, `notebooks/lasset_step1.ipynb` |
+| 1-2 Oct | held-out pre-registrations, traced arms with cited occurrence IDs, the prompt-optimization loop, gpt-5.4, the false-positive diagnosis, and the evidence layer on LAsset's lists | `assetgen_meta/HELDOUT_PREREG.md`, `assetgen_meta/prompt_opt/OPTIMIZATION_LOG.md`, `notebooks/lasset_evidence_layer.ipynb`, `FINAL_NOTEBOOK.ipynb` |
 
 Decisions I would point to first:
 
@@ -69,21 +69,22 @@ Decisions I would point to first:
 | path | what it holds |
 |---|---|
 | `FINAL_NOTEBOOK.ipynb` | the final pipeline, its checks and its analysis (start here) |
-| `final/` | `final_pipeline.py` (the notebook's helper), `convergence.csv` and `heldout.csv` (every scored prompt version, rebuilt by `build_convergence.py`), the occurrence profiles of the 41 modules (plus the 2 controls boot_rom and fifo), the FP diagnosis and the fault report |
-| `docs/` | `TIMELINE.md` (July to October), `TUNING_GUIDE.md`, `experiment_tracker.csv` (the July plan) |
-| `ABLATION_LOG.md`, `ABLATION_LOG_V2.md`, `V02_*.md` | logs and registration of the v1 and v2 prompt studies |
-| `finetuning_assetgen.ipynb`, `finetuning_assetgen_v2.ipynb` | the v1 and v2 ablation notebooks |
-| `assetgen_meta.ipynb`, `assetgen_meta/` | meta prompts, hand arms, traced inputs, `trace_check.py` (the citation checker), the optimization loop (`prompt_opt/`), `fp_diagnosis.py`, `fault_reporter.py`, `lasset_layer.py`, pre-registrations |
-| `lasset_step1.ipynb`, `step1/` | occurrence profiles and relationship maps: `structure_stage.py` (tree-sitter Context and Path), `code_site_tags.py`, `code_pairs_v2.py`, `build_heldout_code_map.py`, the stored maps, the relation log, and the gold set (`bakeoff/`) |
-| `lasset_evidence_layer.ipynb` | the pre-registered test of the evidence layer on LAsset's lists |
+| `final/` | `final_pipeline.py` (the notebook's helper), `convergence.csv` and `heldout.csv` (every scored prompt version), the occurrence profiles of the 41 modules (plus the 2 controls boot_rom and fifo), the FP diagnosis and the fault report |
+| `notebooks/` | the ablation notebooks: `finetuning_assetgen.ipynb` (v1), `finetuning_assetgen_v2.ipynb` (v2), `assetgen_meta.ipynb` (meta prompts, hand arms, traced arms, diagnosis), `lasset_step1.ipynb` (occurrence profiles and relation map on the 15 tuning modules), `lasset_evidence_layer.ipynb` (the pre-registered test of the evidence layer on LAsset's lists) |
+| `logs/` | logs and registration of the v1 and v2 prompt studies: `ABLATION_LOG.md`, `ABLATION_LOG_V2.md`, `V02_*.md` |
+| `docs/` | `TIMELINE.md` (July to October), `LAYOUT.md` (the folder layout and the 2026-10-02 move), `TUNING_GUIDE.md`, `experiment_tracker.csv` (the July plan) |
+| `src/` | the study code from July and August: parser, prompts, ICL examples, the scorer (`eval_assets.py`), and `verify_layout_move.py` |
+| `data/` | `RTL_data/` and `RTL_heldout/` (NEORV32 VHDL: 18 tuning files, 15 with reference entries plus 3 controls, and 26 held-out files), `ground_truth/` and `LAsset_initial_results/` (LAsset's manual reference and published lists; see the notices), `parsed_*/` (closed sets: the ports and signals of each module, extracted by regex) |
+| `runs/` | the run folders needed to re-score the final prompt, its baselines and the held-out checks |
+| `assetgen_meta/` | meta prompts, hand arms, traced inputs, `trace_check.py` (the citation checker), the optimization loop (`prompt_opt/`), `fp_diagnosis.py`, `fault_reporter.py`, `lasset_layer.py`, pre-registrations |
+| `step1/` | occurrence profiles and relationship maps: `structure_stage.py` (tree-sitter Context and Path), `code_site_tags.py`, `code_pairs_v2.py`, `build_heldout_code_map.py`, the stored maps, the relation log, and the gold set (`bakeoff/`) |
+| `step2/` | the Step 2 rules and the script that built the held-out closed sets |
 | `bahavioral_patterns_of_assets/` | parser and verifier logs, the occurrence-profile notebooks and their prompts (`annotation_pack_elements/`) |
 | `blind_agent/` | a side study: prompts written from theory only, without seeing the reference |
-| root `*.py` | parser, prompts, ICL examples, the scorer (`eval_assets.py`) |
-| `RTL_data/`, `RTL_heldout/` | NEORV32 VHDL: 18 tuning files (15 with reference entries, plus 3 controls) and 26 held-out files |
-| `ground_truth/`, `LAsset_initial_results/` | LAsset's manual reference and published lists (see the notices) |
-| `parsed_*` | closed sets: the ports and signals of each module, extracted by regex |
-| `assets_*` | the run folders needed to re-score the final prompt, its baselines and the held-out checks |
-| `step2/` | the Step 2 rules and the script that built the held-out closed sets |
+| `third_party/` | the NEORV32 license |
+
+Logs and outputs written before 2026-10-02 use the old root paths (for example `RTL_data/` for `data/RTL_data/`).
+[`docs/LAYOUT.md`](docs/LAYOUT.md) maps them.
 
 ## Running it
 
@@ -100,18 +101,24 @@ VHDL grammar is missing, the first cell stops and prints the one-line command th
 To run the held-out generation, put `OPENAI_API_KEY=...` in a file named `API.env` in the repo root and set
 `RUN_API = True`. That file is ignored by git.
 
-To check that the files pinned by the pre-registrations are unchanged (an empty list means all match):
+To check the files pinned by the three pre-registrations (it prints one line per pin and ends with the failure
+count):
 
 ```bash
-python -c "import sys; sys.path.insert(0, 'assetgen_meta'); import lasset_layer; print(lasset_layer.verify_pins())"
+python src/verify_layout_move.py
 ```
 
+The pins were registered before the 2026-10-02 layout move. The checker compares every pin with the tag
+`prereg-layout-before`, the last commit in the old layout. It allows a file to differ only by the move's path
+prefixes. [`docs/LAYOUT.md`](docs/LAYOUT.md) explains this.
+
 **Which notebooks re-run on a fresh clone.**
-- `FINAL_NOTEBOOK.ipynb` and `lasset_evidence_layer.ipynb` re-run in full.
-- In `assetgen_meta.ipynb`, the final-version and diagnosis cells (57-69) read only published files. The generation
-  cells among them need an API key.
+- `FINAL_NOTEBOOK.ipynb` and `notebooks/lasset_evidence_layer.ipynb` re-run in full.
+- In `notebooks/assetgen_meta.ipynb`, the final-version and diagnosis cells (57-69) read only published files. The
+  generation cells among them need an API key.
 - The other notebooks are records: their saved outputs show the results, but the run folders and caches they read
-  are not published. Their numbers are in the logs.
+  are not published. Their numbers are in the logs. To re-run record code, use a worktree of the tag
+  (`git worktree add ../prepoison-old prereg-layout-before`), where the old layout is intact.
 
 `.gitattributes` keeps every file byte for byte (`* -text`), because the pre-registrations pin files by a hash of
 their exact bytes.
