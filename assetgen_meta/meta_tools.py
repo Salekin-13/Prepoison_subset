@@ -35,11 +35,11 @@ def corpus_names(root=".") -> set[str]:
     """Identifier-like names from the ground truth (41 modules) and the parsed closed sets.
     Only names with '_' or '.' are kept, so plain English words ('state', 'enable') are not flagged."""
     names = set()
-    gt = json.loads((Path(root) / "ground_truth/manual_gt_neorv32.json").read_text(encoding="utf-8"))["modules"]
+    gt = json.loads((Path(root) / "data/ground_truth/manual_gt_neorv32.json").read_text(encoding="utf-8"))["modules"]
     for mod, v in gt.items():
         names.add(mod)
         names.update(a.get("element", "") for a in v["assets"])
-    for f in (Path(root) / "parsed_tuning18").glob("*.json"):
+    for f in (Path(root) / "data/parsed_tuning18").glob("*.json"):
         names.add(f.stem)
         d = json.loads(f.read_text(encoding="utf-8"))
         for key in ("ports", "signals"):
@@ -166,7 +166,7 @@ OBJ = {"Confidentiality", "Integrity", "Availability"}
 REAL = {"stores", "sets", "computes", "exit port"}
 
 
-def rtl_modules(rtl_dir="RTL_data"):
+def rtl_modules(rtl_dir="data/RTL_data"):
     """The 18-module tuning set, as finetuning_assetgen_v2.discover_modules()."""
     return [(p.stem, p) for p in sorted(Path(rtl_dir).glob("*.vhd"))]
 
@@ -192,7 +192,7 @@ def loads(txt):
     return {}
 
 
-def closed_set(stem, parsed_dir="parsed_tuning18"):
+def closed_set(stem, parsed_dir="data/parsed_tuning18"):
     d = json.loads((Path(parsed_dir) / f"{stem}.json").read_text(encoding="utf-8"))
     return [(e["entity"], e["name"]) for e in d["ports"] + d["signals"]]
 
@@ -223,11 +223,11 @@ def validate_nested(res, closed):
 
 
 def run_dir(version, rep, stem="assets_tuning18"):
-    return Path(f"{stem}_{version}_r{rep}")
+    return Path(f"runs/{stem}_{version}_r{rep}")
 
 
 def run_version(client, version, rep, system, modules, extra_meta=None, model="gpt-5-mini", workers=6,
-                build=None, input_note="comment-stripped RTL only", stem="assets_tuning18", parsed_dir="parsed_tuning18"):
+                build=None, input_note="comment-stripped RTL only", stem="assets_tuning18", parsed_dir="data/parsed_tuning18"):
     """Generate one repeat into <stem>_<version>_r<rep>/ (default assets_tuning18_<version>_r<rep>/). Cached modules
     are skipped, so an interrupted run resumes. Refuses to mix two prompts in one directory.
     build(stem, rtl) -> user message; None = build_user (RTL only, byte-identical to earlier arms).
@@ -238,7 +238,7 @@ def run_version(client, version, rep, system, modules, extra_meta=None, model="g
     import rtl_parse
     from concurrent.futures import ThreadPoolExecutor, as_completed
     out = run_dir(version, rep, stem)
-    where = {} if (stem, str(parsed_dir)) == ("assets_tuning18", "parsed_tuning18") else {"stem": stem, "parsed_dir": str(parsed_dir)}
+    where = {} if (stem, str(parsed_dir)) == ("assets_tuning18", "data/parsed_tuning18") else {"stem": stem, "parsed_dir": str(parsed_dir)}
     (out / "_raw").mkdir(parents=True, exist_ok=True)
     (out / "_nested").mkdir(exist_ok=True)
     sha = hashlib.sha256(system.encode("utf-8")).hexdigest()
@@ -310,7 +310,7 @@ def f13_filter(run: dict) -> dict:
     as a separately labelled number, never as the primary result."""
     out = {}
     for m, lst in run.items():
-        p = Path("parsed_tuning18") / f"{m}.json"
+        p = Path("data/parsed_tuning18") / f"{m}.json"
         names = {n for _e, n in closed_set(m)} if p.exists() else None
         seen, keep = set(), []
         for ent, name, obj in lst:
@@ -329,7 +329,7 @@ def convention_filter(run: dict) -> dict:
     Reported as a separately labelled number, like f13_filter."""
     out = {}
     for m, lst in run.items():
-        p = Path("parsed_tuning18") / f"{m}.json"
+        p = Path("data/parsed_tuning18") / f"{m}.json"
         if not p.exists():
             out[m] = list(lst); continue
         d = json.loads(p.read_text(encoding="utf-8"))
@@ -436,7 +436,7 @@ def rtl_lines(path, name, cap=6):
     return " | ".join(decl[:2]), " | ".join(w[:cap]), " | ".join(r[:cap])
 
 
-def fp_sample(version, csv_path, n=40, seed=0, baseline="v2x3r8", rtl_dir="RTL_data"):
+def fp_sample(version, csv_path, n=40, seed=0, baseline="v2x3r8", rtl_dir="data/RTL_data"):
     """Random sample of the majority-vote false positives of `version`, pre-filled for grouping
     by hand; the 'family' and 'note' columns are left empty. -> (rows written, voted FP total)."""
     import csv
@@ -451,7 +451,7 @@ def fp_sample(version, csv_path, n=40, seed=0, baseline="v2x3r8", rtl_dir="RTL_d
     obj_of = {(m, name): o for m, lst in voted.items() for _e, name, o in lst}
     fps = sorted((m, name) for m, rec in s["per_module"].items() for name in rec["fp"])
     pick = random.Random(seed).sample(fps, min(n, len(fps)))
-    reps = sorted(Path(".").glob(f"assets_tuning18_{version}_r*"))
+    reps = sorted(Path(".").glob(f"runs/assets_tuning18_{version}_r*"))
     rows = []
     for m, name in sorted(pick):
         concept, reasoning, reals = "", "", []
@@ -488,7 +488,7 @@ def diagnostics(version, common, n_modules=18) -> dict:
     import eval_assets as ea
     gt, closed = ea.load_refs()["gt"], ea.load_closed()
     n_ref = sum(len(gt[m]) for m in common)
-    dirs = [d for d in sorted(Path(".").glob(f"assets_tuning18_{version}_r*")) if d.is_dir()]
+    dirs = [d for d in sorted(Path(".").glob(f"runs/assets_tuning18_{version}_r*")) if d.is_dir()]
     runs = [(d, ea.load_run(d)) for d in dirs]
     runs = [(d, r) for d, r in runs if common <= set(r)]          # complete on the scoring modules
     if not runs:
@@ -592,9 +592,9 @@ def selftest(root=".") -> None:
                           closed_set("neorv32_wdt"))
     assert {i["kind"] for i in iss} == {"bad_objective", "ungrounded", "bad_realization"}, iss
     assert validate_nested(fake, closed_set("neorv32_wdt")) == [], validate_nested(fake, closed_set("neorv32_wdt"))
-    _d, w, _r = rtl_lines(Path(root) / "RTL_data/neorv32_wdt.vhd", "rstn_o")
+    _d, w, _r = rtl_lines(Path(root) / "data/RTL_data/neorv32_wdt.vhd", "rstn_o")
     assert "rstn_o <= not (hw_rst_timeout or hw_rst_access)" in w, w
-    _d, w2, r2 = rtl_lines(Path(root) / "RTL_data/neorv32_wdt.vhd", "cnt")
+    _d, w2, r2 = rtl_lines(Path(root) / "data/RTL_data/neorv32_wdt.vhd", "cnt")
     assert not any(re.search(r"^\d+:\s*(if|elsif)\b", x.strip()) for x in w2.split(" | ") if x), w2
     v, c = majority([{"m": [("e", "a", "I"), ("e", "b", "I")]}, {"m": [("e", "a", "A")]}, {"m": [("e", "a", "I")]}])
     assert v == {"m": [("e", "a", "I")]} and c[("m", "e", "b")] == 1, (v, c)

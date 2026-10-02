@@ -27,7 +27,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-for _p in (str(ROOT), str(HERE), str(ROOT / "step1")):
+for _p in (str(ROOT / "src"), str(HERE), str(ROOT / "step1")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
@@ -35,8 +35,8 @@ OUT = HERE / "traced_inputs"
 MAPS = {"tuning": [ROOT / "step1/lasset_step1/relation_map_code_tuning/b0e767000ec2_codetags",
                    ROOT / "step1/lasset_step1/relation_map_code_design/b0e767000ec2_codetags"],
         "heldout": [ROOT / "step1/lasset_step1/relation_map_code_heldout/b0e767000ec2_codetags"]}
-RTL = {"tuning": ROOT / "RTL_data", "heldout": ROOT / "RTL_heldout"}
-PARSED = {"tuning": ROOT / "parsed_tuning18", "heldout": ROOT / "parsed_heldout26"}
+RTL = {"tuning": ROOT / "data/RTL_data", "heldout": ROOT / "data/RTL_heldout"}
+PARSED = {"tuning": ROOT / "data/parsed_tuning18", "heldout": ROOT / "data/parsed_heldout26"}
 DATA = ("CARRIES", "SOURCES")                         # driving value edges Y -> X
 CONTROL = ("GATES", "SELECTS", "CONSTRAINS")          # driving control edges (influence points)
 CLOCKRESET = ("SEQUENCES", "RESETS")

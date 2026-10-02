@@ -147,7 +147,7 @@ class MapIndex:
 def _transport(e: dict, module: str | None) -> bool:
     """A transport record (bus transaction record type) or clock / reset input, by meta_tools.convention_filter, which
     reads the element's declared type from parsed_tuning18/<module>.json. False when the module is unknown."""
-    if not module or not (ROOT / "parsed_tuning18" / f"{module}.json").exists():
+    if not module or not (ROOT / "data/parsed_tuning18" / f"{module}.json").exists():
         return False
     import os
     import meta_tools as mt
@@ -318,7 +318,7 @@ def run(version: str, reps=(0, 1, 2), split: str = "tuning", stem: str = "assets
     import traced_inputs as TI
     res = {}
     for k in reps:
-        d = ROOT / f"{stem}_{version}_r{k}" / "_nested"
+        d = ROOT / f"runs/{stem}_{version}_r{k}" / "_nested"
         chk_by_mod = {}
         for f in sorted(d.glob("*.json")):
             m = f.stem

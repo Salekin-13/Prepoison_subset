@@ -32,7 +32,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-for _p in (str(ROOT), str(HERE)):
+for _p in (str(ROOT / "src"), str(HERE)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
@@ -54,12 +54,12 @@ def _gt():
 
 def _mods(gt):
     """The tuning modules with a reference list (RTL_data and the reference; parsed_tuning18 also holds held-out copies)."""
-    return sorted(m for m in gt if (ROOT / "RTL_data" / f"{m}.vhd").exists())
+    return sorted(m for m in gt if (ROOT / "data/RTL_data" / f"{m}.vhd").exists())
 
 
 def _nested(version, k, m, stem="assets_tuning18"):
     """The run's output for the module; when a CIA labelling call answered it (m7e194es0ist2), merged with its answers."""
-    d = ROOT / f"{stem}_{version}_r{k}"
+    d = ROOT / f"runs/{stem}_{version}_r{k}"
     if (d / "_cia" / f"{m}.json").exists():
         import cia_label as CL
         return CL.merged(version, k, m, stem)
@@ -94,7 +94,7 @@ def behaviour(version: str, reps=(0, 1, 2), stem="assets_tuning18") -> dict:
     traced = None
     sc = []
     for k in reps:
-        d = ROOT / f"{stem}_{version}_r{k}"
+        d = ROOT / f"runs/{stem}_{version}_r{k}"
         if not d.exists():
             continue
         sc.append(ea.score(d, gt, strict=True, only=set(mods)))

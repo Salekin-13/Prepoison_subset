@@ -908,7 +908,7 @@ def selftest(log=print) -> bool:
                               "evidence": [{"module": "m", "element": "e", "occurrence": [5], "line": 3}], "candidate_rule": None}),
         "an answer with an occurrence given as a list is refused (it would crash the checks after caching)")
     # the stub on a real run: plumbing, planted errors caught, rows equal the scorer
-    f = analyse({"claude v1": ["assets_opt_v1_r0"]}, "claude v1", "_selftest", stub=True, max_clusters=2, log=lambda *x: None)
+    f = analyse({"claude v1": ["runs/assets_opt_v1_r0"]}, "claude v1", "_selftest", stub=True, max_clusters=2, log=lambda *x: None)
     cks = list(f["checks"].values())
     chk(len(cks) == 2, "two clusters analysed with the stub")
     chk(all(c["evidence_n"] == c["evidence_grounded"] + 1 for c in cks), "the repeated citation is removed and the wrong line is the only ungrounded one")

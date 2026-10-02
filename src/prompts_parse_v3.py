@@ -508,8 +508,8 @@ def audit() -> None:
         "merged prompt must say kind is signals-only, or ports come back with a kind field"
 
 
-def audit_against_corpus(gt_path="ground_truth/manual_gt_neorv32.json",
-                         parsed_dir="parsed_tuning18") -> None:
+def audit_against_corpus(gt_path="data/ground_truth/manual_gt_neorv32.json",
+                         parsed_dir="data/parsed_tuning18") -> None:
     """The full standing-rule check: no identifier from the reference set or the closed set
     may appear in either prompt. Separate from `audit()` because it reads data files;
     `parse_v3` calls it before spending anything."""

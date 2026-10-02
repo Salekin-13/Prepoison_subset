@@ -44,7 +44,7 @@ from prompts_parse_v3 import (BANNED_IN_OUTPUT, EDGE_TYPES, PARSE_ELEMENTS_V3_SY
                               PARSE_PORTS_V3_SYSTEM, PARSE_SIGNALS_V3_SYSTEM,
                               audit_against_corpus)
 
-CACHE_DIR = Path("parsed_tuning18")      # the v1 closed set, used as the coverage reference
+CACHE_DIR = Path("data/parsed_tuning18")      # the v1 closed set, used as the coverage reference
 OUT_DIR = Path("parsed_v3_tuning18")
 
 _EDGE_SET = set(EDGE_TYPES)
@@ -643,7 +643,7 @@ def load_all(modules, out_dir=None, normalize=True):
 GOVERNING_EDGES = ("GATES", "SELECTS", "CONSTRAINS", "OVERRIDES")
 
 
-def governing_coverage(out_dir=None, rtl_dir="RTL_data"):
+def governing_coverage(out_dir=None, rtl_dir="data/RTL_data"):
     """How many elements that ACTUALLY appear in a condition were given a governing edge.
 
     THE ONE NUMBER WORTH RE-PARSING FOR. A governing edge records that one element decides
@@ -695,7 +695,7 @@ def governing_coverage(out_dir=None, rtl_dir="RTL_data"):
     return caught, cond
 
 
-def compare_parses(old_dir, new_dir=None, rtl_dir="RTL_data"):
+def compare_parses(old_dir, new_dir=None, rtl_dir="data/RTL_data"):
     """Side-by-side on the numbers a re-parse is meant to move.
 
     The point of a re-parse is not "the output changed" -- it will, the stage is

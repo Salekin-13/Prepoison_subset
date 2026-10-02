@@ -180,7 +180,7 @@ def _nested(d: Path, m: str):
 
 def modules_for(split: str) -> list[str]:
     gt = ea.load_refs()["gt"]
-    src = ROOT / ("RTL_data" if split == "tuning" else "RTL_heldout")
+    src = ROOT / ("data/RTL_data" if split == "tuning" else "data/RTL_heldout")
     return sorted(m for m in gt if (src / f"{m}.vhd").exists())
 
 
@@ -870,11 +870,11 @@ def selftest(log=print) -> bool:
     chk(f["kind"] == "port-in" and f["ctl_out"] and family(f) == "input port", "wdt rstn_dbg_i: input port that controls")
     chk(features(uart["els"][("neorv32_uart", "clk_i")], uart)["sub_in"], "uart clk_i feeds a sub-unit")
     # labels agree with the scorer, and the edit filters reproduce this session's counts (v1 change note, log)
-    rows, s = rows_for_run("assets_opt_v1_r0")
+    rows, s = rows_for_run("runs/assets_opt_v1_r0")
     chk(sum(r["label"] == "TP" for r in rows) == 104 and sum(r["label"] == "FP" for r in rows) == 171,
         "v1 r0 row labels: 104 TP, 171 FP (the scorer's totals)")
     # held-out v1 r0 lists names twice; rows_for_run asserts per module that its FP names equal the scorer's
-    hrows, hs = rows_for_run("assets_opt_heldout_v1_r0", "heldout")
+    hrows, hs = rows_for_run("runs/assets_opt_heldout_v1_r0", "heldout")
     consumed, orig = defaultdict(set), ea._hit_idx           # record the indices eval_assets.score itself consumes
     cur = {"m": None}
 
@@ -886,7 +886,7 @@ def selftest(log=print) -> bool:
     ea._hit_idx = spy
     try:
         gt = ea.load_refs()["gt"]
-        flat = ea.load_run(run_dir("assets_opt_heldout_v1_r0"))
+        flat = ea.load_run(run_dir("runs/assets_opt_heldout_v1_r0"))
         for m in sorted({r["module"] for r in hrows}):
             cur["m"] = m
             ea.score({m: flat[m]}, {m: gt[m]}, strict=True)
@@ -912,9 +912,9 @@ def selftest(log=print) -> bool:
     chk(describe(("not in map",)) == "not in map", "describe() handles an element that is not in the map")
     # edits, against the counts in prompt_opt/v1/change.md: A as first measured (role "stores", no exemption) 24 FP;
     # B as shipped 15 FP on v0 r0 and 12 on v0 r1 (17 and 14 were the first draft's)
-    a0 = d6_edits("assets_opt_v0_r0", roles="stores", config_exempt=False)["A"]
+    a0 = d6_edits("runs/assets_opt_v0_r0", roles="stores", config_exempt=False)["A"]
     chk((a0["removes_FP"], a0["removes_TP"]) == (24, 0), f"edit A (stores only, no exemption) on v0 r0 removes {a0} (want 24 FP, 0 TP)")
-    b0, b1 = d6_edits("assets_opt_v0_r0")["B"], d6_edits("assets_opt_v0_r1")["B"]
+    b0, b1 = d6_edits("runs/assets_opt_v0_r0")["B"], d6_edits("runs/assets_opt_v0_r1")["B"]
     chk((b0["removes_FP"], b0["removes_TP"], b1["removes_FP"], b1["removes_TP"]) == (15, 0, 12, 0),
         f"edit B as shipped removes {b0} on v0 r0 and {b1} on v0 r1 (want 15/0 and 12/0)")
     log("self-test " + ("PASS" if ok else "FAIL"))

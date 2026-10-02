@@ -21,7 +21,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-for _p in (str(ROOT), str(HERE)):
+for _p in (str(ROOT / "src"), str(HERE)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
@@ -40,7 +40,7 @@ def _norm_name(s) -> str:
 
 
 def run_dir(version, k, stem="assets_tuning18"):
-    return ROOT / f"{stem}_{version}_r{k}"
+    return ROOT / f"runs/{stem}_{version}_r{k}"
 
 
 def concepts_block(obj: dict, lines: dict) -> list[dict]:

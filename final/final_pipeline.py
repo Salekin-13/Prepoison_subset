@@ -66,7 +66,7 @@ def load_builders() -> list[str]:
 def setup():
     """Working directory = repo root; import paths; builders; tree-sitter VHDL grammar. Returns the modules."""
     os.chdir(ROOT)
-    for p in ("", "step1", "assetgen_meta"):
+    for p in ("src", "step1", "assetgen_meta"):
         if str(ROOT / p) not in sys.path:
             sys.path.insert(0, str(ROOT / p))
     load_builders()
@@ -84,9 +84,9 @@ def setup():
 
 def modules(ea) -> dict:
     gt = ea.load_refs()["gt"]
-    tune = sorted(m for m in gt if (ROOT / "RTL_data" / f"{m}.vhd").exists())
-    held = sorted(m for m in gt if (ROOT / "RTL_heldout" / f"{m}.vhd").exists())
-    return {"gt": gt, "tuning": tune, "heldout": held, "all_rtl_data": sorted(p.stem for p in (ROOT / "RTL_data").glob("*.vhd")),
+    tune = sorted(m for m in gt if (ROOT / "data/RTL_data" / f"{m}.vhd").exists())
+    held = sorted(m for m in gt if (ROOT / "data/RTL_heldout" / f"{m}.vhd").exists())
+    return {"gt": gt, "tuning": tune, "heldout": held, "all_rtl_data": sorted(p.stem for p in (ROOT / "data/RTL_data").glob("*.vhd")),
             "entries": {"tuning": sum(len(gt[m]) for m in tune), "heldout": sum(len(gt[m]) for m in held)}}
 
 
@@ -97,10 +97,10 @@ def build_all(ns, mods: dict, out: Path = OUT) -> dict:
     CM, CT, TI = ns.CM, ns.CT, ns.TI
     t0 = time.time()
     cs = out / "closed_sets"
-    CM.write_closed_sets(mods["all_rtl_data"], ROOT / "RTL_data", cs / "tuning")      # all 18: fifo's ports matter
-    CM.write_closed_sets(mods["heldout"], ROOT / "RTL_heldout", cs / "heldout")
-    src = {**{m: CM.Source(ROOT / "RTL_data", cs / "tuning") for m in mods["tuning"] + DESIGN},
-           **{m: CM.Source(ROOT / "RTL_heldout", cs / "heldout") for m in mods["heldout"]}}
+    CM.write_closed_sets(mods["all_rtl_data"], ROOT / "data/RTL_data", cs / "tuning")      # all 18: fifo's ports matter
+    CM.write_closed_sets(mods["heldout"], ROOT / "data/RTL_heldout", cs / "heldout")
+    src = {**{m: CM.Source(ROOT / "data/RTL_data", cs / "tuning") for m in mods["tuning"] + DESIGN},
+           **{m: CM.Source(ROOT / "data/RTL_heldout", cs / "heldout") for m in mods["heldout"]}}
     split_of = {**{m: "tuning" for m in mods["tuning"] + DESIGN}, **{m: "heldout" for m in mods["heldout"]}}
     maps = {"tuning": out / "maps" / "tuning", "heldout": out / "maps" / "heldout"}
     profiles, _entities = {}, CM.entities
@@ -270,7 +270,7 @@ def final_prompt(ns) -> str:
 
 def run_dirs(split: str) -> list[Path]:
     stem = "assets_tuning18" if split == "tuning" else "assets_heldout26"
-    return [ROOT / f"{stem}_{FINAL_VERSION}_r{k}" for k in range(3)]
+    return [ROOT / f"runs/{stem}_{FINAL_VERSION}_r{k}" for k in range(3)]
 
 
 def generation_status(ns, mods: dict) -> dict:
@@ -286,9 +286,9 @@ def generate(ns, mods: dict, built: dict, client, model: str = "gpt-5.4", splits
     prompt = final_prompt(ns)
     out = []
     for split in splits:
-        rtl = ROOT / ("RTL_data" if split == "tuning" else "RTL_heldout")
+        rtl = ROOT / ("data/RTL_data" if split == "tuning" else "data/RTL_heldout")
         names = mods["all_rtl_data"] if split == "tuning" else mods["heldout"]
-        kw = {} if split == "tuning" else {"stem": "assets_heldout26", "parsed_dir": "parsed_heldout26"}
+        kw = {} if split == "tuning" else {"stem": "assets_heldout26", "parsed_dir": "data/parsed_heldout26"}
         build = (lambda s: (lambda stem, _rtl: (built["traced_inputs"] / s / f"{stem}.txt").read_text(encoding="utf-8")))(split)
         for rep in range(3):
             out.append(ns.mt.run_version(client, FINAL_VERSION, rep, prompt, [(m, rtl / f"{m}.vhd") for m in names],

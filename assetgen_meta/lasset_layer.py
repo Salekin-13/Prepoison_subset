@@ -61,9 +61,9 @@ import fault_reporter as fr       # noqa: E402
 
 OUT = HERE / "lasset_layer"
 PREREG = OUT / "PREREG.md"
-LISTS = {"rtl_only": ROOT / "LAsset_initial_results" / "asset_list_neorv32_initial.json",
-         "spec_rtl": ROOT / "ground_truth" / "lasset_initial.json",
-         "refined": ROOT / "ground_truth" / "lasset_refined.json"}
+LISTS = {"rtl_only": ROOT / "data/LAsset_initial_results" / "asset_list_neorv32_initial.json",
+         "spec_rtl": ROOT / "data/ground_truth" / "lasset_initial.json",
+         "refined": ROOT / "data/ground_truth" / "lasset_refined.json"}
 PRIMARY_LIST = "rtl_only"
 EXPECT = {"tuning": (15, 111), "heldout": (26, 189)}
 CLKRST = re.compile(r"(^|_)(clk|rst|rstn|clkgen)(_|$)", re.I)
@@ -560,9 +560,9 @@ def sha12(p: Path) -> str:
 
 
 PINNED = ["assetgen_meta/lasset_layer.py", "assetgen_meta/fp_diagnosis.py", "assetgen_meta/fault_reporter.py",
-          "assetgen_meta/trace_check.py", "eval_assets.py", "ground_truth/manual_gt_neorv32.json",
-          "LAsset_initial_results/asset_list_neorv32_initial.json", "ground_truth/lasset_initial.json", "ground_truth/lasset_refined.json",
-          "parsed_tuning18", "assetgen_meta/traced_inputs_v2/tuning", "assetgen_meta/traced_inputs_v2/heldout"]
+          "assetgen_meta/trace_check.py", "src/eval_assets.py", "data/ground_truth/manual_gt_neorv32.json",
+          "data/LAsset_initial_results/asset_list_neorv32_initial.json", "data/ground_truth/lasset_initial.json", "data/ground_truth/lasset_refined.json",
+          "data/parsed_tuning18", "assetgen_meta/traced_inputs_v2/tuning", "assetgen_meta/traced_inputs_v2/heldout"]
 
 
 def pins_now() -> list[tuple[str, str]]:

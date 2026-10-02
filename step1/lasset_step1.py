@@ -23,7 +23,7 @@ ROOT = HERE.parent
 BPA = ROOT / "bahavioral_patterns_of_assets"
 PACK = BPA / "annotation_pack_elements"
 BUILDER = PACK / "occurrence_prompts_v2/rulebook_edits"
-GT_FILE = ROOT / "ground_truth/manual_gt_neorv32.json"
+GT_FILE = ROOT / "data/ground_truth/manual_gt_neorv32.json"
 
 OUT_ROOT = HERE / "lasset_step1"
 CLOSED = OUT_ROOT / "closed_set"

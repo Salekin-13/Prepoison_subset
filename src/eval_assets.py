@@ -22,12 +22,12 @@ import json
 from collections import Counter
 from pathlib import Path
 
-GT_DIR = Path("ground_truth")
+GT_DIR = Path("data/ground_truth")
 
 
 # --------------------------------------------------------------------- load ---
 
-def load_refs(gt_dir=GT_DIR, parsed_dir="parsed_tuning18") -> dict:
+def load_refs(gt_dir=GT_DIR, parsed_dir="data/parsed_tuning18") -> dict:
     """-> {"gt": ..., "paper": ..., "paper_refined": ...}; each {module: [(element, objective)]}
 
     A LIST, not a dict keyed by element name. Two entities of one file can hold assets with
@@ -286,7 +286,7 @@ def collect(versions, root=".", stem="assets_tuning18") -> dict:
     """
     out = {}
     for v in versions:
-        dirs = sorted(Path(root).glob(f"{stem}_{v}_r*"))
+        dirs = sorted(Path(root).glob(f"runs/{stem}_{v}_r*"))
         pairs = [(d, load_run(d)) for d in dirs]
         pairs = [(d, r) for d, r in pairs if r]
         # A repeat still being generated holds only the modules written so far. Folding it
@@ -307,7 +307,7 @@ def collect(versions, root=".", stem="assets_tuning18") -> dict:
             pairs = keep
         runs = pairs
         if not runs:                      # empty repeat dirs must not shadow a real run
-            runs = [r for d in Path(root).glob(f"{stem}_{v}") for r in [load_run(d)] if r]
+            runs = [r for d in Path(root).glob(f"runs/{stem}_{v}") for r in [load_run(d)] if r]
         if runs:
             out[v] = runs
         else:
@@ -346,7 +346,7 @@ def per_module(res: dict, key: str = "f1") -> dict:
 CLASSES = ("port", "signal", "signal-field", "port-field", "absent")
 
 
-def load_closed(parsed_dir="parsed_tuning18") -> dict:
+def load_closed(parsed_dir="data/parsed_tuning18") -> dict:
     """{module: {"port": {names}, "signal": {names}}} from the parsed closed sets."""
     out = {}
     for f in sorted(Path(parsed_dir).glob("*.json")):
@@ -623,7 +623,7 @@ def load_validation(versions, root=".", stem="assets_tuning18") -> dict:
     out = {}
     for v in versions:
         reps = []
-        for d in sorted(Path(root).glob(f"{stem}_{v}_r*")):
+        for d in sorted(Path(root).glob(f"runs/{stem}_{v}_r*")):
             p = d / "_validation.json"
             if p.exists():
                 reps.append((d, json.loads(p.read_text(encoding="utf-8"))))

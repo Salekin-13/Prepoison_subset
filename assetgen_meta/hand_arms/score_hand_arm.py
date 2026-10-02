@@ -18,7 +18,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT / "assetgen_meta"))
+sys.path.insert(0, str(ROOT / "src")); sys.path.insert(0, str(ROOT / "assetgen_meta"))
 import eval_assets as ea   # noqa: E402
 import meta_tools as mt    # noqa: E402
 
@@ -28,7 +28,7 @@ OTHER_RR = re.compile(r"\b(dev|port|dmi)_(req|rsp)_t\b")
 CLKRST = re.compile(r"(clk|rst|rstn)(_|$)")
 
 
-def load_decl(parsed_dir=ROOT / "parsed_tuning18"):
+def load_decl(parsed_dir=ROOT / "data/parsed_tuning18"):
     out = {}
     for f in sorted(Path(parsed_dir).glob("*.json")):
         d = json.loads(f.read_text(encoding="utf-8"))
@@ -81,7 +81,7 @@ def perm_p(a, b):
 
 
 def selftest(decl):
-    rtl = (ROOT / "RTL_data/neorv32_uart.vhd").read_text(encoding="utf-8", errors="ignore").splitlines()
+    rtl = (ROOT / "data/RTL_data/neorv32_uart.vhd").read_text(encoding="utf-8", errors="ignore").splitlines()
     assert re.match(r"\s*clk_i\s*:\s*in\s+std_ulogic", rtl[31]), rtl[31]
     assert re.match(r"\s*bus_req_i\s*:\s*in\s+bus_req_t", rtl[33]), rtl[33]
     assert re.match(r"\s*clkgen_en_o\s*:\s*out\s+std_ulogic", rtl[35]), rtl[35]
@@ -151,7 +151,7 @@ def score(new: str, refs=(BASELINE, SEED), n_runs=3):
     for v in [x for x in order if x.startswith("m")]:
         lab, obj, missing = Counter(), Counter(), 0
         for rep in range(len(runs[v])):
-            d = ROOT / f"assets_tuning18_{v}_r{rep}"
+            d = ROOT / f"runs/assets_tuning18_{v}_r{rep}"
             for m in common:
                 f = d / "_nested" / f"{m}.json"
                 if not f.exists():
@@ -165,7 +165,7 @@ def score(new: str, refs=(BASELINE, SEED), n_runs=3):
         print(f"   {v:14s} realization/run { {a: round(b / k, 1) for a, b in lab.most_common()} } | objectives/run "
               f"{ {a: round(b / k, 1) for a, b in obj.most_common()} } | missing nested files {missing}")
     for rep in range(len(runs[new])):
-        vp = ROOT / f"assets_tuning18_{new}_r{rep}/_validation.json"
+        vp = ROOT / f"runs/assets_tuning18_{new}_r{rep}/_validation.json"
         if vp.exists():
             val = json.loads(vp.read_text(encoding="utf-8"))
             print(f"   {new} r{rep}: validation issues {sum(len(x) for x in val.values())} "

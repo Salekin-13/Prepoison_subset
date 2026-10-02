@@ -25,26 +25,26 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
-for _p in ("", "assetgen_meta"):
+for _p in ("src", "assetgen_meta"):
     if str(ROOT / _p) not in sys.path:
         sys.path.insert(0, str(ROOT / _p))
 import eval_assets as ea          # noqa: E402
 import fp_diagnosis as fd         # noqa: E402
 
 BASE = "m7e194es0ist2"
-CLAUDE = ["assets_opt_v1_r0", "assets_opt_v1_r1", "assets_opt_v1_r2"]
+CLAUDE = ["runs/assets_opt_v1_r0", "runs/assets_opt_v1_r1", "runs/assets_opt_v1_r2"]
 CPU_PORTS = ("msi_i", "mei_i", "mti_i", "firq_i", "dbi_i")
 NOISE = 0.03
 
 
 def _runs(version, reps=(0, 1, 2)):
     """The complete runs of a version."""
-    return [f"assets_tuning18_{version}_r{k}" for k in reps if fd.complete(f"assets_tuning18_{version}_r{k}", "tuning")]
+    return [f"runs/assets_tuning18_{version}_r{k}" for k in reps if fd.complete(f"runs/assets_tuning18_{version}_r{k}", "tuning")]
 
 
 def _incomplete(version, reps=(0, 1, 2)):
-    return [f"assets_tuning18_{version}_r{k}" for k in reps
-            if (ROOT / f"assets_tuning18_{version}_r{k}" / "_nested").exists() and not fd.complete(f"assets_tuning18_{version}_r{k}", "tuning")]
+    return [f"runs/assets_tuning18_{version}_r{k}" for k in reps
+            if (ROOT / f"runs/assets_tuning18_{version}_r{k}" / "_nested").exists() and not fd.complete(f"runs/assets_tuning18_{version}_r{k}", "tuning")]
 
 
 def _mean(xs):

@@ -62,8 +62,8 @@ import lasset_step1 as S           # noqa: E402
 import code_site_tags as CT        # noqa: E402
 
 CODE_PAIRS_SHA = "b0e767000ec2"
-TUNE_RTL, HELD_RTL, BPA_RTL = ROOT / "RTL_data", ROOT / "RTL_heldout", BPA / "data/RTL_data"
-PARSED_TUNING, PARSED_HELDOUT, PARSED_RAW = ROOT / "parsed_tuning18", ROOT / "parsed_heldout26", ROOT / "parsed_heldout_raw"
+TUNE_RTL, HELD_RTL, BPA_RTL = ROOT / "data/RTL_data", ROOT / "data/RTL_heldout", BPA / "data/RTL_data"
+PARSED_TUNING, PARSED_HELDOUT, PARSED_RAW = ROOT / "data/parsed_tuning18", ROOT / "data/parsed_heldout26", ROOT / "data/parsed_heldout_raw"
 MAP_HELDOUT = HERE / "lasset_step1" / "relation_map_code_heldout" / f"{CODE_PAIRS_SHA}_codetags"
 MAP_TUNING = HERE / "lasset_step1" / "relation_map_code_tuning" / f"{CODE_PAIRS_SHA}_codetags"
 SITES_SUBDIR = "_sites"
@@ -87,7 +87,7 @@ def tuning_modules() -> list[str]:
 
 def heldout_modules(rtl_dir: Path = HELD_RTL) -> list[str]:
     """The RTL_heldout modules that have manual GT. Only the module NAMES are read from the GT file."""
-    gt = json.loads((ROOT / "ground_truth/manual_gt_neorv32.json").read_text(encoding="utf-8"))["modules"]
+    gt = json.loads((ROOT / "data/ground_truth/manual_gt_neorv32.json").read_text(encoding="utf-8"))["modules"]
     mods = sorted(p.stem for p in Path(rtl_dir).glob("*.vhd") if p.stem in gt)
     assert len(mods) == 26, f"expected 26 held-out modules, found {len(mods)}"
     return mods
@@ -274,7 +274,7 @@ GPIO_SIGNALS = ["port_in", "port_out", "irq_typ", "irq_pol", "irq_en", "irq_clrn
 def selftest_closed(log=print) -> bool:
     import rtl_parse  # noqa: F401  (repo-root copy; byte-identical to the pack's, checked below)
     fails = []
-    if (ROOT / "rtl_parse.py").read_bytes() != (BPA / "rtl_parse.py").read_bytes():
+    if (ROOT / "src/rtl_parse.py").read_bytes() != (BPA / "rtl_parse.py").read_bytes():
         fails.append("rtl_parse.py differs between the repo root and the pack")
     diff_rtl = [p.name for p in TUNE_RTL.glob("*.vhd") if p.read_bytes() != (BPA_RTL / p.name).read_bytes()]
     if diff_rtl or len(list(TUNE_RTL.glob("*.vhd"))) != 18:
